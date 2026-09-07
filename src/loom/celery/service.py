@@ -1,10 +1,12 @@
 """CeleryJobService — Celery-backed implementation of the JobService protocol.
 
-Dispatches Jobs to the broker post-commit by registering a sync callable
-into the pending-dispatch queue managed by
-:mod:`loom.core.job.context`.  No broker call is made inside
-:meth:`~CeleryJobService.dispatch`; the actual ``send_task`` is deferred
-and executed only after the Unit of Work commits successfully.
+Dispatches Jobs to the broker post-commit by enqueuing a sync callable on
+the post-commit channel of the current execution
+(:mod:`loom.core.engine.post_commit`, through
+:func:`~loom.core.job.context.add_pending_dispatch`).  No broker call is
+made inside :meth:`~CeleryJobService.dispatch`; the actual ``send_task``
+runs when the executor drains the channel after the Unit of Work has
+closed, or at the end of an execution without one.
 
 Usage::
 
@@ -60,9 +62,8 @@ class _PendingCeleryDispatch:
     """Deferred ``send_task`` call executed after UoW commits.
 
     Avoids nested function definitions (closures) by capturing all send
-    context as explicit dataclass fields.  The instance is registered in
-    the pending queue and called by
-    :func:`~loom.core.job.context.flush_pending_dispatches`.
+    context as explicit dataclass fields.  The instance is enqueued on the
+    post-commit channel and called when the executor drains it.
     """
 
     celery_app: Celery
@@ -201,12 +202,12 @@ def _build_failure_link(
 class CeleryJobService:
     """Celery-backed implementation of the ``JobService`` protocol.
 
-    All dispatch calls are deferred until the current Unit of Work commits.
-    Tasks are registered in the async context's pending queue via
-    :func:`~loom.core.job.context.add_pending_dispatch` and flushed
-    synchronously by
-    :class:`~loom.core.engine.executor.RuntimeExecutor` after a successful
-    commit.
+    All dispatch calls are deferred until the current Unit of Work has
+    committed and closed.  Tasks are enqueued on the execution's post-commit
+    channel via :func:`~loom.core.job.context.add_pending_dispatch`; the
+    :class:`~loom.core.engine.executor.RuntimeExecutor` drains the channel
+    after the close (or at the end of an execution without a Unit of Work)
+    and discards it when the execution fails.
 
     Callbacks are wired as native Celery ``link`` / ``link_error``
     signatures so the broker manages delivery without framework

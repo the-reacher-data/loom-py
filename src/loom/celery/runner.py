@@ -21,11 +21,12 @@ sync methods are called directly from the task thread.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import time
 from contextvars import Token
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.result import AsyncResult  # type: ignore[import-untyped]
@@ -33,18 +34,23 @@ from celery.result import AsyncResult  # type: ignore[import-untyped]
 from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.async_bridge import AsyncBridge
 from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.core.engine.post_commit import PostCommitError
 from loom.core.identity import Identity, reset_identity, set_identity
 from loom.core.identity.wire import decode_identity
-from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
+from loom.core.logger import get_logger
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import reset_trace_id, set_trace_id
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from loom.core.engine.executor import RuntimeExecutor
     from loom.core.engine.metrics import MetricsAdapter
     from loom.core.job.job import Job
     from loom.core.use_case.factory import UseCaseFactory
+
+_log = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -123,6 +129,20 @@ def _job_event(
     return RuntimeEvent(kind=kind, use_case_name=use_case_name, trace_id=trace_id, **kwargs)
 
 
+def _exhausted_event(
+    use_case_name: str, trace_id: str | None, started: float, error: Exception
+) -> RuntimeEvent:
+    """Build the terminal ``JOB_EXHAUSTED`` event for a job that will not run again."""
+    return _job_event(
+        EventKind.JOB_EXHAUSTED,
+        use_case_name,
+        trace_id,
+        duration_ms=(time.monotonic() - started) * 1000,
+        status="exhausted",
+        error=error,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Trace ID context guard
 # ---------------------------------------------------------------------------
@@ -158,6 +178,29 @@ def _uninstall_identity(token: Token[Identity] | None) -> None:
         reset_identity(token)
 
 
+@contextlib.contextmanager
+def _job_context(
+    trace_id: str | None, identity: dict[str, Any] | None
+) -> Iterator[Identity | None]:
+    """Install the trace and the envelope's identity for the duration of a task.
+
+    Args:
+        trace_id: Trace identifier carried by the envelope, if any.
+        identity: Wire-encoded caller carried by the envelope, if any.
+
+    Yields:
+        The decoded caller, or ``None`` when the envelope carried no identity.
+    """
+    trace_token = _install_trace(trace_id)
+    caller = decode_identity(identity)
+    identity_token = _install_identity(caller)
+    try:
+        yield caller
+    finally:
+        _uninstall_identity(identity_token)
+        _uninstall_trace(trace_token)
+
+
 def _is_eager_request(task_self: Any) -> bool:
     request = getattr(task_self, "request", None)
     is_eager = getattr(request, "is_eager", None)
@@ -169,46 +212,27 @@ def _is_eager_request(task_self: Any) -> bool:
     return bool(getattr(conf, "task_always_eager", False))
 
 
-async def _run_job(
-    instance: Job[Any],
-    *,
-    payload: dict[str, Any],
-    params: dict[str, Any] | None,
-    executor: RuntimeExecutor,
-    identity: Identity | None = None,
-) -> Any:
-    """Execute a Job through the executor and flush pending dispatches.
-
-    The executor opens a UoW, runs the compiled execution plan (handling
-    both sync and async ``execute()`` methods), and commits.  Pending
-    dispatches (jobs enqueued during execution) are flushed on success
-    and discarded on failure so downstream tasks are never sent for a
-    rolled-back transaction.
-
-    Args:
-        instance: Constructed Job instance.
-        payload: Raw payload dict for command construction.
-        params: Optional primitive params.
-        executor: RuntimeExecutor that drives the ExecutionPlan.
-        identity: Caller decoded from the job envelope, or ``None`` when the
-            envelope carried none.  A job declaring ``Caller()`` then fails
-            closed rather than running as an unknown caller.
-
-    Returns:
-        The value returned by ``execute()``.
-    """
-    try:
-        result = await executor.execute(instance, params=params, payload=payload, identity=identity)
-        await flush_pending_dispatches()
-        return result
-    except Exception:
-        clear_pending_dispatches()
-        raise
-
-
 # ---------------------------------------------------------------------------
 # Job runner factory
 # ---------------------------------------------------------------------------
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Whether re-running the job could still fix ``exc``.
+
+    A post-commit failure of a committed transaction cannot: the write
+    already stands and a retry would apply it twice.  One raised without a
+    commit (a read-only job, or none owning a unit of work) is retryable.
+    """
+    return not (isinstance(exc, PostCommitError) and exc.committed)
+
+
+def _log_post_commit_failure(exc: Exception, job: str) -> None:
+    """Record which post-commit actions failed and whether anything committed."""
+    if isinstance(exc, PostCommitError):
+        _log.error(
+            "JobPostCommitFailed", job=job, committed=exc.committed, failures=len(exc.failures)
+        )
 
 
 def _make_job_task(
@@ -230,7 +254,16 @@ def _make_job_task(
     Both sync and async ``execute()`` methods are driven by the
     :class:`~loom.core.engine.executor.RuntimeExecutor` via a shared
     :class:`~loom.core.async_bridge.AsyncBridge`, giving every job access
-    to the full framework (UoW, injection markers, dispatch).
+    to the full framework (UoW, injection markers, dispatch).  The executor
+    owns the lifecycle: it opens the unit of work, commits and drains the
+    dispatches queued during the execution once it has closed.  The identity
+    decoded from the envelope is forwarded, so a job declaring ``Caller()``
+    fails closed rather than running as an unknown caller.
+
+    A :class:`~loom.core.engine.post_commit.PostCommitError` whose
+    transaction committed is terminal: the task is not retried, since the
+    write already stands.  One raised without a commit is retried like any
+    other failure.
 
     Args:
         celery_app: Celery application to register the task on.
@@ -249,6 +282,45 @@ def _make_job_task(
     timeout_value = job_type.__timeout__
     runtime = observability_runtime or ObservabilityRuntime.noop()
     run_timeout = float(timeout_value) if timeout_value is not None and timeout_value > 0 else None
+    name = job_type.__qualname__
+
+    def _execute_job(
+        *,
+        task_self: Any,
+        payload: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+        caller: Identity | None,
+        trace_id: str | None,
+    ) -> Any:
+        """Build the job instance and run it under the job span."""
+        with runtime.span(
+            Scope.JOB,
+            name,
+            trace_id=trace_id,
+            id=getattr(getattr(task_self, "request", None), "id", None),
+            payload_size=len(payload or {}),
+        ):
+            instance = factory.build(job_type)
+            return async_runtime.run(
+                executor.execute(instance, params=params, payload=payload or {}, identity=caller),
+                timeout=run_timeout,
+                eager_fallback=_is_eager_request(task_self),
+            )
+
+    def _handle_job_failure(
+        *, task_self: Any, exc: Exception, trace_id: str | None, started: float
+    ) -> NoReturn:
+        """Retry the task when the failure allows it, otherwise let it die."""
+        _log_post_commit_failure(exc, name)
+        if _is_retryable(exc) and task_self.request.retries < task_self.max_retries:
+            countdown = backoff**task_self.request.retries
+            _emit(
+                metrics,
+                _job_event(EventKind.JOB_RETRYING, name, trace_id, status="retrying", error=exc),
+            )
+            raise task_self.retry(exc=exc, countdown=countdown) from exc
+        _emit(metrics, _exhausted_event(name, trace_id, started, exc))
+        raise exc
 
     @celery_app.task(  # type: ignore[untyped-decorator]
         name=f"{TASK_JOB_PREFIX}.{job_type.__qualname__}",
@@ -266,32 +338,19 @@ def _make_job_task(
         trace_id: str | None = None,
         identity: dict[str, Any] | None = None,
     ) -> Any:
-        name = job_type.__qualname__
-        token = _install_trace(trace_id)
-        caller = decode_identity(identity)
-        identity_token = _install_identity(caller)
-        _emit(metrics, _job_event(EventKind.JOB_STARTED, name, trace_id))
-        t0 = time.monotonic()
-        try:
-            with runtime.span(
-                Scope.JOB,
-                name,
-                trace_id=trace_id,
-                id=getattr(getattr(self, "request", None), "id", None),
-                payload_size=len(payload or {}),
-            ):
-                instance = factory.build(job_type)
-                result = async_runtime.run(
-                    _run_job(
-                        instance,
-                        payload=payload or {},
-                        params=params,
-                        executor=executor,
-                        identity=caller,
-                    ),
-                    timeout=run_timeout,
-                    eager_fallback=_is_eager_request(self),
+        with _job_context(trace_id, identity) as caller:
+            _emit(metrics, _job_event(EventKind.JOB_STARTED, name, trace_id))
+            t0 = time.monotonic()
+            try:
+                result = _execute_job(
+                    task_self=self,
+                    payload=payload,
+                    params=params,
+                    caller=caller,
+                    trace_id=trace_id,
                 )
+            except Exception as exc:
+                _handle_job_failure(task_self=self, exc=exc, trace_id=trace_id, started=t0)
             _emit(
                 metrics,
                 _job_event(
@@ -303,31 +362,6 @@ def _make_job_task(
                 ),
             )
             return result
-        except Exception as exc:
-            if self.request.retries < self.max_retries:
-                countdown = backoff**self.request.retries
-                _emit(
-                    metrics,
-                    _job_event(
-                        EventKind.JOB_RETRYING, name, trace_id, status="retrying", error=exc
-                    ),
-                )
-                raise self.retry(exc=exc, countdown=countdown) from exc
-            _emit(
-                metrics,
-                _job_event(
-                    EventKind.JOB_EXHAUSTED,
-                    name,
-                    trace_id,
-                    duration_ms=(time.monotonic() - t0) * 1000,
-                    status="exhausted",
-                    error=exc,
-                ),
-            )
-            raise
-        finally:
-            _uninstall_identity(identity_token)
-            _uninstall_trace(token)
 
     return _job_task
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+import asyncio
+from collections.abc import Coroutine, Generator
 from contextlib import contextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,12 +23,13 @@ from loom.celery.runner import (
     _make_callback_task,
     _make_job_task,
     _resolve_error_info,
-    _run_job,
     _uninstall_trace,
 )
 from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.core.engine.post_commit import PostCommitError
 from loom.core.job.job import Job
 from loom.core.observability.event import Scope
+from loom.core.tracing import get_trace_id
 from tests.helpers.spans import build_recorder, hex_trace
 
 _WIRE_TRACE = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
@@ -74,6 +77,10 @@ class _AsyncCallback:
         pass  # intentional no-op stub
 
 
+class _RetryError(Exception):
+    """Stands in for Celery's ``Retry`` raised by the mocked bound task."""
+
+
 def _mock_celery_app() -> MagicMock:
     app = MagicMock()
     app.task = MagicMock(side_effect=lambda **kw: lambda fn: fn)
@@ -84,6 +91,19 @@ def _mock_celery_app() -> MagicMock:
 def _mock_factory(instance: object) -> MagicMock:
     factory = MagicMock()
     factory.build = MagicMock(return_value=instance)
+    return factory
+
+
+def _factory_recording_trace(instance: object, sink: list[str | None]) -> MagicMock:
+    """Factory whose ``build`` records the trace context visible inside the job."""
+    factory = MagicMock()
+
+    def _build(job_type: object) -> object:
+        del job_type
+        sink.append(get_trace_id())
+        return instance
+
+    factory.build = MagicMock(side_effect=_build)
     return factory
 
 
@@ -137,50 +157,6 @@ class TestTraceLifecycle:
 
     def test_uninstall_none_token_is_safe(self) -> None:
         _uninstall_trace(None)  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# _run_job
-# ---------------------------------------------------------------------------
-
-
-class TestRunJob:
-    async def test_returns_executor_result(self) -> None:
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(return_value="done")
-        result = await _run_job(instance, payload={}, params=None, executor=executor)
-        assert result == "done"
-
-    async def test_flushes_pending_dispatches_on_success(self) -> None:
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(return_value=None)
-        with patch(
-            "loom.celery.runner.flush_pending_dispatches", new_callable=AsyncMock
-        ) as mock_flush:
-            await _run_job(instance, payload={}, params=None, executor=executor)
-            mock_flush.assert_awaited_once()
-
-    async def test_clears_pending_dispatches_on_failure(self) -> None:
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(side_effect=ValueError("boom"))
-        with patch("loom.celery.runner.clear_pending_dispatches") as mock_clear:
-            with pytest.raises(ValueError):
-                await _run_job(instance, payload={}, params=None, executor=executor)
-            mock_clear.assert_called_once()
-
-    async def test_does_not_flush_on_failure(self) -> None:
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(side_effect=RuntimeError("fail"))
-        with patch(
-            "loom.celery.runner.flush_pending_dispatches", new_callable=AsyncMock
-        ) as mock_flush:
-            with pytest.raises(RuntimeError):
-                await _run_job(instance, payload={}, params=None, executor=executor)
-            mock_flush.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +247,24 @@ class TestMakeJobTaskExecution:
         _, kwargs = runtime.run.call_args
         assert kwargs["timeout"] is None
 
+    def test_job_task_hands_the_executor_every_input_of_the_envelope(self) -> None:
+        """A8: the task builds the instance and delegates the lifecycle to the executor."""
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        executor = MagicMock()
+        executor.execute = AsyncMock(return_value=7)
+        submitted: list[Coroutine[Any, Any, Any]] = []
+        runtime = MagicMock()
+        runtime.run = MagicMock(side_effect=lambda coro, **_: submitted.append(coro) or 7)
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, executor, runtime)
+
+        assert task_fn(_mock_self(), payload={"value": 5}, params={"p": 2}) == 7
+
+        assert asyncio.run(submitted[0]) == 7
+        executor.execute.assert_awaited_once_with(
+            instance, params={"p": 2}, payload={"value": 5}, identity=None
+        )
+
     def test_job_task_emits_observability_span(self) -> None:
         instance = _SyncJob()
         factory = _mock_factory(instance)
@@ -351,6 +345,44 @@ class TestMakeJobTaskRetry:
         raw_fn = task_fn if callable(task_fn) else task_fn.__func__
         with pytest.raises(RetryError):
             raw_fn(mock_self, payload={"value": 1})
+        mock_self.retry.assert_called_once()
+
+    def test_post_commit_error_is_not_retried(self) -> None:
+        """US1 s3: the transaction committed, so a retry would run the job twice."""
+        instance = MagicMock()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        mock_self = _mock_self(retries=0, max_retries=2)
+        error = PostCommitError(committed=True, failures=(ConnectionError("broker down"),))
+
+        runtime = _mock_runtime(error=error)
+        task_fn = _make_job_task(
+            _mock_celery_app(), _SyncJob, factory, MagicMock(), runtime, metrics
+        )
+        with pytest.raises(PostCommitError):
+            task_fn(mock_self, payload={"value": 1})
+
+        mock_self.retry.assert_not_called()
+        kinds = [c.args[0].kind for c in metrics.on_event.call_args_list]
+        assert EventKind.JOB_RETRYING not in kinds
+        assert EventKind.JOB_EXHAUSTED in kinds
+
+    def test_post_commit_error_without_a_commit_is_retried(self) -> None:
+        """A1: nothing committed, so re-running the job cannot duplicate a write."""
+        factory = _mock_factory(MagicMock())
+        mock_self = _mock_self(retries=0, max_retries=2)
+
+        class RetryError(Exception):
+            pass
+
+        mock_self.retry = MagicMock(side_effect=RetryError)
+        error = PostCommitError(committed=False, failures=(ConnectionError("broker down"),))
+
+        runtime = _mock_runtime(error=error)
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), runtime)
+        with pytest.raises(RetryError):
+            task_fn(mock_self, payload={"value": 1})
+
         mock_self.retry.assert_called_once()
 
     def test_retry_countdown_uses_exponential_backoff(self) -> None:
@@ -478,6 +510,80 @@ class TestMakeJobTaskRetry:
         task_fn(_mock_self())
 
         assert hex_trace(recorder.one("job:_SyncJob")) != _WIRE_TRACE
+
+    def test_a_trace_less_job_installs_no_context_and_emits_events_with_none(self) -> None:
+        """A task dispatched outside a request must not mint a trace id here.
+
+        ``trace_id`` reaches the worker only when the job came from an API
+        request.  Without one, nothing is installed in the context and every
+        event carries ``trace_id=None``: the span still gets its own id
+        downstream, but that id must never leak back into the events.
+        """
+        seen: list[str | None] = []
+        metrics = MagicMock()
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _factory_recording_trace(_SyncJob(), seen),
+            MagicMock(),
+            _mock_runtime(return_value=0),
+            metrics,
+        )
+
+        task_fn(_mock_self())
+
+        assert seen == [None], "no trace context may be installed for a trace-less job"
+        events = [c.args[0] for c in metrics.on_event.call_args_list]
+        assert [e.kind for e in events] == [EventKind.JOB_STARTED, EventKind.JOB_SUCCEEDED]
+        assert all(e.trace_id is None for e in events)
+
+    @pytest.mark.parametrize(
+        ("retries", "expected_error", "expected_kind"),
+        [
+            (0, _RetryError, EventKind.JOB_RETRYING),
+            (2, ValueError, EventKind.JOB_EXHAUSTED),
+        ],
+    )
+    def test_failure_events_of_a_trace_less_job_also_carry_none(
+        self, retries: int, expected_error: type[Exception], expected_kind: EventKind
+    ) -> None:
+        metrics = MagicMock()
+        mock_self = _mock_self(retries=retries, max_retries=2)
+        mock_self.retry = MagicMock(side_effect=_RetryError)
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _mock_factory(_SyncJob()),
+            MagicMock(),
+            _mock_runtime(error=ValueError("err")),
+            metrics,
+        )
+
+        with pytest.raises(expected_error):
+            task_fn(mock_self, payload={"value": 1})
+
+        events = [c.args[0] for c in metrics.on_event.call_args_list]
+        assert expected_kind in [e.kind for e in events]
+        assert all(e.trace_id is None for e in events)
+
+    def test_a_job_with_a_trace_id_installs_it_and_stamps_every_event(self) -> None:
+        seen: list[str | None] = []
+        metrics = MagicMock()
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _factory_recording_trace(_SyncJob(), seen),
+            MagicMock(),
+            _mock_runtime(return_value=0),
+            metrics,
+        )
+
+        task_fn(_mock_self(), trace_id=_WIRE_TRACE)
+
+        assert seen == [_WIRE_TRACE]
+        events = [c.args[0] for c in metrics.on_event.call_args_list]
+        assert all(e.trace_id == _WIRE_TRACE for e in events)
+        assert get_trace_id() is None, "the trace context is restored when the task returns"
 
     def test_no_metrics_does_not_raise(self) -> None:
         instance = _SyncJob()

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Awaitable, Callable
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar, cast, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loom.core.engine.post_commit import PostCommitChannel, bind_channel, reset_channel
 from loom.core.logger import get_logger
 from loom.core.repository.mutation import MutationEvent
 
@@ -127,20 +128,35 @@ def get_pending_mutations() -> tuple[MutationEvent, ...]:
 def transactional(
     method: Callable[Concatenate[Any, P], Awaitable[T]],
 ) -> Callable[Concatenate[Any, P], Awaitable[T]]:
-    """Create a single transaction boundary for service/orchestrator use cases."""
+    """Create a single transaction boundary for service/orchestrator use cases.
+
+    When a session is already active (an outer ``@transactional`` call or a
+    unit of work driven by the executor) the method joins it and nothing
+    else happens: the owner of that session runs the post-commit hooks.
+    When the decorator opens the session itself it commits, then runs
+    ``on_transaction_committed(pending)`` on the owner and on its
+    :class:`SupportsPostCommit` attributes through the post-commit channel
+    (:mod:`loom.core.engine.post_commit`) after the session is closed.  The
+    decorator owns that channel whenever it owns the session: a channel
+    bound by an outer context is left untouched and restored afterwards, so
+    a committed transaction always drains its own actions.
+
+    Args:
+        method: Async method of an object exposing ``session_manager``.
+
+    Returns:
+        The wrapped method.
+
+    Raises:
+        TypeError: If applied to a repository method or the owner has no
+            ``session_manager`` with a ``session()`` context manager.
+        PostCommitError: If a hook failed after the commit.
+    """
 
     @wraps(method)
     async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
-        from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
-
-        if isinstance(self, RepositorySQLAlchemy):
-            raise TypeError(
-                "@transactional is intended for service/orchestrator boundaries, "
-                "not repository methods.",
-            )
-
-        existing_session = get_active_session()
-        if existing_session is not None:
+        _reject_repository_owner(self)
+        if get_active_session() is not None:
             _log.debug(
                 "TransactionalSessionReused",
                 owner=self.__class__.__name__,
@@ -148,45 +164,94 @@ def transactional(
             )
             return await method(self, *args, **kwargs)
 
-        session_manager = getattr(self, "session_manager", None)
-        if session_manager is None or not callable(getattr(session_manager, "session", None)):
-            raise TypeError(
-                f"{self.__class__.__name__} must have a 'session_manager' attribute "
-                f"with a .session() context manager to use @transactional.",
+        session_manager = _require_session_manager(self)
+        channel = PostCommitChannel()
+        channel_token = bind_channel(channel)
+        try:
+            result = await _run_in_owned_session(
+                self, method, session_manager, channel, args, kwargs
             )
-
-        async with session_manager.session() as session:
-            session_token = _active_session.set(session)
-            mutations_token = _mutations.set([])
-            try:
-                result = await method(self, *args, **kwargs)
-                await session.commit()
-                _log.info(
-                    "TransactionCommitted",
-                    owner=self.__class__.__name__,
-                    method=method.__name__,
-                    mutation_count=len(get_pending_mutations()),
-                )
-
-                pending = get_pending_mutations()
-                if isinstance(self, SupportsPostCommit):
-                    await self.on_transaction_committed(pending)
-                for dependency in _iter_post_commit_dependencies(self):
-                    await dependency.on_transaction_committed(pending)
-                return result
-            except Exception:
-                await session.rollback()
-                _log.exception(
-                    "TransactionRolledBack",
-                    owner=self.__class__.__name__,
-                    method=method.__name__,
-                )
-                raise
-            finally:
-                _active_session.reset(session_token)
-                _mutations.reset(mutations_token)
+        except BaseException:
+            channel.discard()
+            raise
+        finally:
+            reset_channel(channel_token)
+        await channel.drain(committed=True)
+        return result
 
     return cast(Callable[Concatenate[Any, P], Awaitable[T]], wrapper)
+
+
+def _reject_repository_owner(owner: Any) -> None:
+    # Local import: ``repository`` imports this module for ``get_active_session``.
+    from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+
+    if isinstance(owner, RepositorySQLAlchemy):
+        raise TypeError(
+            "@transactional is intended for service/orchestrator boundaries, "
+            "not repository methods.",
+        )
+
+
+def _require_session_manager(owner: Any) -> Any:
+    session_manager = getattr(owner, "session_manager", None)
+    if session_manager is None or not callable(getattr(session_manager, "session", None)):
+        raise TypeError(
+            f"{owner.__class__.__name__} must have a 'session_manager' attribute "
+            f"with a .session() context manager to use @transactional.",
+        )
+    return session_manager
+
+
+async def _run_in_owned_session(
+    owner: Any,
+    method: Callable[..., Awaitable[T]],
+    session_manager: Any,
+    channel: PostCommitChannel,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> T:
+    """Open the session, run ``method``, commit and enqueue the hooks on ``channel``."""
+    async with session_manager.session() as session:
+        session_token = _active_session.set(session)
+        mutations_token = _mutations.set([])
+        try:
+            result = await method(owner, *args, **kwargs)
+            await session.commit()
+            pending = get_pending_mutations()
+            _log.info(
+                "TransactionCommitted",
+                owner=owner.__class__.__name__,
+                method=method.__name__,
+                mutation_count=len(pending),
+            )
+            _enqueue_post_commit_hooks(owner, pending, channel)
+            return result
+        except Exception:
+            await session.rollback()
+            _log.exception(
+                "TransactionRolledBack",
+                owner=owner.__class__.__name__,
+                method=method.__name__,
+            )
+            raise
+        finally:
+            _active_session.reset(session_token)
+            _mutations.reset(mutations_token)
+
+
+def _enqueue_post_commit_hooks(
+    owner: Any,
+    pending: tuple[MutationEvent, ...],
+    channel: PostCommitChannel,
+) -> None:
+    """Queue the owner's hook, then its dependencies' hooks, on ``channel``."""
+    hooks: list[SupportsPostCommit] = []
+    if isinstance(owner, SupportsPostCommit):
+        hooks.append(owner)
+    hooks.extend(_iter_post_commit_dependencies(owner))
+    for hook in hooks:
+        channel.enqueue(partial(hook.on_transaction_committed, pending))
 
 
 def _iter_post_commit_dependencies(owner: Any) -> list[SupportsPostCommit]:

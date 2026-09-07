@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import msgspec
 import pytest
 from fastapi import HTTPException
 
+from loom.core.engine.post_commit import PostCommitError
 from loom.core.errors import (
     Conflict,
     Forbidden,
@@ -99,6 +100,12 @@ class TestLoomAdapterProtocol:
 # ---------------------------------------------------------------------------
 
 
+def _detail(exc: HTTPException) -> dict[str, Any]:
+    """Return the structured error body the mapper always attaches."""
+    assert isinstance(exc.detail, dict)
+    return cast(dict[str, Any], exc.detail)
+
+
 class TestHttpErrorMapper:
     def _mapper(self) -> HttpErrorMapper:
         return HttpErrorMapper()
@@ -129,6 +136,21 @@ class TestHttpErrorMapper:
         exc = self._mapper().to_http(Conflict("duplicate"))
         assert exc.status_code == 409
 
+    def test_post_commit_error_maps_to_500_marked_committed(self) -> None:
+        """FR-003: the client learns the write stood even though the request failed."""
+        error = PostCommitError(committed=True, failures=(ConnectionError("broker down"),))
+        exc = self._mapper().to_http(error)
+        assert exc.status_code == 500
+        assert _detail(exc)["code"] == ErrorCode.POST_COMMIT_FAILURE
+        assert _detail(exc)["committed"] is True
+
+    def test_a_post_commit_error_without_a_commit_is_marked_not_committed(self) -> None:
+        """A1: a read-only execution committed nothing, so the client may retry."""
+        error = PostCommitError(committed=False, failures=(ConnectionError("broker down"),))
+        exc = self._mapper().to_http(error)
+        assert exc.status_code == 500
+        assert _detail(exc)["committed"] is False
+
     def test_an_unsupported_format_maps_to_400(self) -> None:
         """A declaration mistake in an ETL exposed over REST is a caller error."""
         exc = self._mapper().to_http(UnsupportedFormatError(Format.XLSX, (Format.CSV,)))
@@ -143,11 +165,10 @@ class TestHttpErrorMapper:
         violations = RuleViolations(
             [RuleViolation("email", "invalid"), RuleViolation("name", "too short")]
         )
-        exc = self._mapper().to_http(violations)
-        assert isinstance(exc.detail, dict)
-        assert "violations" in exc.detail
-        assert len(exc.detail["violations"]) == 2
-        assert exc.detail["violations"][0] == {"field": "email", "message": "invalid"}
+        detail = _detail(self._mapper().to_http(violations))
+        assert "violations" in detail
+        assert len(detail["violations"]) == 2
+        assert detail["violations"][0] == {"field": "email", "message": "invalid"}
 
     def test_unknown_code_defaults_to_500(self) -> None:
         class _CustomError(LoomError):
@@ -158,10 +179,9 @@ class TestHttpErrorMapper:
         assert exc.status_code == 500
 
     def test_detail_contains_code_and_message(self) -> None:
-        exc = self._mapper().to_http(NotFound("Order", id=42))
-        assert isinstance(exc.detail, dict)
-        assert exc.detail["code"] == ErrorCode.NOT_FOUND
-        assert "42" in exc.detail["message"]
+        detail = _detail(self._mapper().to_http(NotFound("Order", id=42)))
+        assert detail["code"] == ErrorCode.NOT_FOUND
+        assert "42" in detail["message"]
 
 
 # ---------------------------------------------------------------------------

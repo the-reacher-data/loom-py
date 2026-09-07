@@ -53,8 +53,14 @@ class _FailingUseCase(UseCase[Any, str]):
         raise RuntimeError("boom")
 
 
+def _always_bad(
+    command: Command, fields_set: frozenset[str], context: dict[str, object] | None = None
+) -> None:
+    raise RuleViolation("value", "bad")
+
+
 class _RuleFailUseCase(UseCase[Any, str]):
-    rules = [lambda cmd, fs: (_ for _ in ()).throw(RuleViolation("value", "bad"))]
+    rules = [_always_bad]
 
     async def execute(self, cmd: Cmd = Input()) -> str:
         return cmd.value
@@ -175,6 +181,16 @@ class TestExecutorEventsSuccess:
         done = adapter.by_kind(EventKind.EXEC_DONE)[0]
         assert done.use_case_name == "_SimpleUseCase"
 
+    async def test_exec_done_carries_pipeline_ms_and_no_commit_ms_without_uow(self) -> None:
+        adapter = _RecordingAdapter()
+        executor = _make_executor(_make_compiler(), adapter)
+        await executor.execute(_SimpleUseCase(), payload={"value": "hi"})
+        done = adapter.by_kind(EventKind.EXEC_DONE)[0]
+        assert done.pipeline_ms is not None
+        assert done.commit_ms is None
+        assert done.duration_ms is not None
+        assert done.duration_ms >= done.pipeline_ms
+
     async def test_no_exec_error_on_success(self) -> None:
         adapter = _RecordingAdapter()
         compiler = _make_compiler()
@@ -228,6 +244,16 @@ class TestExecutorEventsFailure:
         err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
         assert err.duration_ms is not None
 
+    async def test_exec_error_names_the_failed_phase(self) -> None:
+        adapter = _RecordingAdapter()
+        executor = _make_executor(_make_compiler(), adapter)
+        use_case = _FailingUseCase()
+        with pytest.raises(RuntimeError):
+            await executor.execute(use_case, payload={"value": "x"})
+        err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
+        assert err.error_kind == "business"
+        assert err.pipeline_ms is not None
+
     async def test_exception_is_reraised(self) -> None:
         executor = _make_executor(_make_compiler())
         use_case = _FailingUseCase()
@@ -247,7 +273,7 @@ class TestExecutorEventsRuleFailure:
         use_case = _RuleFailUseCase()
         with pytest.raises(RuleViolations):
             await executor.execute(use_case, payload={"value": "x"})
-        assert EventKind.EXEC_ERROR in adapter.kinds()
+        assert adapter.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
 
     async def test_rule_failure_status_is_rule_failure(self) -> None:
         adapter = _RecordingAdapter()

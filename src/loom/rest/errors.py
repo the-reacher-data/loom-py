@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from fastapi import HTTPException
 
+from loom.core.engine.post_commit import PostCommitError
 from loom.core.errors import LoomError, NotFound, RuleViolations
 from loom.core.errors.codes import ErrorCode
 from loom.core.tracing import get_trace_id
@@ -37,6 +38,7 @@ class ErrorField(StrEnum):
     ID = "id"
     VIOLATIONS = "violations"
     FIELD = "field"
+    COMMITTED = "committed"
 
 
 class HttpErrorMapper:
@@ -49,6 +51,9 @@ class HttpErrorMapper:
 
     - :class:`~loom.core.errors.NotFound` → ``entity``, ``id``
     - :class:`~loom.core.errors.RuleViolations` → ``violations``
+    - :class:`~loom.core.engine.post_commit.PostCommitError` → ``committed``
+      (``500``; ``true`` when a unit of work committed, so a retry would
+      repeat the write, ``false`` when the execution held none)
 
     Unknown error codes default to ``500 Internal Server Error``.
 
@@ -71,6 +76,7 @@ class HttpErrorMapper:
         ErrorCode.UNSUPPORTED_FORMAT: 400,
         ErrorCode.UNSUPPORTED_QUERY: 400,
         ErrorCode.SYSTEM_ERROR: 500,
+        ErrorCode.POST_COMMIT_FAILURE: 500,
     }
 
     def to_http(self, error: LoomError) -> HTTPException:
@@ -100,6 +106,9 @@ class HttpErrorMapper:
             detail[ErrorField.VIOLATIONS] = [
                 {ErrorField.FIELD: v.field, ErrorField.MESSAGE: v.message} for v in error.violations
             ]
+
+        if isinstance(error, PostCommitError):
+            detail[ErrorField.COMMITTED] = error.committed
 
         return HTTPException(status_code=status, detail=detail, headers=_challenge(status))
 

@@ -456,6 +456,179 @@ await self._app.entity(Product).update(params={"id": product_id}, payload={"stoc
 
 ---
 
+## Execution lifecycle
+
+`RuntimeExecutor.execute` owns one execution end to end — from opening the
+unit of work to running the post-commit actions it queued. REST use cases
+and Celery jobs run through the same lifecycle; the Celery worker drives it
+through the async bridge, not through a lifecycle of its own.
+
+```
+EXEC_START
+  → unit of work __aenter__      (skipped when read_only or no uow_factory)
+  → pipeline                     (binds, loads, computes, rules, execute())
+  → unit of work __aexit__       (commit on success, rollback on failure/cancellation, always closes)
+→ one terminal event: EXEC_DONE or EXEC_ERROR
+→ post-commit actions drained   (job dispatch, on_transaction_committed hooks)
+```
+
+The executor drives the unit of work through its context-manager protocol
+only (`__aenter__` / `__aexit__`); `begin()` / `commit()` / `rollback()` stay
+on the `UnitOfWork` protocol for adapters and hand-driven use — the executor
+never calls them directly.
+
+### What runs after commit
+
+Post-commit actions — job dispatches queued through `JobService` and
+`on_transaction_committed` hooks enqueued by the `@transactional` decorator
+(cache publication joins them in a later release) — are enqueued on a
+`PostCommitChannel` bound to the execution and drained only after the unit
+of work has closed, outside its transaction, in enqueue order:
+
+- **With a unit of work**: actions run after `commit`, never inside the
+  transaction — a broker failure cannot roll back a write that already
+  committed.
+- **Without a unit of work, or `read_only=True`**: the same actions run at
+  the end of the execution — there is nothing to commit, but they still run
+  once, not per repository call.
+- **On failure or cancellation**: the owner discards its queue instead of
+  running it — nothing partially dispatched leaks into a later execution
+  sharing the same async context.
+
+A failure during `drain()` does not replace the terminal event already
+emitted: it surfaces as `PostCommitError(failures=(...))` raised by
+`execute()` after `EXEC_DONE`. Every action still runs — failures are
+collected, not short-circuited.
+
+`PostCommitError.committed` says whether the owner that drained had
+committed a unit of work of its own:
+
+- `committed=True` — the execution owned a unit of work and it committed.
+  A retry would repeat a write that already stands.
+- `committed=False` — the execution owned no unit of work (`read_only=True`,
+  no `uow_factory`), or the drain came from a hand-driven
+  `flush_pending_dispatches()` outside any execution. Nothing was written,
+  so the whole operation is safe to retry.
+
+### Nesting
+
+An execution owns the post-commit channel **iff** it owns the unit of work,
+or no channel is bound yet:
+
+- A nested call that joins the outer unit of work (or finds none active)
+  enqueues on the outer channel, drained once at the outer execution's end.
+- A nested call that opens its own unit of work — typically a read-only
+  outer execution calling a writing inner one — owns and drains its own
+  channel right after its own close. An outer failure afterward cannot
+  discard the actions of an inner transaction that already committed.
+- An execution started **from** a post-commit action (inside `drain()`)
+  finds no channel bound and opens its own lifecycle.
+
+### Cancellation
+
+Cancelling an execution mid-flight is a terminal outcome, not a special
+case: the unit of work still closes exactly once. Adapters shield their own
+driver I/O (`session.rollback()`, session close, `end_session`) with
+`asyncio.shield`, so a cancellation arriving while closing lets the close
+finish instead of cutting it off, and reset their `ContextVar` tokens in the
+*caller's* context — a shielded coroutine runs in a copied context, where
+`ContextVar.reset` raises. The executor itself
+never shields; only the adapters do, around their own I/O. `EXEC_ERROR`
+carries `error_kind="cancelled"` for a cancelled execution.
+
+### Events
+
+| Event | When | Carries |
+|---|---|---|
+| `EXEC_START` | Before the unit of work opens (or before the pipeline, when none is configured) | `use_case_name`, `trace_id` |
+| `EXEC_DONE` | The only success terminal event — after commit, or after the pipeline when there is no unit of work | `duration_ms`, `pipeline_ms`, `commit_ms` |
+| `EXEC_ERROR` | The only failure terminal event | `error_kind` (`begin`, `business`, `commit`, `cancelled`, `post_commit`), `duration_ms`, `pipeline_ms`, `commit_ms` |
+
+`error_kind` names the step that failed: `begin` for `__aenter__`,
+`business` for the pipeline, `commit` for the unit-of-work exit, `cancelled`
+for a cancellation, and `post_commit` when the propagating exception is a
+`PostCommitError` — an inner execution that owned its own unit of work
+committed and then failed to drain, so the outer failure is not its own
+business logic.
+
+`duration_ms` measures start → terminal event; `pipeline_ms` measures the
+pipeline stage alone; `commit_ms` measures the unit-of-work exit (`None`
+when no unit of work was opened). A post-commit failure raises no new event
+kind — it surfaces only as `PostCommitError`, after `EXEC_DONE`.
+
+### The `transactional` declaration
+
+Every unit-of-work adapter declares `transactional: ClassVar[bool]`: `True`
+when `commit` / `rollback` are real (SQLAlchemy, Mongo with
+`transactions: true`), `False` for adapters whose writes autocommit
+(DynamoDB, Mongo with `transactions: false`). The protocol is
+runtime-checkable, so an adapter that omits the declaration no longer
+satisfies `isinstance(x, UnitOfWork)`. Nothing reads the flag yet: the
+bootstrap check that refuses a use case requiring a transaction on a
+non-transactional backend, and the cache rules keyed on it, arrive in a
+later release; see [Persistence backends](persistence-backends.md).
+
+### `PostCommitError` in REST and Celery
+
+`PostCommitError` carries `committed`, and both transports read it:
+
+- **REST**: `HttpErrorMapper` maps it to `500` and copies the flag into the
+  response body's `detail` as `committed` — `true` means the write stands
+  even though the request failed, `false` means nothing was written.
+- **Celery**: the worker does **not** retry a `committed=True` failure (a
+  retry would repeat the write) and retries a `committed=False` one like any
+  other failure — see [Post-commit failures](celery.md#post-commit-failures).
+
+### Hand-driven units of work
+
+Constructing a unit of work directly (e.g. `SQLAlchemyUnitOfWork`) and
+calling `begin()` / `commit()` / `rollback()` by hand keeps working — those
+methods stay on the protocol. Closing is the context manager's job
+(`__aexit__`), not `commit()`'s: a hand-driven caller that never enters the
+`async with` block leaves the session open.
+
+### Upgrade notes
+
+- **Metrics timing changed**: `EXEC_DONE` now fires after commit, not
+  before — a consumer computing latency from `EXEC_DONE.duration_ms` alone
+  now sees the commit included; `pipeline_ms` and `commit_ms` split it back
+  out.
+- **`PostCommitError` where a rollback used to be reported**: a broker or
+  cache-bump failure after a successful commit used to roll back an
+  already-committed transaction; it now raises
+  `PostCommitError(committed=True)` instead — the write stands, the failure
+  is reported separately. The same failure in an execution that owned no
+  unit of work raises `PostCommitError(committed=False)`, which REST reports
+  as `committed: false` and the Celery worker retries.
+- **`flush_pending_dispatches()` now raises `PostCommitError`** instead of
+  letting an individual dispatch's exception propagate directly, and
+  **raises `RuntimeError` when called inside an execution**: the executor
+  owns the post-commit channel and drains it after the unit of work closes.
+  Call it only outside an execution, as `InlineJobService` documents.
+  `clear_pending_dispatches()` discards the executor's channel when one is
+  bound, so a hand-driven caller cancelling dispatches inside an execution
+  now really cancels them.
+- **`UnitOfWork` is a runtime-checkable protocol with a data member**:
+  `isinstance(x, UnitOfWork)` is `False` for an adapter that does not
+  declare `transactional`, and `issubclass(X, UnitOfWork)` raises
+  `TypeError` — Python cannot check a data member on a class. Third-party
+  adapters must declare `transactional: ClassVar[bool]`; code that used
+  `issubclass` must switch to `isinstance` on an instance.
+- **`error_kind="commit"` means the commit itself failed**: the outcome is
+  undetermined — the driver may have committed before the failure surfaced.
+  Treat it as "unknown", not as "rolled back"; the adapter still rolled back
+  and closed on its side (SQLAlchemy) or ended the session (Mongo). A failure
+  while *closing* after a successful commit is logged as `UoWCloseFailed` and
+  does not fail the execution on either adapter: the write landed, so the
+  terminal event is `EXEC_DONE` and the post-commit actions run.
+- **`error_kind="post_commit"`** is new: an outer execution whose inner one
+  committed and then failed to drain no longer reports `business`.
+- **Hand-driven `begin()`/`commit()` callers must close through the context
+  manager** (`async with uow:` or an explicit `__aexit__` call) — calling
+  `commit()` alone no longer closes the session.
+
+---
+
 ## DSL quick-reference
 
 | Primitive | Purpose |

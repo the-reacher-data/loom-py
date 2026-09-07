@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -9,6 +9,7 @@ from loom.core.command import Command
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import ParameterBindingError, RuntimeExecutor
 from loom.core.errors import NotFound
+from loom.core.identity import ANONYMOUS
 from loom.core.use_case.markers import Exists, Input, Load, LoadById, OnMissing
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
@@ -764,3 +765,62 @@ class TestParallelLoads:
 
         assert result == ("u@u.com", 2)
         assert set(call_order) == {"user", "order"}
+
+
+# ---------------------------------------------------------------------------
+# run() — build through the factory, then execute
+# ---------------------------------------------------------------------------
+
+
+class TestRun:
+    """A7: ``run`` is the entry point of hosts that build through a factory."""
+
+    async def test_builds_the_use_case_through_the_factory_and_forwards_every_argument(
+        self,
+    ) -> None:
+        instance = _NoMarkersUseCase()
+        factory = MagicMock()
+        factory.build = MagicMock(return_value=instance)
+        executor = _make_executor()
+        identity = ANONYMOUS
+        user_repo = AsyncMock()
+        overrides = {User: User(id=1, email="u@u.com")}
+
+        with patch.object(
+            RuntimeExecutor, "execute", new=AsyncMock(return_value="built")
+        ) as execute:
+            result = await executor.run(
+                _NoMarkersUseCase,
+                factory=factory,
+                params={"user_id": 1},
+                payload={"email": "a@b.com"},
+                dependencies={User: user_repo},
+                load_overrides=overrides,
+                read_only=True,
+                identity=identity,
+            )
+
+        assert result == "built"
+        factory.build.assert_called_once_with(_NoMarkersUseCase)
+        execute.assert_awaited_once_with(
+            instance,
+            params={"user_id": 1},
+            payload={"email": "a@b.com"},
+            dependencies={User: user_repo},
+            load_overrides=overrides,
+            read_only=True,
+            identity=identity,
+        )
+
+    async def test_a_build_failure_surfaces_before_any_execution(self) -> None:
+        factory = MagicMock()
+        factory.build = MagicMock(side_effect=RuntimeError("no dependency"))
+        executor = _make_executor()
+
+        with (
+            patch.object(RuntimeExecutor, "execute", new=AsyncMock()) as execute,
+            pytest.raises(RuntimeError, match="no dependency"),
+        ):
+            await executor.run(_NoMarkersUseCase, factory=factory)
+
+        execute.assert_not_awaited()

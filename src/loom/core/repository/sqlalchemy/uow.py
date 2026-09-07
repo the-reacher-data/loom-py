@@ -13,8 +13,9 @@ When :meth:`SQLAlchemyUnitOfWork.begin` is called it:
      skip opening a redundant nested transaction.
 
 On :meth:`commit` the session is flushed and committed.  On :meth:`rollback`
-all pending changes are discarded.  The session is closed and the ContextVar
-is restored in both cases.
+all pending changes are discarded.  Closing the session and restoring the
+ContextVar is the job of :meth:`SQLAlchemyUnitOfWork.__aexit__`, which the
+executor drives; the explicit methods leave the session open.
 
 Usage::
 
@@ -24,8 +25,9 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,6 +65,8 @@ class SQLAlchemyUnitOfWork:
         # committed
     """
 
+    transactional: ClassVar[bool] = True
+
     def __init__(self, session_manager: SessionManager) -> None:
         self._session_manager = session_manager
         self._session: AsyncSession | None = None
@@ -85,13 +89,26 @@ class SQLAlchemyUnitOfWork:
 
         self._session_cm = self._session_manager.session()
         session: AsyncSession = await self._session_cm.__aenter__()
+        try:
+            self._bind(session)
+        except BaseException:
+            # The session context manager is already open: close it before
+            # the failure leaves, or the connection leaks for good.
+            await self._exit_session()
+            self._reset_context()
+            raise
+        _log.debug("UoWBegin")
+
+    def _bind(self, session: AsyncSession) -> None:
+        """Publish ``session`` and a fresh mutation list to the current context."""
         self._session = session
         self._session_token = set_active_session(session)
         _, self._mutations_token = set_active_mutations()
-        _log.debug("UoWBegin")
 
     async def commit(self) -> None:
         """Flush and commit all pending changes to the database.
+
+        The session stays open; closing it is the job of :meth:`__aexit__`.
 
         Raises:
             RuntimeError: If :meth:`begin` has not been called.
@@ -103,6 +120,8 @@ class SQLAlchemyUnitOfWork:
 
     async def rollback(self) -> None:
         """Discard all pending changes.
+
+        The session stays open; closing it is the job of :meth:`__aexit__`.
 
         Raises:
             RuntimeError: If :meth:`begin` has not been called.
@@ -127,7 +146,12 @@ class SQLAlchemyUnitOfWork:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
-        """Commit on clean exit, rollback on exception, always close session.
+        """Commit on clean exit, roll back otherwise, always close the session.
+
+        A failing ``commit`` is rolled back before the session closes.  The
+        driver I/O of rollback and close runs under ``asyncio.shield`` so a
+        cancellation arriving meanwhile lets it finish; the ``ContextVar``
+        tokens are reset here, in the caller's context.
 
         Args:
             exc_type: Exception type, or ``None`` on clean exit.
@@ -136,29 +160,48 @@ class SQLAlchemyUnitOfWork:
         """
         try:
             if exc_type is None:
-                await self.commit()
+                await self._commit_then_close()
             else:
-                try:
-                    await self.rollback()
-                except Exception:
-                    _log.exception("UoWRollbackFailed")
+                await asyncio.shield(self._rollback_then_close())
         finally:
-            await self._close()
+            self._reset_context()
 
-    async def _close(self) -> None:
-        """Close the session and reset ContextVars."""
+    async def _commit_then_close(self) -> None:
         try:
-            if self._session_cm is not None:
-                await self._session_cm.__aexit__(None, None, None)
+            await self.commit()
+        except BaseException:
+            await asyncio.shield(self._rollback_then_close())
+            raise
+        await asyncio.shield(self._exit_session_logging_failure())
+
+    async def _rollback_then_close(self) -> None:
+        try:
+            await self.rollback()
+        except Exception:
+            _log.exception("UoWRollbackFailed")
         finally:
-            if self._session_token is not None:
-                reset_active_session(self._session_token)
-                self._session_token = None
-            if self._mutations_token is not None:
-                reset_active_mutations(self._mutations_token)
-                self._mutations_token = None
-            self._session = None
-            self._session_cm = None
+            await self._exit_session_logging_failure()
+
+    async def _exit_session_logging_failure(self) -> None:
+        """Close on the failure path: a close error must not replace the business one."""
+        try:
+            await self._exit_session()
+        except Exception:
+            _log.exception("UoWCloseFailed")
+
+    async def _exit_session(self) -> None:
+        """Exit the session context manager; the session is gone afterwards."""
+        session_cm, self._session_cm, self._session = self._session_cm, None, None
+        if session_cm is not None:
+            await session_cm.__aexit__(None, None, None)
+
+    def _reset_context(self) -> None:
+        if self._session_token is not None:
+            reset_active_session(self._session_token)
+            self._session_token = None
+        if self._mutations_token is not None:
+            reset_active_mutations(self._mutations_token)
+            self._mutations_token = None
 
 
 class SQLAlchemyUnitOfWorkFactory:

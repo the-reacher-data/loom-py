@@ -4,7 +4,8 @@ import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from contextvars import Token
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 from loom.core.engine.compilable import Compilable
@@ -12,18 +13,25 @@ from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import ExecutionPlan, ExistsStep, LoadStep
+from loom.core.engine.post_commit import (
+    PostCommitChannel,
+    PostCommitError,
+    active_channel,
+    bind_channel,
+    reset_channel,
+)
 from loom.core.errors import NotFound, Unauthenticated
 from loom.core.identity import Identity
-from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.logger import LoggerPort, get_logger
 from loom.core.tracing import get_trace_id
-from loom.core.uow.abc import UnitOfWorkFactory
+from loom.core.uow.abc import UnitOfWork, UnitOfWorkFactory
 from loom.core.uow.context import _active_uow
 from loom.core.use_case.markers import LookupKind, OnMissing, SourceKind
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 
 if TYPE_CHECKING:
     from loom.core.job.job import Job
+    from loom.core.use_case.factory import UseCaseFactory
     from loom.core.use_case.use_case import UseCase
 
 ResultT = TypeVar("ResultT")
@@ -34,6 +42,11 @@ _LOG_FAIL = "[FAIL]"
 _STATUS_SUCCESS = "success"
 _STATUS_FAILURE = "failure"
 _STATUS_RULE_FAILURE = "rule_failure"
+_ERROR_KIND_BEGIN = "begin"
+_ERROR_KIND_BUSINESS = "business"
+_ERROR_KIND_COMMIT = "commit"
+_ERROR_KIND_CANCELLED = "cancelled"
+_ERROR_KIND_POST_COMMIT = "post_commit"
 
 
 class ParameterBindingError(ValueError):
@@ -55,6 +68,35 @@ class _ExecutionInputs:
     identity: Identity | None = None
 
 
+@dataclass(slots=True)
+class _ExecutionState:
+    """Identity, timings and current phase of one execution.
+
+    ``phase`` names the lifecycle step in flight so a failure can be
+    reported with the ``error_kind`` of the step that raised.
+    """
+
+    use_case_name: str
+    trace_id: str | None
+    logger: LoggerPort
+    start: float = field(default_factory=time.perf_counter)
+    phase: str = _ERROR_KIND_BEGIN
+    pipeline_ms: float | None = None
+    commit_ms: float | None = None
+
+    def elapsed_ms(self) -> float:
+        return (time.perf_counter() - self.start) * 1000
+
+    def error_kind(self, error: BaseException) -> str:
+        if isinstance(error, asyncio.CancelledError):
+            return _ERROR_KIND_CANCELLED
+        if isinstance(error, PostCommitError):
+            # Raised by the drain of an inner execution that owned its own
+            # unit of work: the failure is not this execution's business logic.
+            return _ERROR_KIND_POST_COMMIT
+        return self.phase
+
+
 class RuntimeExecutor:
     """Executes UseCases from their compiled ExecutionPlan without reflection.
 
@@ -62,25 +104,33 @@ class RuntimeExecutor:
     through the fixed pipeline: bind params → build command → load entities
     → apply computes → check rules → call execute.
 
-    Optionally manages a :class:`~loom.core.uow.abc.UnitOfWork` lifecycle
-    around each execution when a ``uow_factory`` is provided.  Nested calls
-    detected via a ``contextvars.ContextVar`` share the outer transaction and
-    never open an additional UoW.
+    Owns the execution lifecycle around that pipeline.  When a
+    ``uow_factory`` is provided, each top-level execution opens a
+    :class:`~loom.core.uow.abc.UnitOfWork` through its context-manager
+    protocol and closes it the same way: commit on success, rollback on any
+    exception, cancellation included.  Nested calls detected via a
+    ``contextvars.ContextVar`` share the outer transaction and never open an
+    additional UoW.  Post-commit actions (job dispatches) are queued on a
+    :class:`~loom.core.engine.post_commit.PostCommitChannel` owned by the
+    execution that owns the unit of work (or by the outermost execution when
+    there is none) and run once the unit of work has closed.
 
     No signature inspection occurs at runtime. All structural information
     comes from the cached ExecutionPlan produced by UseCaseCompiler.
 
-    Emits ``RuntimeEvent`` objects to the optional ``MetricsAdapter`` at
-    key lifecycle points (start, done, error). Enriches log calls with
-    structured fields (``usecase``, ``duration_ms``, ``status``) for
-    structured log consumers.
+    Emits ``RuntimeEvent`` objects to the optional ``MetricsAdapter``:
+    ``EXEC_START`` before the unit of work opens and exactly one terminal
+    event, ``EXEC_DONE`` once the unit of work has committed and closed or
+    ``EXEC_ERROR`` with the ``error_kind`` of the step that failed.
+    Enriches log calls with structured fields (``usecase``,
+    ``duration_ms``, ``status``) for structured log consumers.
 
     Args:
         compiler: Compiler used to retrieve cached plans.
         uow_factory: Optional UoW factory.  When provided, each top-level
-            :meth:`execute` call is wrapped in a single atomic transaction
-            (begin → commit on success, rollback on exception).  Nested
-            executions within the same async context reuse the outer UoW.
+            :meth:`execute` call is wrapped in a single atomic transaction.
+            Nested executions within the same async context reuse the outer
+            UoW.
         debug_execution: When ``True``, emits ``[STEP]`` logs for every
             pipeline stage. Defaults to ``False`` (summary logs only).
         logger: Optional logger. Defaults to the framework logger.
@@ -120,6 +170,44 @@ class RuntimeExecutor:
         self._logger = logger or get_logger(__name__)
         self._metrics = metrics
         self._repo_resolver = repo_resolver
+
+    async def run(
+        self,
+        use_case_type: type[Compilable],
+        *,
+        factory: UseCaseFactory,
+        params: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+        dependencies: dict[type[Any], Any] | None = None,
+        load_overrides: dict[type[Any], Any] | None = None,
+        read_only: bool = False,
+        identity: Identity | None = None,
+    ) -> Any:
+        """Build ``use_case_type`` through ``factory`` and execute it.
+
+        Args:
+            use_case_type: Compiled use case or job class to build and run.
+            factory: Factory that constructs the instance with its dependencies.
+            params: Primitive parameter values keyed by name.
+            payload: Raw dict for command construction via ``Input()``.
+            dependencies: Mapping of entity type to repository for the load steps.
+            load_overrides: Pre-loaded entities by type, bypassing repo calls.
+            read_only: When ``True``, no unit of work is opened.
+            identity: Verified caller for this execution.
+
+        Returns:
+            The result produced by ``execute()``.
+        """
+        instance = factory.build(use_case_type)
+        return await self.execute(
+            instance,
+            params=params,
+            payload=payload,
+            dependencies=dependencies,
+            load_overrides=load_overrides,
+            read_only=read_only,
+            identity=identity,
+        )
 
     @overload
     async def execute(
@@ -178,9 +266,13 @@ class RuntimeExecutor:
         :class:`~loom.core.job.job.Job` instances are valid inputs.
 
         When a ``uow_factory`` was provided at construction and no UoW is
-        already active in the current async context, opens a fresh UoW
-        (begin), runs the pipeline, and commits on success or rolls back on
-        any exception, cancellation included.  Nested calls reuse the existing UoW transparently.
+        already active in the current async context, enters a fresh UoW,
+        runs the pipeline, and exits it: commit on success, rollback on any
+        exception, cancellation included.  Nested calls reuse the existing
+        UoW transparently.  Post-commit actions queued during the execution
+        run after the UoW has closed; when they fail the result is a
+        :class:`~loom.core.engine.post_commit.PostCommitError` and the
+        transaction stays committed.
 
         Args:
             compilable: Constructed instance to execute.
@@ -208,14 +300,10 @@ class RuntimeExecutor:
             NotFound: If a Load step finds no entity in the repository.
             Unauthenticated: If the plan declares ``Caller()`` and no identity
                 was supplied.
+            loom.core.engine.post_commit.PostCommitError: If a post-commit
+                action failed after the unit of work committed.
         """
-        uc_type = type(compilable)
-        plan = uc_type.__execution_plan__
-        if plan is None:
-            plan = self._compiler.compile(uc_type)
-        uc_name = uc_type.__qualname__
-
-        start = time.perf_counter()
+        plan = self._plan_for(type(compilable))
         inputs = _ExecutionInputs(
             params=params,
             payload=payload,
@@ -223,35 +311,114 @@ class RuntimeExecutor:
             load_overrides=load_overrides,
             identity=identity,
         )
+        owned_factory = self._factory_to_own(read_only or plan.read_only)
+        return await self._run_lifecycle(plan, compilable, inputs, owned_factory)
 
-        _is_read_only = read_only or plan.read_only
-        _owns_uow = (
-            self._uow_factory is not None and _active_uow.get() is None and not _is_read_only
-        )
+    def _factory_to_own(self, read_only: bool) -> UnitOfWorkFactory | None:
+        """Return the factory this execution opens a unit of work from, if any."""
+        if read_only or _active_uow.get() is not None:
+            return None
+        return self._uow_factory
 
-        if not _owns_uow:
-            return await self._run_pipeline(plan, compilable, uc_name, start, inputs)
+    def _plan_for(self, uc_type: type[Compilable]) -> ExecutionPlan:
+        """Return the plan compiled for exactly ``uc_type``, compiling on demand.
 
-        uow = self._uow_factory.create()  # type: ignore[union-attr]
-        token = _active_uow.set(uow)
+        ``__execution_plan__`` is read from the class's own namespace, not
+        through the MRO: a subclass must never run under its parent's plan.
+        """
+        plan = uc_type.__dict__.get("__execution_plan__")
+        if isinstance(plan, ExecutionPlan):
+            return plan
+        return self._compiler.compile(uc_type)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def _run_lifecycle(
+        self,
+        plan: ExecutionPlan,
+        compilable: Compilable,
+        inputs: _ExecutionInputs,
+        owned_factory: UnitOfWorkFactory | None,
+    ) -> Any:
+        """Run one execution: start event, unit of work, one terminal event, drain."""
+        state = self._begin_execution(plan.use_case_type.__qualname__)
+        channel = PostCommitChannel() if owned_factory or active_channel() is None else None
+        channel_token = bind_channel(channel) if channel is not None else None
         try:
-            await uow.begin()
-            result: Any = await self._run_pipeline(plan, compilable, uc_name, start, inputs)
-            await uow.commit()
-            await flush_pending_dispatches()
-            return result
-        except BaseException:
-            # ``BaseException``: a cancellation must roll back too, or a use
-            # case cut mid-flight leaves its transaction begun and never
-            # closed.  The rollback is shielded so a second cancellation
-            # arriving while it runs lets it finish instead of cutting it.
-            try:
-                await asyncio.shield(uow.rollback())
-            finally:
-                clear_pending_dispatches()
+            if owned_factory is None:
+                result = await self._run_pipeline(state, plan, compilable, inputs)
+            else:
+                result = await self._run_in_unit_of_work(
+                    owned_factory, state, plan, compilable, inputs
+                )
+        except BaseException as exc:
+            # ``BaseException``: a cancellation is a terminal outcome too,
+            # accounted for and re-raised.
+            self._discard(channel)
+            self._handle_failure(state, exc)
             raise
         finally:
+            self._unbind(channel_token)
+        self._handle_success(state)
+        if channel is not None:
+            await channel.drain(committed=owned_factory is not None)
+        return result
+
+    async def _run_in_unit_of_work(
+        self,
+        factory: UnitOfWorkFactory,
+        state: _ExecutionState,
+        plan: ExecutionPlan,
+        compilable: Compilable,
+        inputs: _ExecutionInputs,
+    ) -> Any:
+        """Enter a fresh unit of work, run the pipeline inside it, exit it."""
+        uow = factory.create()
+        await uow.__aenter__()
+        token = _active_uow.set(uow)
+        try:
+            result = await self._run_pipeline_guarded(uow, state, plan, compilable, inputs)
+            await self._exit_committing(uow, state)
+        finally:
             _active_uow.reset(token)
+        return result
+
+    async def _run_pipeline_guarded(
+        self,
+        uow: UnitOfWork,
+        state: _ExecutionState,
+        plan: ExecutionPlan,
+        compilable: Compilable,
+        inputs: _ExecutionInputs,
+    ) -> Any:
+        """Run the pipeline; on any failure exit the unit of work with it."""
+        try:
+            return await self._run_pipeline(state, plan, compilable, inputs)
+        except BaseException as exc:
+            # The adapter rolls back and closes; it shields its own driver I/O.
+            await uow.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+
+    @staticmethod
+    async def _exit_committing(uow: UnitOfWork, state: _ExecutionState) -> None:
+        state.phase = _ERROR_KIND_COMMIT
+        started = time.perf_counter()
+        try:
+            await uow.__aexit__(None, None, None)
+        finally:
+            state.commit_ms = (time.perf_counter() - started) * 1000
+
+    @staticmethod
+    def _discard(channel: PostCommitChannel | None) -> None:
+        if channel is not None:
+            channel.discard()
+
+    @staticmethod
+    def _unbind(token: Token[PostCommitChannel | None] | None) -> None:
+        if token is not None:
+            reset_channel(token)
 
     # ------------------------------------------------------------------
     # Pipeline
@@ -259,48 +426,23 @@ class RuntimeExecutor:
 
     async def _run_pipeline(
         self,
+        state: _ExecutionState,
         plan: ExecutionPlan,
         compilable: Compilable,
-        uc_name: str,
-        start: float,
         inputs: _ExecutionInputs,
     ) -> Any:
-        trace_id, logger = self._begin_execution(uc_name)
-
+        """Run the compiled pipeline and record its duration; emits no event."""
+        state.phase = _ERROR_KIND_BUSINESS
+        started = time.perf_counter()
         try:
-            result = await self._run_core_pipeline(plan, compilable, inputs)
+            return await self._run_core_pipeline(plan, compilable, inputs)
+        finally:
+            state.pipeline_ms = (time.perf_counter() - started) * 1000
 
-        except RuleViolations as exc:
-            self._handle_rule_failure(
-                logger=logger,
-                use_case_name=uc_name,
-                start=start,
-                error=exc,
-                trace_id=trace_id,
-            )
-            raise
-
-        except Exception as exc:
-            self._handle_failure(
-                logger=logger,
-                use_case_name=uc_name,
-                start=start,
-                error=exc,
-                trace_id=trace_id,
-            )
-            raise
-
-        self._handle_success(
-            logger=logger,
-            use_case_name=uc_name,
-            start=start,
-            trace_id=trace_id,
-        )
-        return result
-
-    def _begin_execution(self, use_case_name: str) -> tuple[str | None, LoggerPort]:
+    def _begin_execution(self, use_case_name: str) -> _ExecutionState:
         trace_id = get_trace_id()
         logger = self._logger.bind(trace_id=trace_id) if trace_id else self._logger
+        state = _ExecutionState(use_case_name=use_case_name, trace_id=trace_id, logger=logger)
         logger.info(f"{_LOG_EXEC} {use_case_name}", usecase=use_case_name)
         self._emit(
             RuntimeEvent(
@@ -309,7 +451,7 @@ class RuntimeExecutor:
                 trace_id=trace_id,
             )
         )
-        return trace_id, logger
+        return state
 
     async def _run_core_pipeline(
         self,
@@ -340,83 +482,69 @@ class RuntimeExecutor:
             return await execute_fn(**bound)
         return execute_fn(**bound)
 
-    def _handle_rule_failure(
-        self,
-        *,
-        logger: LoggerPort,
-        use_case_name: str,
-        start: float,
-        error: RuleViolations,
-        trace_id: str | None,
-    ) -> None:
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.warning(
-            f"{_LOG_FAIL} {use_case_name}",
-            usecase=use_case_name,
-            duration_ms=elapsed_ms,
-            status=_STATUS_RULE_FAILURE,
-        )
+    def _handle_failure(self, state: _ExecutionState, error: BaseException) -> None:
+        elapsed_ms = state.elapsed_ms()
+        error_kind = state.error_kind(error)
+        status = _STATUS_RULE_FAILURE if isinstance(error, RuleViolations) else _STATUS_FAILURE
+        self._log_failure(state, error, status, elapsed_ms, error_kind)
         self._emit(
             RuntimeEvent(
                 kind=EventKind.EXEC_ERROR,
-                use_case_name=use_case_name,
+                use_case_name=state.use_case_name,
                 duration_ms=elapsed_ms,
-                status=_STATUS_RULE_FAILURE,
+                status=status,
                 error=error,
-                trace_id=trace_id,
+                trace_id=state.trace_id,
+                error_kind=error_kind,
+                pipeline_ms=state.pipeline_ms,
+                commit_ms=state.commit_ms,
             )
         )
 
-    def _handle_failure(
-        self,
-        *,
-        logger: LoggerPort,
-        use_case_name: str,
-        start: float,
-        error: Exception,
-        trace_id: str | None,
+    @staticmethod
+    def _log_failure(
+        state: _ExecutionState,
+        error: BaseException,
+        status: str,
+        elapsed_ms: float,
+        error_kind: str,
     ) -> None:
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.error(
-            f"{_LOG_FAIL} {use_case_name}",
-            usecase=use_case_name,
+        message = f"{_LOG_FAIL} {state.use_case_name}"
+        if status == _STATUS_RULE_FAILURE:
+            state.logger.warning(
+                message,
+                usecase=state.use_case_name,
+                duration_ms=elapsed_ms,
+                status=status,
+                error_kind=error_kind,
+            )
+            return
+        state.logger.error(
+            message,
+            usecase=state.use_case_name,
             duration_ms=elapsed_ms,
-            status=_STATUS_FAILURE,
+            status=status,
+            error_kind=error_kind,
             error=str(error),
         )
-        self._emit(
-            RuntimeEvent(
-                kind=EventKind.EXEC_ERROR,
-                use_case_name=use_case_name,
-                duration_ms=elapsed_ms,
-                status=_STATUS_FAILURE,
-                error=error,
-                trace_id=trace_id,
-            )
-        )
 
-    def _handle_success(
-        self,
-        *,
-        logger: LoggerPort,
-        use_case_name: str,
-        start: float,
-        trace_id: str | None,
-    ) -> None:
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.info(
+    def _handle_success(self, state: _ExecutionState) -> None:
+        elapsed_ms = state.elapsed_ms()
+        state.logger.info(
             f"{_LOG_DONE} {elapsed_ms:.1f}ms",
-            usecase=use_case_name,
+            usecase=state.use_case_name,
             duration_ms=elapsed_ms,
             status=_STATUS_SUCCESS,
         )
         self._emit(
             RuntimeEvent(
                 kind=EventKind.EXEC_DONE,
-                use_case_name=use_case_name,
+                use_case_name=state.use_case_name,
                 duration_ms=elapsed_ms,
                 status=_STATUS_SUCCESS,
-                trace_id=trace_id,
+                trace_id=state.trace_id,
+                pipeline_ms=state.pipeline_ms,
+                commit_ms=state.commit_ms,
             )
         )
 

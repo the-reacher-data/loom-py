@@ -109,6 +109,10 @@ the host, in this order:
 A readiness probe never raises: log the failure and answer `False`, so the
 route answers `503 degraded` instead of `500`.
 
+See [Execution lifecycle](use-case-dsl.md#execution-lifecycle) for how the
+executor drives the unit of work `uow_factory` produces — commit, rollback,
+and the post-commit actions that run once it has closed.
+
 ## Capabilities and the gate
 
 Repositories declare what they can do by inheriting capability protocols:
