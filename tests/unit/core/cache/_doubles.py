@@ -311,7 +311,20 @@ class WritableRepository(CountingRepository[RowT], Generic[RowT]):
     integer-keyed rows (:class:`Widget`, :class:`CodeWidget`).  The writes do
     not publish anything: the cached wrapper around this double is what
     turns them into mutation events.
+
+    Attributes:
+        all_names_calls: Number of ``all_names`` calls received.
     """
+
+    def __init__(self, rows: Sequence[RowT], row_type: type[RowT]) -> None:
+        super().__init__(rows, row_type)
+        self.all_names_calls = 0
+
+    @cache_query(scope="list")
+    async def all_names(self) -> list[str]:
+        """List-scoped cached read over every stored row."""
+        self.all_names_calls += 1
+        return [row.name for row in self.storage.values()]
 
     async def create(self, data: WidgetCreate) -> RowT:
         row = self._new_row(data)
@@ -348,7 +361,7 @@ class ParentRepository(CountingRepository[Widget]):
     """Counting double for an entity whose reads depend on ``widget`` rows."""
 
     entity_name = "parent"
-    depends_on = ("widgets:parent_id",)
+    depends_on = (f"{CountingRepository.entity_name}:parent_id",)
 
 
 class RestrictedFilterRepository(CountingRepository[RowT], Generic[RowT]):

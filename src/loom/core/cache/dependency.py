@@ -11,7 +11,15 @@ from loom.core.repository.mutation import MutationEvent
 
 
 class GenerationalDependencyResolver(DependencyResolver, BatchFingerprintResolver):
-    """Generational tags with monotonic counters in cache backend."""
+    """Generational tags with monotonic counters in cache backend.
+
+    A mutation bumps only the tags it affects (see :meth:`bump_from_events`),
+    so updating one row leaves every other cached row of the same entity
+    warm.  The bare ``entity`` tag stays in every key's tag list but the
+    framework never bumps it: it is the manual entity-wide flush handle.  An
+    operator increments ``tag:<entity>`` by hand to evict every key of that
+    entity at once.
+    """
 
     def __init__(self, cache: CacheBackend) -> None:
         """Initialise the resolver with a cache backend for counter storage.
@@ -81,17 +89,28 @@ class GenerationalDependencyResolver(DependencyResolver, BatchFingerprintResolve
         return stable_hash("|".join("0" if value is None else str(value) for value in counters))
 
     async def bump_from_events(self, events: tuple[MutationEvent, ...]) -> None:
-        """Increment generation counters for all tags affected by mutation events.
+        """Increment generation counters for the tags affected by mutation events.
+
+        Every event bumps ``entity:list``; an update or delete also bumps
+        ``entity:id:<k>`` for each of its ids; the event's own ``tags`` are
+        bumped as they come.  The bare ``entity`` tag is never bumped by the
+        framework: it is reserved for a manual entity-wide flush.
 
         Args:
             events: Mutation events to process.
         """
         bump_keys: set[str] = set()
         for event in events:
-            bump_keys.add(self._tag_key(event.entity))
             bump_keys.add(self._tag_key(f"{event.entity}:list"))
-            for entity_id in event.ids:
-                bump_keys.add(self._tag_key(f"{event.entity}:id:{entity_id}"))
+            # A create skips its ids: no per-id key can exist for a row that
+            # did not exist, since every backend's create is a strict insert
+            # and the wrapper does not cache absence. If negative caching
+            # returns, creates must bump per-id tags again. The one gap is a
+            # client-supplied key read inside a transaction that rolled back
+            # and then re-created: that entry lives until its TTL.
+            if event.op != "create":
+                for entity_id in event.ids:
+                    bump_keys.add(self._tag_key(f"{event.entity}:id:{entity_id}"))
             for tag in event.tags:
                 bump_keys.add(self._tag_key(tag))
         for key in bump_keys:

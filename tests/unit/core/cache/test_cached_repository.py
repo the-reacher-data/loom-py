@@ -456,7 +456,7 @@ class TestCachedRepository:
             (
                 MutationEvent(
                     entity=wrapped_repository.entity_name,
-                    op="create",
+                    op="update",
                     ids=(1,),
                 ),
             )
@@ -467,6 +467,30 @@ class TestCachedRepository:
         repo = wrapped_repository._repository
         assert isinstance(repo, _FakeRepository)
         assert repo.custom_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_custom_method_cache_survives_a_create_event_for_its_id(
+        self,
+        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
+    ) -> None:
+        _ = await wrapped_repository.create(_Create(name="entity-1"))
+        first = await wrapped_repository.count_related_notes(1)
+
+        await wrapped_repository.on_transaction_committed(
+            (
+                MutationEvent(
+                    entity=wrapped_repository.entity_name,
+                    op="create",
+                    ids=(1,),
+                ),
+            )
+        )
+
+        second = await wrapped_repository.count_related_notes(1)
+        assert second == first
+        repo = wrapped_repository._repository
+        assert isinstance(repo, _FakeRepository)
+        assert repo.custom_calls == 1
 
     @pytest.mark.asyncio
     async def test_list_with_query_offset_uses_cache_aside(
@@ -665,15 +689,16 @@ def _generation(
     wrapped: CachedRepository[_EntityOut, _Create, _Update, int],
     resolver: GenerationalDependencyResolver,
 ) -> int:
-    """Read the raw generation counter of the wrapped entity's tag.
+    """Read the raw generation counter of the wrapped entity's ``:list`` tag.
 
-    Reserved for the one test that must observe a value *mid-drain*, from
-    inside another queued action: everywhere else, ``resolver.events`` is
-    already the public, equivalent observation of whether the bump ran.
+    That tag is the one every mutation event bumps.  Reserved for the one
+    test that must observe a value *mid-drain*, from inside another queued
+    action: everywhere else, ``resolver.events`` is already the public,
+    equivalent observation of whether the bump ran.
     """
     cache = wrapped._cache
     assert isinstance(cache, _MemoryCacheBackend)
-    return int(cache.data.get(resolver._tag_key(wrapped.entity_name)) or 0)
+    return int(cache.data.get(resolver._tag_key(f"{wrapped.entity_name}:list")) or 0)
 
 
 @contextmanager
