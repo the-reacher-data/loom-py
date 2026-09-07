@@ -20,9 +20,28 @@ jobs:
   release:
     permissions:
       contents: write
-      id-token: write
-    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@a6721128661fe10035ef27aecd8b4ed8d8531e6b # v1.2.0
+    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@c47e17856207952f00ff3fd7974873723949d3e2 # v1.2.1
     with:
-      publish-to-pypi: true
+      build-distribution: true
       package-name: loom-kernel
       merge-sha: ${{ inputs.merge_sha || '' }}
+
+  # PyPI's trusted publishing does not support reusable workflows: the token
+  # minted inside one names that workflow, not this file, and the publisher on
+  # PyPI names this file. So the upload lives here, on the distribution the
+  # called workflow left behind.
+  publish:
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: distributions
+          path: dist
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 2026-07-28 (handles Metadata-Version 2.5)
