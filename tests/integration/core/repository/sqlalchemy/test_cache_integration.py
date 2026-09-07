@@ -1,32 +1,69 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import AsyncGenerator
-from typing import Any, cast
+from collections.abc import AsyncGenerator, Sequence
+from datetime import date, timedelta
+from typing import Any, NamedTuple, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from loom.core.backend.sqlalchemy import compile_all, get_compiled
 from loom.core.cache import (
+    CacheBackend,
     CacheConfig,
     CachedRepository,
     CacheGateway,
     GenerationalDependencyResolver,
 )
+from loom.core.cache.keys import entity_key
+from loom.core.command import Command
+from loom.core.model import BaseModel, ColumnField
 from loom.core.repository import Repository
 from loom.core.repository.abc import PageParams
 from loom.core.repository.mutation import MutationEvent
+from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.testing import RepositoryIntegrationHarness, ScenarioDict
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.review.schemas import CreateProductReview
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
 
 
+class _Gateways(NamedTuple):
+    # ``CacheGateway`` overloads ``get_value`` while ``CacheBackend`` declares it
+    # once, so a type checker does not see the gateway as a structural match.
+    # It is one at runtime; the cast keeps the fixture honest about that.
+    data: CacheBackend
+    counters: CacheBackend
+    config: CacheConfig
+
+
+class DatedEvent(BaseModel):
+    """Model whose primary key msgpack renders as a string."""
+
+    __tablename__ = "dated_events"
+
+    id: date = ColumnField(primary_key=True)
+    label: str = ColumnField(length=32)
+
+
+class CreateDatedEvent(Command, frozen=True):
+    """Creation payload for :class:`DatedEvent`."""
+
+    id: date
+    label: str
+
+
+class UpdateDatedEvent(Command, frozen=True):
+    """Update payload for :class:`DatedEvent`."""
+
+    label: str
+
+
 @pytest.fixture
-async def cached_integration_repo(
-    integration_context: RepositoryIntegrationHarness,
+async def cache_gateways(
     cache_backend_kind: str,
-) -> AsyncGenerator[CachedRepository[Product, CreateProduct, UpdateProduct, int], None]:
+) -> AsyncGenerator[_Gateways, None]:
     namespace = "integration_cache"
     counter_namespace = "integration_cache_counters"
 
@@ -76,7 +113,6 @@ async def cached_integration_repo(
 
     data_gateway = CacheGateway(alias="test_cache")
     counter_gateway = CacheGateway(alias="test_counters")
-    resolver = GenerationalDependencyResolver(counter_gateway)
     cache_config = CacheConfig(
         enabled=True,
         aiocache_alias="test_cache",
@@ -84,17 +120,12 @@ async def cached_integration_repo(
         default_ttl=120,
         default_list_ttl=60,
     )
-    repository = CachedRepository(
-        repository=cast(
-            Repository[Product, CreateProduct, UpdateProduct, int],
-            integration_context.product.repository,
-        ),
-        config=cache_config,
-        cache=data_gateway,
-        dependency_resolver=resolver,
-    )
     try:
-        yield repository
+        yield _Gateways(
+            cast(CacheBackend, data_gateway),
+            cast(CacheBackend, counter_gateway),
+            cache_config,
+        )
     finally:
         await data_gateway.clear()
         await counter_gateway.clear()
@@ -102,22 +133,62 @@ async def cached_integration_repo(
         await counter_gateway.close()
 
 
+@pytest.fixture
+def cached_integration_repo(
+    integration_context: RepositoryIntegrationHarness,
+    cache_gateways: _Gateways,
+) -> CachedRepository[Product, CreateProduct, UpdateProduct, int]:
+    return CachedRepository(
+        repository=cast(
+            Repository[Product, CreateProduct, UpdateProduct, int],
+            integration_context.product.repository,
+        ),
+        config=cache_gateways.config,
+        cache=cache_gateways.data,
+        dependency_resolver=GenerationalDependencyResolver(cache_gateways.counters),
+    )
+
+
+@pytest.fixture
+async def cached_dated_repo(
+    integration_context: RepositoryIntegrationHarness,
+    cache_gateways: _Gateways,
+) -> CachedRepository[DatedEvent, CreateDatedEvent, UpdateDatedEvent, date]:
+    compile_all(DatedEvent)
+    compiled = get_compiled(DatedEvent)
+    assert compiled is not None
+    async with integration_context.session_manager.engine.begin() as connection:
+        await connection.run_sync(compiled.metadata.create_all)
+    repository: RepositorySQLAlchemy[DatedEvent, date] = RepositorySQLAlchemy(
+        session_manager=integration_context.session_manager, model=DatedEvent
+    )
+    return CachedRepository(
+        repository=cast(
+            Repository[DatedEvent, CreateDatedEvent, UpdateDatedEvent, date], repository
+        ),
+        config=cache_gateways.config,
+        cache=cache_gateways.data,
+        dependency_resolver=GenerationalDependencyResolver(cache_gateways.counters),
+    )
+
+
 @pytest.fixture(params=["memory", "redis-fake"])
 def cache_backend_kind(request: Any) -> str:
     return cast(str, request.param)
 
 
-class TestCacheIntegration:
-    @staticmethod
-    def _spy_base_repo_method(
-        cached_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
-        method_name: str,
-    ) -> Any:
-        base_repo = cached_repo._repository
-        original = getattr(base_repo, method_name)
-        mocked = AsyncMock(wraps=original)
-        return patch.object(base_repo, method_name, mocked)
+def _spy_base_repo_method(
+    cached_repo: CachedRepository[Any, Any, Any, Any],
+    method_name: str,
+) -> Any:
+    """Patch *method_name* on the wrapped repository with a call-counting spy."""
+    base_repo = cached_repo._repository
+    original = getattr(base_repo, method_name)
+    mocked = AsyncMock(wraps=original)
+    return patch.object(base_repo, method_name, mocked)
 
+
+class TestCacheIntegration:
     @pytest.mark.asyncio
     async def test_get_by_id_cached_and_invalidated_on_update(
         self,
@@ -130,7 +201,7 @@ class TestCacheIntegration:
         product_id = 1
 
         # Act / Assert
-        with self._spy_base_repo_method(cached_integration_repo, "get_by_id") as get_by_id_spy:
+        with _spy_base_repo_method(cached_integration_repo, "get_by_id") as get_by_id_spy:
             first = await cached_integration_repo.get_by_id(product_id)
             second = await cached_integration_repo.get_by_id(product_id)
 
@@ -162,7 +233,7 @@ class TestCacheIntegration:
         page = PageParams(page=1, limit=2)
 
         # Act / Assert
-        with self._spy_base_repo_method(cached_integration_repo, "list_paginated") as list_spy:
+        with _spy_base_repo_method(cached_integration_repo, "list_paginated") as list_spy:
             first = await cached_integration_repo.list_paginated(page)
             second = await cached_integration_repo.list_paginated(page)
 
@@ -188,7 +259,7 @@ class TestCacheIntegration:
         product_id = 1
 
         # Act / Assert
-        with self._spy_base_repo_method(cached_integration_repo, "get_by_id") as get_by_id_spy:
+        with _spy_base_repo_method(cached_integration_repo, "get_by_id") as get_by_id_spy:
             _ = await cached_integration_repo.get_by_id(product_id)
             _ = await cached_integration_repo.get_by_id(product_id)
 
@@ -198,6 +269,79 @@ class TestCacheIntegration:
             assert deleted is True
             assert after_delete is None
             assert get_by_id_spy.await_count == 2
+
+
+class TestCachedIndexRefillIntegration:
+    """A warm index that lost entity entries is refilled with one query."""
+
+    @staticmethod
+    async def _evict_entities(
+        cached_repo: CachedRepository[Any, Any, Any, Any],
+        ids: Sequence[object],
+    ) -> None:
+        resolver = cached_repo._resolver
+        cache = cached_repo._cache
+        for entity_id in ids:
+            tags = resolver.entity_tags(cached_repo.entity_name, entity_id)
+            tags.extend(cached_repo._entity_dependency_tags(entity_id))
+            fingerprint = await resolver.fingerprint(tags)
+            await cache.delete(
+                entity_key(cached_repo.entity_name, entity_id, "default", fingerprint)
+            )
+
+    @pytest.mark.asyncio
+    async def test_partially_warm_index_reloads_the_missing_ids_with_one_query(
+        self,
+        cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
+        integration_context: RepositoryIntegrationHarness,
+        scenario_catalog_with_price_20: ScenarioDict,
+    ) -> None:
+        await integration_context.load(scenario_catalog_with_price_20)
+        page = PageParams(page=1, limit=3)
+        warm = await cached_integration_repo.list_paginated(page)
+        assert [item.id for item in warm.items] == [1, 2, 3]
+        await self._evict_entities(cached_integration_repo, (1, 3))
+
+        with (
+            _spy_base_repo_method(cached_integration_repo, "list_with_query") as query_spy,
+            _spy_base_repo_method(cached_integration_repo, "list_paginated") as list_spy,
+            _spy_base_repo_method(cached_integration_repo, "get_by_id") as get_spy,
+        ):
+            refilled = await cached_integration_repo.list_paginated(page)
+
+            assert query_spy.await_count == 1
+            assert list_spy.await_count == 0
+            assert get_spy.await_count == 0
+
+        assert [(item.id, item.name) for item in refilled.items] == [
+            (item.id, item.name) for item in warm.items
+        ]
+
+    @pytest.mark.asyncio
+    async def test_refills_a_date_primary_key_that_msgpack_degraded_to_a_string(
+        self,
+        cached_dated_repo: CachedRepository[DatedEvent, CreateDatedEvent, UpdateDatedEvent, date],
+    ) -> None:
+        days = [date(2020, 1, 1) + timedelta(days=offset) for offset in range(3)]
+        for offset, day in enumerate(days):
+            await cached_dated_repo.create(CreateDatedEvent(id=day, label=f"e{offset}"))
+        page = PageParams(page=1, limit=3)
+        warm = await cached_dated_repo.list_paginated(page)
+        assert [item.id for item in warm.items] == days
+        await self._evict_entities(cached_dated_repo, days[:2])
+
+        with (
+            _spy_base_repo_method(cached_dated_repo, "list_with_query") as query_spy,
+            _spy_base_repo_method(cached_dated_repo, "list_paginated") as list_spy,
+        ):
+            refilled = await cached_dated_repo.list_paginated(page)
+
+            assert query_spy.await_count == 1
+            assert list_spy.await_count == 0
+
+        assert [(item.id, item.label) for item in refilled.items] == [
+            (item.id, item.label) for item in warm.items
+        ]
 
 
 class TestRelatedInvalidationIntegration:
