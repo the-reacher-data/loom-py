@@ -85,6 +85,24 @@ class RepositorySQLAlchemy(  # type: ignore[misc]  # mypy/pyright can't resolve 
         self._init_struct_model()
         self.log = get_logger(__name__).bind(repository=self.__class__.__name__)
 
+    def has_caller_scoped_session(self) -> bool:
+        """Whether a read would run inside a session bound to the caller's context.
+
+        True inside a ``@transactional`` scope or a unit of work: the session
+        was opened by the caller, dies when the caller unwinds, and holds
+        writes only that caller can see.  False when the repository would open
+        and close a session of its own for the call.
+
+        Implements
+        :class:`~loom.core.repository.abc.session_scope.SupportsCallerScopedSession`.
+        The capability is provisional and expected to be superseded by a
+        neutral transaction marker; do not build on it.
+
+        Returns:
+            ``True`` when a caller-scoped session is bound to the context.
+        """
+        return get_active_session() is not None
+
     async def on_transaction_committed(self, events: tuple[MutationEvent, ...]) -> None:
         """Handle post-commit mutation events (cache invalidation hook)."""
         self.log.debug("RepositoryTransactionCommitted", mutation_count=len(events))

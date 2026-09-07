@@ -255,3 +255,40 @@ class TestTransactional:
 
         assert first is not second
         assert len(client.sessions) == 2
+
+
+class TestCallerScopedSessionProbe:
+    """The capability a wrapper reads before detaching a read into its own task.
+
+    A coalesced read runs in its own task and outlives the caller that started
+    it; inside the unit of work's transaction that session is closed by the
+    caller's teardown and holds writes nobody else may see.
+    """
+
+    async def test_it_reports_the_session_the_unit_of_work_publishes(self) -> None:
+        client = FakeMongoClient()
+        repository = _repository(client)
+        factory = _transactional(client)
+
+        assert repository.has_caller_scoped_session() is False
+
+        async with factory.create():
+            assert repository.has_caller_scoped_session() is True
+
+        assert repository.has_caller_scoped_session() is False
+
+    async def test_without_transactions_no_session_is_reported(self) -> None:
+        client = FakeMongoClient()
+        repository = _repository(client)
+        factory = MongoUnitOfWorkFactory.without_transactions()
+
+        async with factory.create():
+            assert repository.has_caller_scoped_session() is False
+
+    async def test_a_repository_with_the_default_provider_never_reports_one(self) -> None:
+        client = FakeMongoClient()
+        repository = RepositoryMongo(Article, client.collection("articles"))
+        factory = _transactional(client)
+
+        async with factory.create():
+            assert repository.has_caller_scoped_session() is False

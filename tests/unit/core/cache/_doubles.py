@@ -9,13 +9,16 @@ serializer: a cached index round-trips its ids through it, which turns a
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import date
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar
 from uuid import UUID
 
 import msgspec
 
+from loom.core.cache import CacheConfig, CachedRepository, GenerationalDependencyResolver
+from loom.core.cache.decorators import cache_query
 from loom.core.model import BaseModel, ColumnField
 from loom.core.repository import FilterParams, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import (
@@ -82,12 +85,16 @@ class CountingCacheBackend:
             it to simulate an eviction.
         multi_get_batches: Keys requested by each ``multi_get_values`` call.
         multi_set_batches: Keys written by each ``multi_set_values`` call.
+        set_ttls: TTL received by each ``set_value`` call, in order.
+        multi_set_ttls: TTL received by each ``multi_set_values`` call, in order.
     """
 
     def __init__(self) -> None:
         self.data: dict[str, bytes] = {}
         self.multi_get_batches: list[list[str]] = []
         self.multi_set_batches: list[list[str]] = []
+        self.set_ttls: list[int | None] = []
+        self.multi_set_ttls: list[int | None] = []
 
     @property
     def tag_multi_get_calls(self) -> int:
@@ -102,6 +109,8 @@ class CountingCacheBackend:
         """Forget the recorded batches, keeping the stored values."""
         self.multi_get_batches.clear()
         self.multi_set_batches.clear()
+        self.set_ttls.clear()
+        self.multi_set_ttls.clear()
 
     def _decode(self, key: str, target: type[T] | None) -> T | Any | None:
         raw = self.data.get(key)
@@ -115,7 +124,7 @@ class CountingCacheBackend:
         return self._decode(key, type)
 
     async def set_value(self, key: str, value: Any, ttl: int | None = None) -> None:
-        _ = ttl
+        self.set_ttls.append(ttl)
         self.data[key] = msgspec.msgpack.encode(value)
 
     async def multi_get_values(
@@ -128,7 +137,7 @@ class CountingCacheBackend:
         return [self._decode(key, type) for key in keys]
 
     async def multi_set_values(self, pairs: list[tuple[str, Any]], ttl: int | None = None) -> None:
-        _ = ttl
+        self.multi_set_ttls.append(ttl)
         self.multi_set_batches.append([key for key, _value in pairs])
         for key, value in pairs:
             self.data[key] = msgspec.msgpack.encode(value)
@@ -279,3 +288,85 @@ class RestrictedFilterRepository(CountingRepository[Widget]):
             if spec.field.split(".")[0] not in self.allowed_filter_fields:
                 raise UnsafeFilterError(spec.field)
         return await super().list_with_query(query, profile=profile)
+
+
+class GatedRepository(CountingRepository[Widget]):
+    """Repository double whose reads block until the test opens the gate.
+
+    Holding the reads inside the wrapper is what makes a stampede observable:
+    several callers can be in flight for the same key at the same time, which
+    a repository answering immediately never allows.
+
+    Attributes:
+        gate: Cleared at construction; every read waits on it.
+        failure: Raised by the reads once the gate opens, when set.
+        custom_calls: Number of ``find_names`` calls received.
+        completed_calls: Number of reads that got past the gate, which tells a
+            cancelled read apart from one that outlived its caller.
+        caller_scoped_session: Reported by ``has_caller_scoped_session``, as a
+            SQLAlchemy repository does inside a transaction.
+    """
+
+    def __init__(self, rows: Sequence[Widget]) -> None:
+        super().__init__(rows, Widget)
+        self.gate = asyncio.Event()
+        self.failure: Exception | None = None
+        self.custom_calls = 0
+        self.completed_calls = 0
+        self.caller_scoped_session = False
+
+    def has_caller_scoped_session(self) -> bool:
+        """Whether a read would run inside a session owned by the caller."""
+        return self.caller_scoped_session
+
+    async def get_by_id(self, obj_id: Any, profile: str = "default") -> Widget | None:
+        _ = profile
+        self.get_by_id_calls += 1
+        await self._pass_gate()
+        return self.storage.get(obj_id)
+
+    @cache_query(scope="list")
+    async def find_names(self, prefix: str) -> list[str]:
+        """Custom cached read, gated like ``get_by_id``."""
+        self.custom_calls += 1
+        await self._pass_gate()
+        return [row.name for row in self.storage.values() if row.name.startswith(prefix)]
+
+    async def _pass_gate(self) -> None:
+        await self.gate.wait()
+        if self.failure is not None:
+            raise self.failure
+        self.completed_calls += 1
+
+
+class CachedEnv(NamedTuple, Generic[RowT]):
+    """A cached repository together with the doubles it was built on."""
+
+    repository: CountingRepository[RowT]
+    backend: CountingCacheBackend
+    resolver: GenerationalDependencyResolver
+    wrapper: CachedRepository[RowT, WidgetCreate, WidgetUpdate, Any]
+
+
+def wrap_with_cache(
+    repository: CountingRepository[RowT],
+    config: CacheConfig,
+) -> CachedEnv[RowT]:
+    """Wrap *repository* in a cached repository over a counting backend.
+
+    Args:
+        repository: Inner repository double.
+        config: Cache configuration under test.
+
+    Returns:
+        The wrapper and every double it talks to.
+    """
+    backend = CountingCacheBackend()
+    resolver = GenerationalDependencyResolver(backend)
+    wrapper: CachedRepository[RowT, WidgetCreate, WidgetUpdate, Any] = CachedRepository(
+        repository,
+        config=config,
+        cache=backend,
+        dependency_resolver=resolver,
+    )
+    return CachedEnv(repository, backend, resolver, wrapper)

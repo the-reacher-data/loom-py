@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import DateTime  # noqa: F401
 
 from loom.core.repository.mutation import MutationEvent
+from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.transactional import record_mutation, transactional
 
 from .conftest import RepositoryWithTransactionalMethod, ServiceWithoutSessionManager
@@ -87,3 +88,42 @@ class TestTransactionalOwnerContract:
         message = str(excinfo.value)
         assert "ServiceWithoutSessionManager" in message
         assert "session_manager" in message
+
+
+class _ServiceProbingItsRepository:
+    """Service that asks its repository whether the session is the caller's."""
+
+    def __init__(self, session_manager: Any, repository: Any) -> None:
+        self.session_manager = session_manager
+        self.repository = repository
+        self.inside: bool | None = None
+
+    @transactional
+    async def execute(self) -> None:
+        self.inside = self.repository.has_caller_scoped_session()
+
+
+class TestCallerScopedSessionProbe:
+    """The probe a wrapper reads before detaching a read into its own task."""
+
+    async def test_it_reports_the_session_the_decorator_binds(
+        self, mock_session_manager: Any, dummy_model: type
+    ) -> None:
+        repository = RepositorySQLAlchemy(mock_session_manager, dummy_model)
+        service = _ServiceProbingItsRepository(mock_session_manager, repository)
+
+        assert repository.has_caller_scoped_session() is False
+
+        await service.execute()
+
+        assert service.inside is True
+
+    async def test_the_binding_does_not_leak_past_the_transaction(
+        self, mock_session_manager: Any, dummy_model: type
+    ) -> None:
+        repository = RepositorySQLAlchemy(mock_session_manager, dummy_model)
+        service = _ServiceProbingItsRepository(mock_session_manager, repository)
+
+        await service.execute()
+
+        assert repository.has_caller_scoped_session() is False

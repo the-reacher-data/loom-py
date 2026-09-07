@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Generic, cast
+from typing import Any, Generic, TypeVar, cast
 
 import msgspec
 
 from loom.core.cache._batching import REFILL_BATCH_SIZE, batched
+from loom.core.cache._single_flight import SingleFlight
 from loom.core.cache.abc.backend import CacheBackend
 from loom.core.cache.abc.config import CacheConfig
 from loom.core.cache.abc.dependency import BatchFingerprintResolver, DependencyResolver
@@ -38,6 +40,9 @@ from loom.core.repository.abc.query import (
 )
 from loom.core.repository.abc.repo_for import BulkCreatable
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
+from loom.core.repository.abc.session_scope import SupportsCallerScopedSession
+
+LoadT = TypeVar("LoadT")
 
 
 def _infer_otm_cache_dep(model: type, attr_name: str, rel: Relation) -> str | None:
@@ -114,6 +119,41 @@ class CachedRepository(
     :attr:`~loom.core.repository.abc.query.FilterOp.IN` on the primary key; a
     repository whose ``allowed_filter_fields`` excludes ``id`` is detected and
     served with per-id reads instead.
+
+    Concurrent misses of the same key on the entity read and on a
+    ``@cache_query`` read are coalesced inside the process: the first caller
+    loads and the rest await that result, so a burst on a hot key costs one
+    repository call.  Two conditions bound that:
+
+    * The wrapper must be application-scoped.  A wrapper built per request has
+      a coalescing group of one, so it never coalesces anything and only pays
+      the bookkeeping.
+    * Coalescing is skipped while the wrapped repository reports a
+      caller-scoped session (``has_caller_scoped_session()``), which is what a
+      ``@transactional`` scope or a unit of work binds.  A coalesced load runs
+      in its own task and outlives the caller that started it, so inside a
+      transaction it would query a session already closed by that caller's
+      teardown, and would serve another caller the uncommitted writes of the
+      first.  Inside a transaction the read runs inline.
+
+    Callers that miss together are served the *same object* by the coalesced
+    load, on the entity read as on a ``@cache_query`` read, while a caller
+    served from the cache gets a freshly decoded one; treat a cached result as
+    immutable, since a ``BaseModel`` struct is mutable unless declared frozen.
+
+    The cached list and query reads are deliberately left out of the
+    coalescing: their miss path is not a pure loader — it caches the page's
+    entities as a side effect — and its result feeds ``_load_items_from_index``,
+    which re-enters the coalesced entity read, so the herd is already collapsed
+    one level down.
+
+    Every TTL is spread inside
+    :attr:`~loom.core.cache.abc.config.CacheConfig.ttl_jitter` as it reaches
+    the backend, so two write calls do not choose the same expiry.  The spread
+    is per write call: a batch write (a cached page, an index refill) carries
+    one TTL for the whole batch because
+    :class:`~loom.core.cache.abc.backend.CacheBackend` takes one TTL per call,
+    so the rows of a single page still expire together.
     """
 
     def __init__(
@@ -132,6 +172,8 @@ class CachedRepository(
         self._entity_name = getattr(repository, "entity_name", fallback_name)
         self._depends_on = self._parse_dependency_specs(self._collect_dependency_specs(repository))
         self._id_type = self._resolve_id_type(repository)
+        self._single_flight = SingleFlight(self._log_abandoned_load)
+        self._rng = random.Random()
         self._log = get_logger(__name__).bind(repository=repository.__class__.__name__)
 
     @property
@@ -151,12 +193,10 @@ class CachedRepository(
             return self._to_output_from_cache(cached_payload)
 
         self._log.debug("CacheMissEntity", key=key)
-        loaded = await self._repository.get_by_id(obj_id, profile=profile)
-        if loaded is None:
-            return None
-        ttl = self._config.ttl_for_single(self.entity_name)
-        await self._cache.set_value(key, self._to_builtins(loaded), ttl=ttl)
-        return loaded
+        return await self._coalesced(
+            key,
+            lambda: self._load_and_store_entity(key, obj_id, profile),
+        )
 
     async def get_by(
         self,
@@ -238,7 +278,7 @@ class CachedRepository(
             if entity_id is not None
         ]
         index_to_store = _ListIndexPayload(ids=ids, total_count=page.total_count)
-        ttl = self._config.ttl_for_list(self.entity_name)
+        ttl = self._write_ttl(self._config.ttl_for_list(self.entity_name))
         await self._cache.set_value(index_key, index_to_store, ttl=ttl)
 
         await self._cache_entity_batch(page.items, profile=profile)
@@ -294,7 +334,7 @@ class CachedRepository(
             for entity_id in [self._extract_entity_id(item)]
             if entity_id is not None
         ]
-        ttl = self._config.ttl_for_list(self.entity_name)
+        ttl = self._write_ttl(self._config.ttl_for_list(self.entity_name))
         if isinstance(loaded, CursorResult):
             await self._cache.set_value(
                 query_key,
@@ -403,6 +443,60 @@ class CachedRepository(
     # Internal helpers
     # ------------------------------------------------------------------
 
+    async def _coalesced(self, key: str, loader: Callable[[], Awaitable[LoadT]]) -> LoadT:
+        """Run *loader* once per key, unless the caller owns the session it uses.
+
+        Coalescing detaches the load into its own task so it survives the
+        cancellation of the caller that started it.  Inside a caller-scoped
+        transaction that is exactly wrong: the task would inherit a session
+        that is closed when the caller unwinds, and a waiter from another
+        request would read the caller's uncommitted writes.  The load then runs
+        inline, as it did before coalescing existed.
+        """
+        if self._runs_in_caller_scoped_transaction():
+            return await loader()
+        return await self._single_flight.run(key, loader)
+
+    def _runs_in_caller_scoped_transaction(self) -> bool:
+        """Whether the wrapped repository reports a session owned by the caller.
+
+        The capability is optional: a repository that does not declare
+        :class:`~loom.core.repository.abc.session_scope.SupportsCallerScopedSession`
+        is taken to own the scope of its own reads.
+        """
+        repository = self._repository
+        if not isinstance(repository, SupportsCallerScopedSession):
+            return False
+        return repository.has_caller_scoped_session()
+
+    def _log_abandoned_load(self, key: str, error: BaseException) -> None:
+        self._log.warning("CacheLoadAbandoned", key=key, error=repr(error))
+
+    async def _load_and_store_entity(self, key: str, obj_id: IdT, profile: str) -> OutputT | None:
+        """Read one entity from the wrapped repository and cache it."""
+        loaded = await self._repository.get_by_id(obj_id, profile=profile)
+        if loaded is None:
+            return None
+        ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
+        await self._cache.set_value(key, self._to_builtins(loaded), ttl=ttl)
+        return loaded
+
+    def _write_ttl(self, ttl: int) -> int:
+        """Spread *ttl* inside the configured jitter band.
+
+        The resolved TTL is deterministic; the spread is applied only where the
+        value reaches the backend, so a burst of writes does not expire at the
+        same instant.  The result is never below one second, and with
+        ``ttl_jitter`` at zero it is the resolved value itself.  The generator
+        is owned by this wrapper, so seeding the process-wide ``random`` module
+        does not freeze every TTL in the process.
+        """
+        jitter = self._config.ttl_jitter
+        if jitter <= 0.0:
+            return ttl
+        spread = ttl * jitter
+        return max(1, round(ttl + self._rng.uniform(-spread, spread)))
+
     def _extract_entity_id(self, item: Any) -> object | None:
         """Read the primary key of *item*.
 
@@ -466,10 +560,18 @@ class CachedRepository(
                 self._log.debug("CacheHitCustomMethod", key=key, method=method_name)
                 return cached_payload
 
-            result = await method(*args, **kwargs)
-            await self._cache.set_value(key, self._to_builtins(result), ttl=ttl)
             self._log.debug("CacheMissCustomMethod", key=key, method=method_name)
-            return result
+
+            async def load() -> Any:
+                result = await method(*args, **kwargs)
+                await self._cache.set_value(
+                    key,
+                    self._to_builtins(result),
+                    ttl=self._write_ttl(ttl),
+                )
+                return result
+
+            return await self._coalesced(key, load)
 
         return wrapped
 
@@ -516,7 +618,7 @@ class CachedRepository(
 
     async def _refill_cache(self, entries: list[tuple[str, OutputT]]) -> None:
         """Write back only the entities that were missing, leaving warm TTLs alone."""
-        ttl = self._config.ttl_for_single(self.entity_name)
+        ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
         pairs = [(key, self._to_builtins(item)) for key, item in entries]
         await self._cache.multi_set_values(pairs, ttl=ttl)
 
@@ -585,7 +687,7 @@ class CachedRepository(
     async def _cache_entity_batch(self, items: Sequence[OutputT], profile: str) -> None:
         if not items:
             return
-        ttl = self._config.ttl_for_single(self.entity_name)
+        ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
         entity_ids = [getattr(item, "id", None) for item in items]
         tags_by_id = [
             self._resolver.entity_tags(self.entity_name, entity_id)
