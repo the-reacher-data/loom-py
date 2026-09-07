@@ -40,9 +40,10 @@ async def test_broker_failure_is_a_post_commit_error_after_a_committed_transacti
     case: LifecycleCase, executor: RuntimeExecutor, broker: Broker, metrics: Metrics, log: Log
 ) -> None:
     broker.failing.add("job-B")
+    action = Dispatching(broker)
 
     with pytest.raises(PostCommitError) as info:
-        await executor.execute(Dispatching(broker), params={"value": "job-B"})
+        await executor.execute(action, params={"value": "job-B"})
 
     assert info.value.committed is True
     assert [type(failure) for failure in info.value.failures] == [ConnectionError]
@@ -75,9 +76,10 @@ async def test_a_read_only_dispatch_failure_is_reported_as_not_committed(
 ) -> None:
     """A1: no unit of work was owned, so nothing committed and a retry is safe."""
     broker.failing.add("job-E")
+    action = Dispatching(broker)
 
     with pytest.raises(PostCommitError) as info:
-        await executor.execute(Dispatching(broker), params={"value": "job-E"}, read_only=True)
+        await executor.execute(action, params={"value": "job-E"}, read_only=True)
 
     assert info.value.committed is False
     assert case.factory.created == []
@@ -88,8 +90,9 @@ async def test_a_read_only_dispatch_failure_is_reported_as_not_committed(
 async def test_failed_execution_discards_and_the_next_one_sends_nothing_stale(
     case: LifecycleCase, executor: RuntimeExecutor, broker: Broker, log: Log
 ) -> None:
+    action = DispatchThenFail(broker)
     with pytest.raises(RuntimeError, match="after dispatch"):
-        await executor.execute(DispatchThenFail(broker), params={"value": "job-D"})
+        await executor.execute(action, params={"value": "job-D"})
     await executor.execute(Ok(), params={"value": "later"})
 
     assert broker.sent == []

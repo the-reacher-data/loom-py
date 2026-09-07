@@ -90,8 +90,9 @@ class TestF01SessionClosed:
         log = Log()
         executor, manager = self._sqlalchemy_executor(log)
 
+        action = Boom()
         with pytest.raises(RuntimeError, match="boom"):
-            await executor.execute(Boom(), params={"value": "x"})
+            await executor.execute(action, params={"value": "x"})
 
         assert [cm.exits for cm in manager.cms] == [1]
         assert log.entries == ["session_cm.enter", "session.rollback", "session_cm.exit"]

@@ -247,8 +247,9 @@ class TestExecutorEventsFailure:
     async def test_exec_error_names_the_failed_phase(self) -> None:
         adapter = _RecordingAdapter()
         executor = _make_executor(_make_compiler(), adapter)
+        use_case = _FailingUseCase()
         with pytest.raises(RuntimeError):
-            await executor.execute(_FailingUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
         assert err.error_kind == "business"
         assert err.pipeline_ms is not None

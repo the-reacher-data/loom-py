@@ -58,8 +58,9 @@ async def test_inner_with_its_own_unit_of_work_drains_after_its_close_despite_ou
             log("outer.after_inner")
             raise RuntimeError("outer fails after the inner committed")
 
+    action = _ReadOnlyOuter()
     with pytest.raises(RuntimeError, match="outer fails"):
-        await executor.execute(_ReadOnlyOuter(), params={"value": "x"})
+        await executor.execute(action, params={"value": "x"})
 
     assert len(case.factory.created) == 1
     assert broker.sent == ["inner"]
@@ -90,8 +91,9 @@ async def test_an_inner_post_commit_failure_is_reported_as_post_commit_by_the_ou
             await executor.execute(Dispatching(broker), params={"value": "inner"})
             return value
 
+    action = _ReadOnlyOuter()
     with pytest.raises(PostCommitError) as info:
-        await executor.execute(_ReadOnlyOuter(), params={"value": "x"})
+        await executor.execute(action, params={"value": "x"})
 
     assert info.value.committed is True
     assert [type(failure) for failure in info.value.failures] == [ConnectionError]

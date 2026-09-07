@@ -49,8 +49,9 @@ class TestContextManagerProtocolOnly:
     async def test_failure_exits_once_with_the_error_and_unbinds_everything(
         self, case: LifecycleCase, executor: RuntimeExecutor, metrics: Metrics
     ) -> None:
+        action = Boom()
         with pytest.raises(RuntimeError, match="boom"):
-            await executor.execute(Boom(), params={"value": "x"})
+            await executor.execute(action, params={"value": "x"})
 
         assert case.factory.entered == case.factory.exited == 1
         assert case.factory.direct_calls == []
@@ -80,9 +81,10 @@ class TestTerminalEventReflectsTheTransaction:
         self, case: LifecycleCase, executor: RuntimeExecutor, metrics: Metrics, log: Log
     ) -> None:
         require_transactional(case).fail_commit(ConnectionError("commit lost"))
+        action = Ok()
 
         with pytest.raises(ConnectionError, match="commit lost"):
-            await executor.execute(Ok(), params={"value": "x"})
+            await executor.execute(action, params={"value": "x"})
 
         assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
         error = metrics.only(EventKind.EXEC_ERROR)
@@ -98,9 +100,10 @@ class TestTerminalEventReflectsTheTransaction:
         self, case: LifecycleCase, executor: RuntimeExecutor, metrics: Metrics
     ) -> None:
         require_transactional(case).fail_begin(ConnectionError("no database"))
+        action = Ok()
 
         with pytest.raises(ConnectionError, match="no database"):
-            await executor.execute(Ok(), params={"value": "x"})
+            await executor.execute(action, params={"value": "x"})
 
         assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
         assert metrics.only(EventKind.EXEC_ERROR).error_kind == "begin"

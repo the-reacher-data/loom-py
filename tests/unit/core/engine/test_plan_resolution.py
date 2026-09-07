@@ -85,8 +85,9 @@ async def test_parent_only_params_bind_against_the_child_plan(
     parent, child = _fresh_hierarchy()
     compiler.compile(parent)
 
+    use_case = child()
     with pytest.raises(ValueError, match="missing required parameter 'extra'"):
-        await executor.execute(child(), params={"value": "v"})
+        await executor.execute(use_case, params={"value": "v"})
 
     child_plan = _own_plan(child)
     assert child_plan is not None

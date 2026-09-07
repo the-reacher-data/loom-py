@@ -58,9 +58,10 @@ class TestWithoutTransactions:
     async def test_exception_propagates_and_nothing_is_aborted(self) -> None:
         client = FakeMongoClient()
         factory = MongoUnitOfWorkFactory.without_transactions()
+        uow = factory.create()
 
         with pytest.raises(_WriteFailed):
-            async with factory.create():
+            async with uow:
                 raise _WriteFailed()
 
         assert client.aborted == 0
@@ -92,9 +93,10 @@ class TestTransactional:
 
     async def test_aborts_on_exception_and_ends_the_session(self) -> None:
         client = FakeMongoClient()
+        uow = _transactional(client).create()
 
         with pytest.raises(_WriteFailed):
-            async with _transactional(client).create():
+            async with uow:
                 raise _WriteFailed()
 
         assert client.aborted == 1
@@ -115,11 +117,14 @@ class TestTransactional:
         """US2 s4: two writes, the second fails, neither is visible."""
         client = FakeMongoClient()
         repository = _repository(client)
+        uow = _transactional(client).create()
+        payload = ArticleCreate(slug="a", title="A")
+        error = _WriteFailed()
 
         with pytest.raises(_WriteFailed):
-            async with _transactional(client).create():
-                await repository.create(ArticleCreate(slug="a", title="A"))
-                raise _WriteFailed()
+            async with uow:
+                await repository.create(payload)
+                raise error
 
         assert client.aborted == 1
         assert await repository.get_by_id("a") is None
@@ -129,12 +134,13 @@ class TestTransactional:
     ) -> None:
         client = FakeMongoClient()
         client.abort_error = ConnectionError("replica set gone")
+        uow = _transactional(client).create()
 
         with (
             caplog.at_level(logging.ERROR, logger=uow_module.__name__),
             pytest.raises(_WriteFailed),
         ):
-            async with _transactional(client).create():
+            async with uow:
                 raise _WriteFailed()
 
         assert active_session() is None
@@ -144,9 +150,10 @@ class TestTransactional:
     async def test_session_is_ended_when_start_transaction_fails(self) -> None:
         client = FakeMongoClient()
         client.start_transaction_error = ConnectionError("not a replica set")
+        uow = _transactional(client).create()
 
         with pytest.raises(ConnectionError, match="replica set"):
-            async with _transactional(client).create():
+            async with uow:
                 raise AssertionError("body must not run")
 
         assert client.sessions[0].ended is True
@@ -157,12 +164,13 @@ class TestTransactional:
     ) -> None:
         client = FakeMongoClient()
         client.end_error = ConnectionError("session gone")
+        uow = _transactional(client).create()
 
         with (
             caplog.at_level(logging.ERROR, logger=uow_module.__name__),
             pytest.raises(_WriteFailed),
         ):
-            async with _transactional(client).create():
+            async with uow:
                 raise _WriteFailed()
 
         assert active_session() is None
@@ -174,12 +182,13 @@ class TestTransactional:
         """US1 s2: pymongo marks the transaction itself; no ``InvalidOperation`` follows."""
         client = FakeMongoClient()
         client.commit_error = ConnectionError("commit lost")
+        uow = _transactional(client).create()
 
         with (
             caplog.at_level(logging.ERROR, logger=uow_module.__name__),
             pytest.raises(ConnectionError, match="commit lost"),
         ):
-            async with _transactional(client).create():
+            async with uow:
                 pass
 
         assert client.aborted == 0
