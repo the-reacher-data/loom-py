@@ -183,6 +183,7 @@ _PLAIN_POLICIES: Mapping[str, int] = {
     "tool_timeout_ms": 1500,
     "max_iterations": 5,
     "run_timeout_ms": 9000,
+    "max_history_bytes": 1048576,
 }
 
 

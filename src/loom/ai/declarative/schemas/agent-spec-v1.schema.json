@@ -361,6 +361,12 @@
           "minimum": 1000,
           "maximum": 1800000,
           "default": 120000
+        },
+        "max_history_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 67108864,
+          "default": 1048576
         }
       }
     }

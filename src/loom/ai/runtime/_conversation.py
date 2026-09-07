@@ -14,15 +14,19 @@ from typing import Any, Final
 from loom.ai._usecase import invoke_as, require_invoker
 from loom.ai.abc import Conversation, DepsFactory
 from loom.ai.compiler._plan import CompiledConversation
-from loom.ai.errors import CONVERSATION_LOAD_FAILED_MESSAGE, AgentRunErrorCode
-from loom.ai.runtime._hooks import HookRun, bounded, failure_error
+from loom.ai.errors import (
+    CONVERSATION_LOAD_FAILED_MESSAGE,
+    CONVERSATION_LOAD_TIMEOUT_MESSAGE,
+    AgentRunErrorCode,
+)
+from loom.ai.runtime._bounded import RunContext, bounded, failure_error
 from loom.core.di import LoomContainer
 
 _LOADER: Final[str] = "conversation loader"
 """Name of the loader step in log lines and errors."""
 
 
-def loader_command(run: HookRun, accepted: frozenset[str]) -> dict[str, Any]:
+def loader_command(run: RunContext, accepted: frozenset[str]) -> dict[str, Any]:
     """Build the command the loader use case receives, filtered to its Input's names.
 
     Filtering to ``accepted`` — the Input's declared names, computed once at
@@ -46,7 +50,7 @@ def loader_command(run: HookRun, accepted: frozenset[str]) -> dict[str, Any]:
 
 
 async def _invoke_loader(
-    loader: CompiledConversation, run: HookRun, deps: DepsFactory, container: LoomContainer
+    loader: CompiledConversation, run: RunContext, deps: DepsFactory, container: LoomContainer
 ) -> object:
     """Run the loader use case as the caller through the bundle's bound invoker."""
     bundle = deps.build(run.identity, container)
@@ -55,15 +59,33 @@ async def _invoke_loader(
     return await invoke_as(invoker, loader.use_case, run.identity, params=None, payload=command)
 
 
-def _as_history(value: object) -> bytes | None:
-    """Accept only ``None`` or ``bytes`` across the boundary; refuse anything else."""
-    if value is None or isinstance(value, bytes):
-        return value
-    raise TypeError(f"{_LOADER} returned {type(value).__name__}, expected bytes or None")
+def _as_history(value: object, bound: int) -> bytes | None:
+    """Accept ``None`` or ``bytes`` no longer than ``bound``; refuse anything else.
+
+    Args:
+        value: What the loader use case returned.
+        bound: ``policies.max_history_bytes`` of the plan; ``None`` is never measured.
+
+    Returns:
+        The history the engine receives, untouched.
+
+    Raises:
+        TypeError: ``value`` is neither ``bytes`` nor ``None``.
+        ValueError: ``value`` is longer than ``bound``; the message carries both sizes.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, bytes):
+        raise TypeError(f"{_LOADER} returned {type(value).__name__}, expected bytes or None")
+    if len(value) > bound:
+        raise ValueError(
+            f"{_LOADER} returned {len(value)} bytes, above max_history_bytes ({bound})"
+        )
+    return value
 
 
 async def load_conversation(
-    run: HookRun, deps: DepsFactory, container: LoomContainer
+    run: RunContext, deps: DepsFactory, container: LoomContainer
 ) -> Conversation | None:
     """Load the conversation a run continues, or ``None`` when it is single-shot.
 
@@ -81,17 +103,27 @@ async def load_conversation(
         The conversation the engine receives, or ``None``.
 
     Raises:
-        AgentRunError: ``CONVERSATION_LOAD_FAILED`` when the loader raises,
-            exceeds its bound or returns anything but ``bytes | None``;
-            ``UNAUTHORIZED`` on an application denial.  Its ``usage`` is
-            ``None``: nothing was spent.
+        AgentRunError: ``CONVERSATION_LOAD_TIMEOUT`` when the loader is cut
+            at ``tool_timeout_ms`` or raises a ``TimeoutError`` of its own;
+            ``CONVERSATION_LOAD_FAILED`` when it raises anything else,
+            returns anything but ``bytes | None``, or returns more than
+            ``policies.max_history_bytes``; ``UNAUTHORIZED`` on an
+            application denial.  Its ``usage`` is ``None``: nothing was spent.
     """
     loader = run.plan.conversation
     if loader is None or run.conversation_id is None:
         return None
     try:
         raw = await bounded(_invoke_loader(loader, run, deps, container), run, what=_LOADER)
-        history = _as_history(raw)
+        history = _as_history(raw, run.plan.policies.max_history_bytes)
+    except TimeoutError as exc:
+        raise failure_error(
+            exc,
+            run,
+            code=AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT,
+            message=CONVERSATION_LOAD_TIMEOUT_MESSAGE,
+            what=_LOADER,
+        ) from exc
     except Exception as exc:  # recovery: the run fails closed with a coded, detail-free error
         raise failure_error(
             exc,

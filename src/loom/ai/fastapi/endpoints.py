@@ -79,6 +79,7 @@ _STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = {
     AgentRunErrorCode.UNAUTHORIZED: 403,
     AgentRunErrorCode.HOOK_FAILED: 500,
     AgentRunErrorCode.CONVERSATION_LOAD_FAILED: 500,
+    AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: 504,
 }
 
 

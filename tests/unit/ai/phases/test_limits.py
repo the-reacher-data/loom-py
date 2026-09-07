@@ -9,6 +9,8 @@ import pytest
 import loom.ai.compiler  # noqa: F401  — red until the compiler exists
 from loom.ai.declarative import AgentSpecV1, PolicySpec
 from loom.ai.declarative._v1 import (
+    MAX_HISTORY_BYTES_MAX,
+    MAX_HISTORY_BYTES_MIN,
     MAX_ITERATIONS_MAX,
     MAX_ITERATIONS_MIN,
     RETRIES_MAX,
@@ -25,6 +27,7 @@ _RANGES: dict[str, tuple[int, int]] = {
     "tool_timeout_ms": (TOOL_TIMEOUT_MS_MIN, TOOL_TIMEOUT_MS_MAX),
     "max_iterations": (MAX_ITERATIONS_MIN, MAX_ITERATIONS_MAX),
     "run_timeout_ms": (RUN_TIMEOUT_MS_MIN, RUN_TIMEOUT_MS_MAX),
+    "max_history_bytes": (MAX_HISTORY_BYTES_MIN, MAX_HISTORY_BYTES_MAX),
 }
 
 

@@ -526,6 +526,7 @@ def make_policies(
     tool_timeout_ms: int = 1000,
     max_iterations: int = 8,
     run_timeout_ms: int = 5000,
+    max_history_bytes: int = 1048576,
 ) -> PolicySpec:
     """Build a :class:`PolicySpec` with every limit stated explicitly."""
     return PolicySpec(
@@ -533,6 +534,7 @@ def make_policies(
         tool_timeout_ms=tool_timeout_ms,
         max_iterations=max_iterations,
         run_timeout_ms=run_timeout_ms,
+        max_history_bytes=max_history_bytes,
     )
 
 

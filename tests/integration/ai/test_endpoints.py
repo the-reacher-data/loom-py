@@ -35,6 +35,7 @@ from loom.ai.compiler._plan import AgentPlan, CompiledConversation, CompiledOutp
 from loom.ai.config import A2AConfig, AgentEndpointConfig
 from loom.ai.errors import (
     CONVERSATION_LOAD_FAILED_MESSAGE,
+    CONVERSATION_LOAD_TIMEOUT_MESSAGE,
     AgentCompilationError,
     AgentErrorCode,
     AgentRunErrorCode,
@@ -956,6 +957,33 @@ class TestLoaderEnHttp:
                 "message": CONVERSATION_LOAD_FAILED_MESSAGE,
             }
 
+    async def test_emite_un_unico_error_cuando_el_loader_agota_su_tiempo_en_stream(
+        self,
+        loader_deps: RecordingDepsFactory,
+        history: HistoryRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """A loader timeout is the single ``error`` frame with its own code and no ``final``."""
+        history.failure = TimeoutError()
+        async with _serving(
+            deps=loader_deps,
+            container=container,
+            plans=(_conversational_plan(),),
+            identity=identity,
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert _sse_names(response.text) == ["error"]
+            frame = _frame(response.text, "error")
+            assert len(frame.pop("interaction_id")) == _INTERACTION_ID_LENGTH
+            assert frame == {
+                "code": "CONVERSATION_LOAD_TIMEOUT",
+                "message": CONVERSATION_LOAD_TIMEOUT_MESSAGE,
+            }
+
     async def test_responde_403_cuando_las_reglas_del_loader_rechazan(
         self,
         loader_deps: RecordingDepsFactory,
@@ -1063,6 +1091,7 @@ class TestMapeoDeErrores:
             (AgentRunErrorCode.TOO_MANY_RUNS, 429),
             (AgentRunErrorCode.UNAUTHORIZED, 403),
             (AgentRunErrorCode.HOOK_FAILED, 500),
+            (AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT, 504),
         ],
     )
     async def test_mapea_el_status_cuando_la_ejecucion_falla(

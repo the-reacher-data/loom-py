@@ -11,8 +11,8 @@ from loom.ai.compiler._plan import CONVERSATION_CONTEXT_FIELDS, AgentPlan, Compi
 from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
+from loom.ai.runtime._bounded import RunContext, failure_error
 from loom.ai.runtime._conversation import loader_command
-from loom.ai.runtime._hooks import HookRun, failure_error
 from loom.core.command import Command
 from loom.core.errors import Forbidden
 from loom.core.identity import Identity
@@ -40,9 +40,9 @@ def _plan() -> AgentPlan:
 
 
 @pytest.fixture
-def run() -> HookRun:
+def run() -> RunContext:
     """One admitted run of a verified caller continuing a conversation."""
-    return HookRun(
+    return RunContext(
         plan=_plan(),
         identity=Identity(subject="user-1", roles=("analyst",), mechanism="test"),
         interaction_id="int-1",
@@ -52,7 +52,7 @@ def run() -> HookRun:
 
 class TestLoaderCommand:
     def test_ofrece_los_cinco_valores_del_contexto_cuando_el_input_los_acepta(
-        self, run: HookRun
+        self, run: RunContext
     ) -> None:
         """Every offered name carries the run's, the identity's or the plan's value."""
         command = loader_command(run, _ALL_NAMES)
@@ -66,7 +66,7 @@ class TestLoaderCommand:
         }
 
     def test_filtra_a_los_nombres_aceptados_cuando_el_input_declara_menos(
-        self, run: HookRun
+        self, run: RunContext
     ) -> None:
         """Names the Input does not declare never reach it."""
         command = loader_command(run, frozenset({"conversation_id", "agent"}))
@@ -74,7 +74,7 @@ class TestLoaderCommand:
         assert command == {"conversation_id": "c-42", "agent": "incident-triage"}
 
     def test_decodifica_un_command_estricto_cuando_se_filtra_a_sus_nombres(
-        self, run: HookRun
+        self, run: RunContext
     ) -> None:
         """A ``forbid_unknown_fields`` Command declaring only ``conversation_id`` decodes."""
         accepted = frozenset(info.name for info in msgspec.structs.fields(_StrictCommand))
@@ -84,7 +84,9 @@ class TestLoaderCommand:
         assert instance == _StrictCommand(conversation_id="c-42")
         assert seen == frozenset({"conversation_id"})
 
-    def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(self, run: HookRun) -> None:
+    def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(
+        self, run: RunContext
+    ) -> None:
         """The run-time command and the compile-time offer are one contract."""
         command = loader_command(run, _ALL_NAMES)
 
@@ -92,7 +94,9 @@ class TestLoaderCommand:
 
 
 class TestFailureError:
-    def test_conserva_codigo_y_mensaje_cuando_ya_es_un_agent_run_error(self, run: HookRun) -> None:
+    def test_conserva_codigo_y_mensaje_cuando_ya_es_un_agent_run_error(
+        self, run: RunContext
+    ) -> None:
         """An ``AgentRunError`` keeps both its code and its text and gains the run's id."""
         original = AgentRunError(AgentRunErrorCode.UNAUTHORIZED, "no invoker bound")
 
@@ -110,7 +114,7 @@ class TestFailureError:
         assert error.usage is None
 
     def test_mapea_una_denegacion_a_unauthorized_cuando_las_reglas_rechazan(
-        self, run: HookRun
+        self, run: RunContext
     ) -> None:
         """A denial keeps its meaning and answers the fixed denial text."""
         error = failure_error(
@@ -126,10 +130,10 @@ class TestFailureError:
         assert error.interaction_id == "int-1"
 
     def test_usa_el_codigo_y_texto_dados_cuando_la_excepcion_es_generica(
-        self, run: HookRun, caplog: pytest.LogCaptureFixture
+        self, run: RunContext, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Anything else is logged server-side and answered with the given code and text."""
-        with caplog.at_level(logging.ERROR, logger="loom.ai.runtime._hooks"):
+        with caplog.at_level(logging.ERROR, logger="loom.ai.runtime._bounded"):
             error = failure_error(
                 ValueError("secret detail"),
                 run,

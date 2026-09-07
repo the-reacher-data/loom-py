@@ -56,9 +56,10 @@ from loom.ai.errors import (
     on_output_invoker_missing,
     sql_readonly_drift,
 )
+from loom.ai.runtime._bounded import RunContext
 from loom.ai.runtime._conversation import load_conversation
 from loom.ai.runtime._health import AgentHealth, worst
-from loom.ai.runtime._hooks import HookRun, hooked_events, no_terminal_message
+from loom.ai.runtime._hooks import hooked_events, no_terminal_message
 from loom.ai.runtime._limits import cancel_task, supervised_events
 from loom.ai.runtime._mcp import (
     FilterTarget,
@@ -347,8 +348,9 @@ class AgentRuntime:
             ValueError: When ``conversation_id`` is empty or longer than
                 :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
             AgentRunError: When the run is refused (``TOO_MANY_RUNS``), the
-                conversation cannot be loaded (``CONVERSATION_LOAD_FAILED``),
-                breaches a declared limit, or ends in a failure event.
+                conversation cannot be loaded (``CONVERSATION_LOAD_FAILED``,
+                ``CONVERSATION_LOAD_TIMEOUT``), breaches a declared limit, or
+                ends in a failure event.
         """
         result: AgentResult | None = None
         stream = self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
@@ -407,7 +409,8 @@ class AgentRuntime:
                 than :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
             AgentRunError: On entry, when the worker's ``max_concurrent_runs``
                 is already taken (``TOO_MANY_RUNS``) or the conversation
-                cannot be loaded (``CONVERSATION_LOAD_FAILED``).
+                cannot be loaded (``CONVERSATION_LOAD_FAILED``,
+                ``CONVERSATION_LOAD_TIMEOUT``).
         """
         return self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
 
@@ -732,7 +735,7 @@ class AgentRuntime:
         _check_conversation_id(conversation_id)
         await self._admit(name)
         try:
-            run = HookRun(
+            run = RunContext(
                 plan=slot.plan,
                 identity=identity,
                 interaction_id=uuid4().hex,

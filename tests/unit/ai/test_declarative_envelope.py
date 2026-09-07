@@ -157,6 +157,23 @@ def test_decode_spec_aplica_run_timeout_por_defecto_cuando_no_hay_policies() -> 
     assert decoded.spec.policies.run_timeout_ms == 120000
 
 
+def test_decode_spec_aplica_max_history_bytes_por_defecto_cuando_no_hay_policies() -> None:
+    """The history ceiling defaults to 1 MiB when the artifact declares no policies."""
+    decoded = _decode_valid()
+
+    assert decoded.spec.policies.max_history_bytes == 1048576
+
+
+def test_decode_spec_conserva_max_history_bytes_cuando_el_artefacto_lo_declara() -> None:
+    """A declared history ceiling survives decoding unchanged."""
+    payload = _valid_payload()
+    payload["policies"] = {"max_history_bytes": 2048}
+
+    decoded = decode_spec(_encode(payload))
+
+    assert decoded.spec.policies.max_history_bytes == 2048
+
+
 def test_decode_spec_deja_capabilities_vacias_cuando_no_se_declaran() -> None:
     """An artifact without capabilities decodes to an empty tuple, not ``None``."""
     decoded = _decode_valid()
