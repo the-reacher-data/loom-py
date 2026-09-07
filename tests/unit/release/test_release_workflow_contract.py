@@ -181,3 +181,15 @@ class TestThePrereleaseVersionComesFromTheTag:
         for step in self._validate_steps():
             rendered = str(step.get("with", {})) + cast(str, step.get("run", ""))
             assert "steps.version.outputs.version" not in rendered, step.get("name")
+
+
+class TestTheFloatingTagCannotBecomeTheVersion:
+    """`v1` moves onto the commit each release tags. Read as a version it yields
+    "2.devN" — a release that never existed, taken from the tag that points at one
+    that did. Observed on TestPyPI: 2.dev1, 2.dev3, 2.dev9, 2.dev11, 2.dev12."""
+
+    def test_the_describe_pattern_matches_only_full_versions(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        raw = pyproject["tool"]["hatch"]["version"]["raw-options"]
+        command = raw["git_describe_command"]
+        assert "--match v[0-9]*.[0-9]*.[0-9]*" in command
