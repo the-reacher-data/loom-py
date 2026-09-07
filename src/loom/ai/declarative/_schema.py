@@ -252,7 +252,7 @@ def _v1_python_capability() -> dict[str, Any]:
                 "type": "string",
                 "pattern": SYMBOL_REF_PATTERN,
                 "description": (
-                    "module:factory satisfying the ToolsetFactory protocol. "
+                    "module:factory called once at build as factory(context, **params). "
                     "A factory, never a constructed object."
                 ),
             },

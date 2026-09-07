@@ -259,7 +259,7 @@ class PythonCapability(
     """Toolset built by application-owned Python code.
 
     Args:
-        factory: ``module:factory`` satisfying the toolset factory protocol.
+        factory: ``module:factory`` called once at build as ``factory(context, **params)``.
             A factory, never a constructed object.
         params: Nested block passed to the factory as keyword arguments. The
             names are validated against the factory's signature at compile;
