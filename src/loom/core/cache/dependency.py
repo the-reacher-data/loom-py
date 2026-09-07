@@ -91,10 +91,10 @@ class GenerationalDependencyResolver(DependencyResolver, BatchFingerprintResolve
     async def bump_from_events(self, events: tuple[MutationEvent, ...]) -> None:
         """Increment generation counters for the tags affected by mutation events.
 
-        Every event bumps ``entity:list``; an update or delete also bumps
-        ``entity:id:<k>`` for each of its ids; the event's own ``tags`` are
-        bumped as they come.  The bare ``entity`` tag is never bumped by the
-        framework: it is reserved for a manual entity-wide flush.
+        Every event bumps ``entity:list`` and ``entity:id:<k>`` per id; the
+        event's own ``tags`` are bumped as they come.  The bare ``entity`` tag
+        is never bumped by the framework: it is reserved for a manual
+        entity-wide flush.
 
         Args:
             events: Mutation events to process.
@@ -102,15 +102,11 @@ class GenerationalDependencyResolver(DependencyResolver, BatchFingerprintResolve
         bump_keys: set[str] = set()
         for event in events:
             bump_keys.add(self._tag_key(f"{event.entity}:list"))
-            # A create skips its ids: no per-id key can exist for a row that
-            # did not exist, since every backend's create is a strict insert
-            # and the wrapper does not cache absence. If negative caching
-            # returns, creates must bump per-id tags again. The one gap is a
-            # client-supplied key read inside a transaction that rolled back
-            # and then re-created: that entry lives until its TTL.
-            if event.op != "create":
-                for entity_id in event.ids:
-                    bump_keys.add(self._tag_key(f"{event.entity}:id:{entity_id}"))
+            # Creates bump per id too: a scope="entity" read may cache a
+            # non-None value (a count of 0, an empty summary) for a key that
+            # does not exist yet.
+            for entity_id in event.ids:
+                bump_keys.add(self._tag_key(f"{event.entity}:id:{entity_id}"))
             for tag in event.tags:
                 bump_keys.add(self._tag_key(tag))
         for key in bump_keys:

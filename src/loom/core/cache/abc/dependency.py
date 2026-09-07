@@ -23,10 +23,10 @@ class DependencyResolver(Protocol):
     async def bump_from_events(self, events: tuple[MutationEvent, ...]) -> None:
         """Increment generation counters for the tags affected by mutation events.
 
-        The built-in resolver bumps ``entity:list`` on every event,
-        ``entity:id:<k>`` per id on update and delete, and the event's own
-        tags; it never bumps the bare ``entity`` tag.  A resolver implemented
-        outside the framework keeps whatever granularity it implements.
+        A resolver implemented outside the framework keeps whatever
+        granularity it implements; see
+        :class:`~loom.core.cache.dependency.GenerationalDependencyResolver`
+        for the built-in policy.
 
         Args:
             events: Mutation events produced within a transaction.

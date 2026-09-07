@@ -469,7 +469,7 @@ class TestCachedRepository:
         assert repo.custom_calls == 2
 
     @pytest.mark.asyncio
-    async def test_custom_method_cache_survives_a_create_event_for_its_id(
+    async def test_custom_method_cache_is_invalidated_by_a_create_event_for_its_id(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
     ) -> None:
@@ -490,7 +490,7 @@ class TestCachedRepository:
         assert second == first
         repo = wrapped_repository._repository
         assert isinstance(repo, _FakeRepository)
-        assert repo.custom_calls == 1
+        assert repo.custom_calls == 2
 
     @pytest.mark.asyncio
     async def test_list_with_query_offset_uses_cache_aside(
@@ -959,21 +959,20 @@ class TestPrimaryKeyByName:
 
     @pytest.mark.asyncio
     async def test_batch_caches_only_the_items_with_a_key(self, cache_config: CacheConfig) -> None:
-        repository = CountingRepository([], CodeWidget)
-        backend = CountingCacheBackend()
-        resolver = GenerationalDependencyResolver(backend)
-        wrapped = CachedRepository(
-            repository, config=cache_config, cache=backend, dependency_resolver=resolver
-        )
         keyed = CodeWidget(code=1, name="a")
         keyless = CodeWidget(code=cast(int, None), name="b")
+        env = wrap_with_cache(CountingRepository([keyless, keyed], CodeWidget), cache_config)
 
-        await wrapped._cache_entity_batch([keyless, keyed], profile="default")
+        page = await env.wrapper.list_paginated(PageParams(page=1, limit=2))
 
-        fingerprint = await resolver.fingerprint(resolver.entity_tags(wrapped.entity_name, 1))
-        expected_key = entity_key(wrapped.entity_name, 1, "default", fingerprint)
-        assert backend.multi_set_batches == [[expected_key]]
-        assert await backend.get_value(expected_key, type=CodeWidget) == keyed
+        assert list(page.items) == [keyless, keyed]
+        fingerprint = await env.resolver.fingerprint(
+            env.resolver.entity_tags(env.wrapper.entity_name, 1)
+        )
+        expected_key = entity_key(env.wrapper.entity_name, 1, "default", fingerprint)
+        entity_batches = [batch for batch in env.backend.multi_set_batches if expected_key in batch]
+        assert entity_batches == [[expected_key]]
+        assert await env.backend.get_value(expected_key, type=CodeWidget) == keyed
 
     @pytest.mark.asyncio
     async def test_repository_without_model_falls_back_to_id(
@@ -1082,7 +1081,7 @@ class TestEntityScopeValidation:
         assert repo.custom_calls == 0
 
     @pytest.mark.asyncio
-    async def test_unresolvable_key_type_accepts_any_id(
+    async def test_model_without_primary_key_accepts_any_id(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
     ) -> None:
@@ -1110,5 +1109,5 @@ class TestEntityScopeValidation:
 
         assert await env.wrapper.note_count(1) == 3
         assert env.repository.note_count_calls == 2
-        # Granularity (update(2) keeps note_count(1) warm) is asserted in
-        # test_invalidation_granularity.py (T3), once the bare bump is gone.
+        # Granularity (update(2) keeps note_count(1) warm) is covered by
+        # test_invalidation_granularity.py.

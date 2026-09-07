@@ -145,7 +145,7 @@ def _resolve_primary_key(repository: Repository[Any, Any, Any, Any]) -> _Primary
     Falls back to the attribute ``id`` with no type for a repository without a
     model or whose model declares no primary key; the type alone is ``None``
     when the key's annotation is not a plain class.  The cached index is then
-    used as it was decoded and the refill runs per id.
+    used as it was decoded.
     """
     model = getattr(repository, "model", None)
     if model is None:
@@ -173,7 +173,8 @@ class CachedRepository(
     support :attr:`~loom.core.repository.abc.query.FilterOp.IN` on the primary
     key; a repository whose ``allowed_filter_fields`` excludes the primary key
     is detected and served with per-id reads instead.  The key is read by the
-    attribute name the model declares (``id`` when there is no model).
+    attribute name the model declares (``id`` when there is no model or the
+    model declares no primary key).
 
     Concurrent misses of the same key on the entity read and on a
     ``@cache_query`` read are coalesced inside the process: the first caller
@@ -458,11 +459,17 @@ class CachedRepository(
         return deleted
 
     async def on_transaction_committed(self, events: tuple[MutationEvent, ...]) -> None:
-        # Under @transactional this bumps alongside the queued action from
-        # create/update/delete/_create_many: that one carries this wrapper's
-        # own event, this one the mixins' events with the relation/projection
-        # tags this wrapper cannot compute. Both are wanted — bumps are
-        # idempotent — so do not dedupe this away.
+        """Bump the tags of the mixins' events and forward them downstream.
+
+        Under ``@transactional`` the mixins' tagged events arrive here in the
+        plain post-commit lane, while the wrapper's own event runs in the
+        shielded priority lane queued by ``create``/``update``/``delete``.
+        Both bumps are wanted: they are idempotent, and only this lane carries
+        the relation/projection tags the wrapper cannot compute.
+
+        Args:
+            events: Mutation events committed by the wrapped repository.
+        """
         await self._resolver.bump_from_events(events)
         post_commit = getattr(self._repository, "on_transaction_committed", None)
         if inspect.iscoroutinefunction(post_commit):
@@ -791,11 +798,11 @@ class CachedRepository(
         """Resolve the cache key and the TTL of one call to a cached read."""
         scope = cast(str, metadata.get("scope") or "list")
         ttl_key = cast(str | None, metadata.get("ttl_key"))
-        entity_id = self._entity_scope_id(method_name, args) if scope == "entity" else None
         raw = {"args": to_payload(args), "kwargs": to_payload(kwargs)}
         raw_hash = stable_hash(repr(raw))
 
         if scope == "entity":
+            entity_id = self._entity_scope_id(method_name, args)
             tags = self._resolver.entity_tags(self.entity_name, entity_id)
             tags.extend(self._entity_dependency_tags(entity_id))
             ttl = self._config.ttl_for_single(ttl_key or self.entity_name)

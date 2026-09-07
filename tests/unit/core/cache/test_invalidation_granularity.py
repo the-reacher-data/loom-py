@@ -1,7 +1,7 @@
 """A write to one row evicts that row, every list and every dependent; nothing else.
 
-The generational resolver bumps ``entity:list`` on every event and
-``entity:id:<k>`` on update and delete; it never bumps the bare entity tag.
+The generational resolver bumps ``entity:list`` and ``entity:id:<k>`` per id
+on every event; it never bumps the bare entity tag.
 Whether a key survived is judged by the repository call count, the only
 observable the cache-aside path offers.
 """
@@ -163,19 +163,25 @@ class TestBumpAccounting:
     """AC7/AC8 on the direct path: which counters a write increments."""
 
     @pytest.mark.asyncio
-    async def test_create_bumps_only_the_list_tag(self, env: CachedEnv[Widget]) -> None:
-        await env.wrapper.create(WidgetCreate(name="c"))
+    async def test_create_bumps_the_list_and_id_tags_only(self, env: CachedEnv[Widget]) -> None:
+        created = await env.wrapper.create(WidgetCreate(name="c"))
 
-        assert env.backend.incr_keys == [LIST_TAG_KEY]
+        assert set(env.backend.incr_keys) == {LIST_TAG_KEY, f"tag:widget:id:{created.id}"}
+        assert len(env.backend.incr_keys) == 2
 
     @pytest.mark.asyncio
-    async def test_create_many_bumps_once_for_the_whole_batch(self, env: CachedEnv[Widget]) -> None:
+    async def test_create_many_bumps_the_list_once_and_every_id(
+        self, env: CachedEnv[Widget]
+    ) -> None:
         created = await env.wrapper.create_many(
             [WidgetCreate(name="c"), WidgetCreate(name="d"), WidgetCreate(name="e")]
         )
 
         assert len(created) == 3
-        assert env.backend.incr_keys == [LIST_TAG_KEY]
+        assert set(env.backend.incr_keys) == {LIST_TAG_KEY} | {
+            f"tag:widget:id:{row.id}" for row in created
+        }
+        assert len(env.backend.incr_keys) == 4
 
     @pytest.mark.asyncio
     async def test_update_bumps_the_list_and_id_tags_only(self, env: CachedEnv[Widget]) -> None:
