@@ -21,11 +21,12 @@ sync methods are called directly from the task thread.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import time
 from contextvars import Token
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.result import AsyncResult  # type: ignore[import-untyped]
@@ -42,6 +43,8 @@ from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import reset_trace_id, set_trace_id
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from loom.core.engine.executor import RuntimeExecutor
     from loom.core.engine.metrics import MetricsAdapter
     from loom.core.job.job import Job
@@ -175,6 +178,29 @@ def _uninstall_identity(token: Token[Identity] | None) -> None:
         reset_identity(token)
 
 
+@contextlib.contextmanager
+def _job_context(
+    trace_id: str | None, identity: dict[str, Any] | None
+) -> Iterator[Identity | None]:
+    """Install the trace and the envelope's identity for the duration of a task.
+
+    Args:
+        trace_id: Trace identifier carried by the envelope, if any.
+        identity: Wire-encoded caller carried by the envelope, if any.
+
+    Yields:
+        The decoded caller, or ``None`` when the envelope carried no identity.
+    """
+    trace_token = _install_trace(trace_id)
+    caller = decode_identity(identity)
+    identity_token = _install_identity(caller)
+    try:
+        yield caller
+    finally:
+        _uninstall_identity(identity_token)
+        _uninstall_trace(trace_token)
+
+
 def _is_eager_request(task_self: Any) -> bool:
     request = getattr(task_self, "request", None)
     is_eager = getattr(request, "is_eager", None)
@@ -256,6 +282,45 @@ def _make_job_task(
     timeout_value = job_type.__timeout__
     runtime = observability_runtime or ObservabilityRuntime.noop()
     run_timeout = float(timeout_value) if timeout_value is not None and timeout_value > 0 else None
+    name = job_type.__qualname__
+
+    def _execute_job(
+        *,
+        task_self: Any,
+        payload: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+        caller: Identity | None,
+        trace_id: str | None,
+    ) -> Any:
+        """Build the job instance and run it under the job span."""
+        with runtime.span(
+            Scope.JOB,
+            name,
+            trace_id=trace_id,
+            id=getattr(getattr(task_self, "request", None), "id", None),
+            payload_size=len(payload or {}),
+        ):
+            instance = factory.build(job_type)
+            return async_runtime.run(
+                executor.execute(instance, params=params, payload=payload or {}, identity=caller),
+                timeout=run_timeout,
+                eager_fallback=_is_eager_request(task_self),
+            )
+
+    def _handle_job_failure(
+        *, task_self: Any, exc: Exception, trace_id: str | None, started: float
+    ) -> NoReturn:
+        """Retry the task when the failure allows it, otherwise let it die."""
+        _log_post_commit_failure(exc, name)
+        if _is_retryable(exc) and task_self.request.retries < task_self.max_retries:
+            countdown = backoff**task_self.request.retries
+            _emit(
+                metrics,
+                _job_event(EventKind.JOB_RETRYING, name, trace_id, status="retrying", error=exc),
+            )
+            raise task_self.retry(exc=exc, countdown=countdown) from exc
+        _emit(metrics, _exhausted_event(name, trace_id, started, exc))
+        raise exc
 
     @celery_app.task(  # type: ignore[untyped-decorator]
         name=f"{TASK_JOB_PREFIX}.{job_type.__qualname__}",
@@ -273,28 +338,19 @@ def _make_job_task(
         trace_id: str | None = None,
         identity: dict[str, Any] | None = None,
     ) -> Any:
-        name = job_type.__qualname__
-        token = _install_trace(trace_id)
-        caller = decode_identity(identity)
-        identity_token = _install_identity(caller)
-        _emit(metrics, _job_event(EventKind.JOB_STARTED, name, trace_id))
-        t0 = time.monotonic()
-        try:
-            with runtime.span(
-                Scope.JOB,
-                name,
-                trace_id=trace_id,
-                id=getattr(getattr(self, "request", None), "id", None),
-                payload_size=len(payload or {}),
-            ):
-                instance = factory.build(job_type)
-                result = async_runtime.run(
-                    executor.execute(
-                        instance, params=params, payload=payload or {}, identity=caller
-                    ),
-                    timeout=run_timeout,
-                    eager_fallback=_is_eager_request(self),
+        with _job_context(trace_id, identity) as caller:
+            _emit(metrics, _job_event(EventKind.JOB_STARTED, name, trace_id))
+            t0 = time.monotonic()
+            try:
+                result = _execute_job(
+                    task_self=self,
+                    payload=payload,
+                    params=params,
+                    caller=caller,
+                    trace_id=trace_id,
                 )
+            except Exception as exc:
+                _handle_job_failure(task_self=self, exc=exc, trace_id=trace_id, started=t0)
             _emit(
                 metrics,
                 _job_event(
@@ -306,22 +362,6 @@ def _make_job_task(
                 ),
             )
             return result
-        except Exception as exc:
-            _log_post_commit_failure(exc, name)
-            if _is_retryable(exc) and self.request.retries < self.max_retries:
-                countdown = backoff**self.request.retries
-                _emit(
-                    metrics,
-                    _job_event(
-                        EventKind.JOB_RETRYING, name, trace_id, status="retrying", error=exc
-                    ),
-                )
-                raise self.retry(exc=exc, countdown=countdown) from exc
-            _emit(metrics, _exhausted_event(name, trace_id, t0, exc))
-            raise
-        finally:
-            _uninstall_identity(identity_token)
-            _uninstall_trace(token)
 
     return _job_task
 

@@ -29,6 +29,7 @@ from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.post_commit import PostCommitError
 from loom.core.job.job import Job
 from loom.core.observability.event import Scope
+from loom.core.tracing import get_trace_id
 from tests.helpers.spans import build_recorder, hex_trace
 
 _WIRE_TRACE = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
@@ -76,6 +77,10 @@ class _AsyncCallback:
         pass  # intentional no-op stub
 
 
+class _RetryError(Exception):
+    """Stands in for Celery's ``Retry`` raised by the mocked bound task."""
+
+
 def _mock_celery_app() -> MagicMock:
     app = MagicMock()
     app.task = MagicMock(side_effect=lambda **kw: lambda fn: fn)
@@ -86,6 +91,19 @@ def _mock_celery_app() -> MagicMock:
 def _mock_factory(instance: object) -> MagicMock:
     factory = MagicMock()
     factory.build = MagicMock(return_value=instance)
+    return factory
+
+
+def _factory_recording_trace(instance: object, sink: list[str | None]) -> MagicMock:
+    """Factory whose ``build`` records the trace context visible inside the job."""
+    factory = MagicMock()
+
+    def _build(job_type: object) -> object:
+        del job_type
+        sink.append(get_trace_id())
+        return instance
+
+    factory.build = MagicMock(side_effect=_build)
     return factory
 
 
@@ -492,6 +510,80 @@ class TestMakeJobTaskRetry:
         task_fn(_mock_self())
 
         assert hex_trace(recorder.one("job:_SyncJob")) != _WIRE_TRACE
+
+    def test_a_trace_less_job_installs_no_context_and_emits_events_with_none(self) -> None:
+        """A task dispatched outside a request must not mint a trace id here.
+
+        ``trace_id`` reaches the worker only when the job came from an API
+        request.  Without one, nothing is installed in the context and every
+        event carries ``trace_id=None``: the span still gets its own id
+        downstream, but that id must never leak back into the events.
+        """
+        seen: list[str | None] = []
+        metrics = MagicMock()
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _factory_recording_trace(_SyncJob(), seen),
+            MagicMock(),
+            _mock_runtime(return_value=0),
+            metrics,
+        )
+
+        task_fn(_mock_self())
+
+        assert seen == [None], "no trace context may be installed for a trace-less job"
+        events = [c.args[0] for c in metrics.on_event.call_args_list]
+        assert [e.kind for e in events] == [EventKind.JOB_STARTED, EventKind.JOB_SUCCEEDED]
+        assert all(e.trace_id is None for e in events)
+
+    @pytest.mark.parametrize(
+        ("retries", "expected_error", "expected_kind"),
+        [
+            (0, _RetryError, EventKind.JOB_RETRYING),
+            (2, ValueError, EventKind.JOB_EXHAUSTED),
+        ],
+    )
+    def test_failure_events_of_a_trace_less_job_also_carry_none(
+        self, retries: int, expected_error: type[Exception], expected_kind: EventKind
+    ) -> None:
+        metrics = MagicMock()
+        mock_self = _mock_self(retries=retries, max_retries=2)
+        mock_self.retry = MagicMock(side_effect=_RetryError)
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _mock_factory(_SyncJob()),
+            MagicMock(),
+            _mock_runtime(error=ValueError("err")),
+            metrics,
+        )
+
+        with pytest.raises(expected_error):
+            task_fn(mock_self, payload={"value": 1})
+
+        events = [c.args[0] for c in metrics.on_event.call_args_list]
+        assert expected_kind in [e.kind for e in events]
+        assert all(e.trace_id is None for e in events)
+
+    def test_a_job_with_a_trace_id_installs_it_and_stamps_every_event(self) -> None:
+        seen: list[str | None] = []
+        metrics = MagicMock()
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _factory_recording_trace(_SyncJob(), seen),
+            MagicMock(),
+            _mock_runtime(return_value=0),
+            metrics,
+        )
+
+        task_fn(_mock_self(), trace_id=_WIRE_TRACE)
+
+        assert seen == [_WIRE_TRACE]
+        events = [c.args[0] for c in metrics.on_event.call_args_list]
+        assert all(e.trace_id == _WIRE_TRACE for e in events)
+        assert get_trace_id() is None, "the trace context is restored when the task returns"
 
     def test_no_metrics_does_not_raise(self) -> None:
         instance = _SyncJob()
