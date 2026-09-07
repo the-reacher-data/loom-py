@@ -387,6 +387,15 @@ version_files = [
 ]
 update_changelog_on_bump = true
 
+# A few tests write a module into a pytest temp directory and import it, so
+# coverage traces a file that no longer exists when the report is built in
+# another job. Those files are fixtures, never product code.
+[tool.coverage.run]
+omit = [
+    "/tmp/*",
+    "*/pytest-of-*/*",
+]
+
 [tool.semantic_branch]
 prerelease = [
     "hotfix/.*",
