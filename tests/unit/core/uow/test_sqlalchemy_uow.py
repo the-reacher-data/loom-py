@@ -289,14 +289,21 @@ async def test_close_failure_on_the_rollback_path_keeps_the_business_error(
 
 
 @pytest.mark.asyncio
-async def test_close_failure_after_commit_propagates() -> None:
+async def test_close_failure_after_commit_is_logged_not_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The write committed: reporting an error would tell the caller it did not."""
     session = _make_session()
     sm = _RecordingSessionManager(session, exit_error=ConnectionError("pool gone"))
     uow = SQLAlchemyUnitOfWork(sm)  # type: ignore[arg-type]
 
-    with pytest.raises(ConnectionError, match="pool gone"):
+    with caplog.at_level(logging.ERROR):
         async with uow:
             pass
+
+    session.commit.assert_awaited_once()
+    assert "UoWCloseFailed" in caplog.text
+    assert get_active_session() is None
 
     session.commit.assert_awaited_once()
     assert get_active_session() is None

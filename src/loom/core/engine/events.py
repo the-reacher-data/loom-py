@@ -40,7 +40,8 @@ class RuntimeEvent:
         error: Exception instance if the event represents a failure, or ``None``.
         trace_id: Trace the execution ran under, or ``None``.
         error_kind: Phase that failed on ``EXEC_ERROR`` (``"begin"``,
-            ``"business"``, ``"commit"``, ``"cancelled"``), or ``None``.
+            ``"business"``, ``"commit"``, ``"cancelled"``, ``"post_commit"``),
+            or ``None``.
         pipeline_ms: Time spent in the use-case pipeline, or ``None`` when
             the pipeline did not start.
         commit_ms: Time spent closing the unit of work, or ``None`` when no

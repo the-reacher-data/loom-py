@@ -74,7 +74,7 @@ class PostCommitChannel:
         self._actions.clear()
 
     async def drain(self, *, committed: bool) -> None:
-        """Run every queued action in order and leave the channel empty.
+        """Run every queued action in enqueue order.
 
         The owner unbinds the channel before draining, so an execution
         started from an action opens its own lifecycle.  A failing action

@@ -172,7 +172,7 @@ class SQLAlchemyUnitOfWork:
         except BaseException:
             await asyncio.shield(self._rollback_then_close())
             raise
-        await asyncio.shield(self._exit_session())
+        await asyncio.shield(self._exit_session_logging_failure())
 
     async def _rollback_then_close(self) -> None:
         try:

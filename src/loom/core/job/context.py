@@ -45,7 +45,8 @@ def add_pending_dispatch(fn: Callable[[], Any]) -> None:
         fn: Zero-argument callable.  May return ``None`` (sync) or a
             coroutine (async).
     """
-    channel = active_channel() or _fallback_channel()
+    bound = active_channel()
+    channel = _fallback_channel() if bound is None else bound
     channel.enqueue(fn)
 
 
@@ -80,6 +81,7 @@ def clear_pending_dispatches() -> None:
 
     Jobs registered during a failed transaction must not be sent to the broker.
     """
-    channel = active_channel() or _fallback.get()
+    bound = active_channel()
+    channel = _fallback.get() if bound is None else bound
     if channel is not None:
         channel.discard()

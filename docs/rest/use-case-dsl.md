@@ -614,11 +614,13 @@ methods stay on the protocol. Closing is the context manager's job
   `TypeError` — Python cannot check a data member on a class. Third-party
   adapters must declare `transactional: ClassVar[bool]`; code that used
   `issubclass` must switch to `isinstance` on an instance.
-- **`error_kind="commit"` means the unit-of-work exit failed**: the commit
-  outcome is undetermined — the driver may have committed before the failure
-  surfaced. Treat it as "unknown", not as "rolled back"; the adapter still
-  rolled back and closed on its side (SQLAlchemy) or ended the session
-  (Mongo).
+- **`error_kind="commit"` means the commit itself failed**: the outcome is
+  undetermined — the driver may have committed before the failure surfaced.
+  Treat it as "unknown", not as "rolled back"; the adapter still rolled back
+  and closed on its side (SQLAlchemy) or ended the session (Mongo). A failure
+  while *closing* after a successful commit is logged as `UoWCloseFailed` and
+  does not fail the execution on either adapter: the write landed, so the
+  terminal event is `EXEC_DONE` and the post-commit actions run.
 - **`error_kind="post_commit"`** is new: an outer execution whose inner one
   committed and then failed to drain no longer reports `business`.
 - **Hand-driven `begin()`/`commit()` callers must close through the context
