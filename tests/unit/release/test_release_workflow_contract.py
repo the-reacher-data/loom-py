@@ -83,3 +83,40 @@ class TestTheVersionComesFromTheTag:
         commitizen = pyproject["tool"]["commitizen"]
         assert commitizen["version_provider"] == "scm"
         assert "version_files" not in commitizen
+
+
+class TestTheCalculatorLeavesNoStaticVersionBehind:
+    """The calculator writes project.version, which hatchling refuses next to a
+    dynamic one, so every later step that runs uv would fail to build."""
+
+    def _validate_steps(self) -> list[dict[str, Any]]:
+        ci_pr = cast(
+            dict[str, Any],
+            yaml.safe_load((WORKFLOW_PATH.parent / "ci-pr.yml").read_text(encoding="utf-8")),
+        )
+        jobs = cast(dict[str, Any], ci_pr["jobs"])
+        return cast(list[dict[str, Any]], cast(dict[str, Any], jobs["validate"])["steps"])
+
+    def test_the_rewrite_is_undone_before_anything_else_runs(self) -> None:
+        steps = self._validate_steps()
+        names = [cast(str, step.get("name", "")) for step in steps]
+        calculator = next(index for index, step in enumerate(steps) if step.get("id") == "version")
+        restore = next(
+            index
+            for index, step in enumerate(steps)
+            if "git restore --source=HEAD" in cast(str, step.get("run", ""))
+        )
+        assert restore == calculator + 1, (
+            "the restore must be the next step after the calculator, "
+            f"but the steps between them are {names[calculator + 1 : restore]}"
+        )
+
+    def test_only_the_three_derived_files_may_change(self) -> None:
+        restore = next(
+            step
+            for step in self._validate_steps()
+            if "git restore --source=HEAD" in cast(str, step.get("run", ""))
+        )
+        script = cast(str, restore["run"])
+        assert "pyproject.toml|uv.lock|CHANGELOG.md" in script
+        assert "exit 1" in script
