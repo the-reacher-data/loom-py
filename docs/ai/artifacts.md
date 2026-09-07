@@ -637,7 +637,7 @@ sees one request; `RecordTurn` receives `messages` — this run's messages,
 stamped `"c-42"` — and stores them. The body is the same four keys as any
 other run:
 
-```json
+```text
 {"output": {...}, "usage": {...}, "interaction_id": "7f3c...", "hook_result": {"interaction_id": "7f3c..."}}
 ```
 
