@@ -105,9 +105,11 @@ What stdio does not do:
 
 - **it does not reconnect.** A dead subprocess fails the call, exactly as a
   dead HTTP server does; nothing restarts it;
-- **it does not share one process.** Start-up opens one server to list tools and
-  each run opens its own; every one of them dies with the context that opened
-  it, so none outlives the runtime;
+- **it spawns one process per server, for the whole worker.** Start-up spawns
+  it and every agent granted that server speaks to that one child. It dies with
+  the last holder of the connection — normally the runtime, briefly a straggler
+  run that outlived it — so none survives the worker. Two entries of
+  `ai.mcp_servers` are two children even when they run the same command;
 - **it does not inherit your environment.** The child receives only `HOME`,
   `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER` plus what `env` declares, so a
   secret in the worker's environment cannot leak into the tool by accident;
@@ -180,11 +182,19 @@ spent the shared start-up budget, the verification pass is given a fresh
 server would fail the filters of every server that answered.
 
 **Nothing becomes lazy.** A start-up client that never opened is not reconnected
-later; the clients are session-affine and closing one from a foreign task is
-refused, so reconnecting them needs a supervisor task that does not exist yet.
-This says nothing about the run path, which builds its own toolset and connects
-on its own: under `optional`, a run against a server that never opened at
-start-up connects then and there, and succeeds if the network came back.
+by the runtime; reconnecting it needs a supervisor task that does not exist yet.
+The run path holds the *same* toolset the runtime opened, so when that toolset
+never connected it is simply not open, and the run finds out for itself.
+
+Be clear about what that costs. The engine enters the toolset once per run,
+before it sends anything to the model, so a server that is *still* unreachable
+fails the run as a whole with a provider error — not as a per-tool refusal the
+model could work around. And once the network returns, each run opens the
+connection and closes it again when it ends, because nothing outside the run
+holds it: that is one connection, and on a server that registers clients
+dynamically one registration, **per run** rather than per worker. `optional` is
+for a laptop, a CI job or a side-car that has not come up yet; it is not a
+production posture.
 
 ## Authentication
 
@@ -486,14 +496,33 @@ use case — it just is not how *your* agent should reach *your* tools.
 
 ## Operational notes
 
-**One connection per server per worker.** Sessions are shared: two concurrent
-runs against the same server use one connection, and one run disconnecting must
-not poison the session for its neighbour.
+**One connection per server per worker.** The connection is shared by the whole
+worker: start-up and every agent granted the server work over one `MCPToolset`,
+whose entries are reference-counted, so ten agents naming one server are one
+session and not eleven. That matters beyond sockets — a server that registers
+clients dynamically sees one registration and one credential resolution per
+worker, not one per agent.
 
-**Sessions are lifespan-scoped.** Every client is opened and closed inside a
-single `AsyncExitStack` entered and exited in the **same task**, which is what
-makes closing order genuinely reverse and avoids the task-affinity failure MCP
-sessions are prone to.
+Sharing the toolset is deliberate and is *not* the same as sharing a serialised
+session: concurrent runs keep issuing their calls in parallel, so one agent's
+`tool_timeout_ms` bounds only its own call and never leaves a neighbour waiting
+for a remote that has not answered.
+
+**One server name, one connection.** Because the worker keeps a single client
+per name, two agents naming one server must resolve it to the same transport,
+address, credential and deadline. Two grants that disagree abort start-up with
+`MCP_CONNECTION_CONFLICT`, naming the server and both agents; `include` and
+`exclude` are per-agent views over the shared connection and never conflict.
+
+**Sessions are lifespan-scoped, and the last holder closes them.** The runtime
+opens every client inside a single `AsyncExitStack` and releases them in strict
+reverse order from the task that entered it. That release is a reference-count
+decrement, not necessarily the close: if a run is still in flight it holds the
+last reference and the actual close happens there. This is safe for a stronger
+reason than task affinity — the client keeps its session in an `asyncio.Task`
+of its own, created precisely so it outlives the individual context-manager
+scopes that enter and leave it, so the closing task is not the one the session
+is bound to.
 
 **Every result is untrusted input.** A tool result from a remote server is
 data from another system, exactly like a remote agent's answer. The agent's

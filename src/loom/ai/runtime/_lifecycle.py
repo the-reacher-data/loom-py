@@ -62,6 +62,7 @@ from loom.ai.runtime._mcp import (
     McpClientFactory,
     McpSession,
     SharedMcpSession,
+    connection_conflicts,
     filter_issues,
     filter_targets,
     listing_timeout_issues,
@@ -156,7 +157,9 @@ class AgentRuntime:
             failure — an unreachable server (named as the deployment
             registered it, never by URL; tolerated under
             ``ai.remote_clients: optional``), a tool filter
-            matching nothing, or a SQL connection whose read-only state drifted.
+            matching nothing, two grants of one MCP server name describing
+            different connections, or a SQL connection whose read-only state
+            drifted.
 
     Example::
 
@@ -215,6 +218,7 @@ class AgentRuntime:
         try:
             self._verify_sql_readonly()
             self._verify_hook_invoker()
+            self._verify_mcp_connections()
             tolerated = await self._open_clients(stack, deadline)
             # A tolerated failure spent the shared budget on a server start-up
             # is proceeding without, so the filter pass gets a fresh one.
@@ -482,6 +486,21 @@ class AgentRuntime:
         if unwired or unreachable:
             raise AgentCompilationError([*unwired, *unreachable])
         return tolerated
+
+    def _verify_mcp_connections(self) -> None:
+        """Refuse two grants of one server name that describe different connections.
+
+        The worker opens a single client per name and every agent granted it
+        works over that one client, so a second grant carrying another URL or
+        another credential would silently run against the first agent's
+        connection. Checked before any client opens.
+
+        Raises:
+            AgentCompilationError: Naming the server and both agents.
+        """
+        issues = connection_conflicts(self._plans.values())
+        if issues:
+            raise AgentCompilationError(issues)
 
     def _tolerates_unreachable(self) -> bool:
         """Report whether ``ai.remote_clients`` tolerates a failed connection."""

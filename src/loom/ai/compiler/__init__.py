@@ -29,6 +29,7 @@ from loom.ai.compiler._plan import (
     CompiledSkillsCapability,
     CompiledSqlCapability,
     CompiledUsecaseCapability,
+    mcp_connection,
 )
 from loom.ai.errors import AgentCompilationError, AgentCompilationIssue, AgentErrorCode
 
@@ -49,4 +50,5 @@ __all__ = [
     "CompiledSkillsCapability",
     "CompiledSqlCapability",
     "CompiledUsecaseCapability",
+    "mcp_connection",
 ]

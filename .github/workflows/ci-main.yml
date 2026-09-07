@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv run --frozen --with "pytest-cov==7.1.0" \
+          uv run --frozen --group mcp-tests --with "pytest-cov==7.1.0" \
             pytest -m "not integration" --cov --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage to Codecov

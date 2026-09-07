@@ -10,13 +10,16 @@ translated into a ``pydantic_ai.AgentSpec`` and handed to
 only what the engine does not do — binding the model, validating the output
 and classifying failures.
 
-:func:`create_a2a_client` and :func:`create_mcp_client` are exported beside the
-provider because they are not part of the engine contract: they are the
-:data:`~loom.ai.runtime.A2AClientFactory` and
-:data:`~loom.ai.runtime.McpClientFactory` a composition root hands to
+:func:`create_a2a_client` is exported beside the provider because it is not
+part of the engine contract: it is the
+:data:`~loom.ai.runtime.A2AClientFactory` a composition root hands to
 :class:`~loom.ai.runtime.AgentRuntime`, so that an outbound grant is validated
-against the live remote — the card of a remote agent, the tool catalogue of an
-MCP server — at start-up rather than on its first use.
+against the live remote at start-up rather than on its first use. The MCP
+counterpart is ``PydanticAIEngineProvider.mcp_client_factory`` rather than a
+free function, because the session it opens is the very toolset the run path
+uses: one connection per server for the whole worker. :func:`create_mcp_client`
+opens a session of its own and is for diagnostics, never for wiring the
+runtime.
 """
 
 from __future__ import annotations

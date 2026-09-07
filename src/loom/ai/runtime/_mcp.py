@@ -16,9 +16,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
 from loom.ai._filters import select_names
-from loom.ai.compiler._plan import AgentPlan, CompiledMcpCapability
+from loom.ai.compiler import AgentPlan, CompiledMcpCapability, mcp_connection
 from loom.ai.errors import (
     AgentCompilationIssue,
+    mcp_connection_conflict,
     mcp_server_unreachable,
     tool_filter_matches_nothing,
 )
@@ -175,6 +176,45 @@ def listing_timeout_issues(
     return [
         mcp_server_unreachable(server, "listing its tools timed out") for server in pending.values()
     ]
+
+
+def connection_conflicts(plans: Iterable[AgentPlan]) -> list[AgentCompilationIssue]:
+    """Return one issue per agent whose grant contradicts the server's first one.
+
+    This is what makes two different keyings agree. Start-up de-duplicates its
+    clients by server *name* (``_remote_capabilities``), while the engine keys
+    the toolset it shares by *connection*
+    (:func:`~loom.ai.compiler.mcp_connection`). One name resolving to two
+    connections would therefore open one client at start-up and still build a
+    second toolset at run time — a connection whose tool filters nothing
+    validated, for an agent that believes it was checked. Refused before any
+    client opens, so it is a boot failure and not a run-time surprise.
+
+    Plans compiled together can never disagree, because every connection fact
+    comes from one ``ai.mcp_servers`` mapping; nothing forces a deployment to
+    compile its plans together.
+
+    Args:
+        plans: Compiled plans of this worker, in the order they were given.
+
+    Returns:
+        One issue per disagreeing grant, naming the server and both agents.
+
+    Example::
+
+        issues = connection_conflicts(plans)
+    """
+    first: dict[str, tuple[CompiledMcpCapability, str]] = {}
+    issues: list[AgentCompilationIssue] = []
+    for plan in plans:
+        for capability in plan.capabilities:
+            if type(capability) is not CompiledMcpCapability:
+                continue
+            connection = mcp_connection(capability)
+            seen = first.setdefault(capability.server, (connection, plan.name))
+            if seen[0] != connection:
+                issues.append(mcp_connection_conflict(capability.server, (seen[1], plan.name)))
+    return issues
 
 
 def mcp_key(capability: CompiledMcpCapability) -> str:
