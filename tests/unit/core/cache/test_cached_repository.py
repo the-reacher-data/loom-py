@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import msgspec
 import pytest
 
 from loom.core.cache import (
+    CacheBackend,
     CacheConfig,
     CachedRepository,
     GenerationalDependencyResolver,
     cache_query,
     cached,
 )
+from loom.core.cache.keys import entity_key
 from loom.core.engine.post_commit import (
     PostCommitChannel,
     PostCommitError,
@@ -31,6 +33,15 @@ from loom.core.repository.abc.query import (
 )
 from loom.core.repository.mutation import MutationEvent
 from loom.core.transaction import close_atomic_transaction, open_atomic_transaction
+
+from ._doubles import (
+    CodeWidget,
+    CountingCacheBackend,
+    CountingRepository,
+    Widget,
+    WidgetCreate,
+    WritableRepository,
+)
 
 T = TypeVar("T")
 
@@ -583,7 +594,7 @@ class _BulkFakeRepository(_FakeRepository):
 
 
 class _RecordingResolver(GenerationalDependencyResolver):
-    def __init__(self, cache: _MemoryCacheBackend) -> None:
+    def __init__(self, cache: CacheBackend) -> None:
         super().__init__(cache)
         self.events: list[MutationEvent] = []
 
@@ -887,3 +898,63 @@ class TestPostCommitDeferral:
         assert "CachePostCommitBumpFailed" in caplog.text
         assert wrapped.entity_name in caplog.text
         assert str(created.id) in caplog.text
+
+
+class TestPrimaryKeyByName:
+    """The wrapper reads the primary key by the attribute the model declares."""
+
+    @pytest.mark.asyncio
+    async def test_create_event_ids_carry_the_declared_key(self, cache_config: CacheConfig) -> None:
+        repository = WritableRepository([CodeWidget(code=1, name="a")], CodeWidget)
+        backend = CountingCacheBackend()
+        resolver = _RecordingResolver(backend)
+        wrapped = CachedRepository(
+            repository, config=cache_config, cache=backend, dependency_resolver=resolver
+        )
+
+        created = await wrapped.create(WidgetCreate(name="b"))
+
+        assert created.code == 2
+        assert resolver.events == [
+            MutationEvent(
+                entity=wrapped.entity_name,
+                op="create",
+                ids=(2,),
+                changed_fields=frozenset({"name"}),
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_batch_caches_only_the_items_with_a_key(self, cache_config: CacheConfig) -> None:
+        repository = CountingRepository([], CodeWidget)
+        backend = CountingCacheBackend()
+        resolver = GenerationalDependencyResolver(backend)
+        wrapped = CachedRepository(
+            repository, config=cache_config, cache=backend, dependency_resolver=resolver
+        )
+        keyed = CodeWidget(code=1, name="a")
+        keyless = CodeWidget(code=cast(int, None), name="b")
+
+        await wrapped._cache_entity_batch([keyless, keyed], profile="default")
+
+        fingerprint = await resolver.fingerprint(resolver.entity_tags(wrapped.entity_name, 1))
+        expected_key = entity_key(wrapped.entity_name, 1, "default", fingerprint)
+        assert backend.multi_set_batches == [[expected_key]]
+        assert await backend.get_value(expected_key, type=CodeWidget) == keyed
+
+    @pytest.mark.asyncio
+    async def test_repository_without_model_falls_back_to_id(
+        self, cache_config: CacheConfig
+    ) -> None:
+        repository = WritableRepository([Widget(id=1, name="a")], Widget)
+        del repository.model
+        backend = CountingCacheBackend()
+        resolver = _RecordingResolver(backend)
+        wrapped = CachedRepository(
+            repository, config=cache_config, cache=backend, dependency_resolver=resolver
+        )
+
+        created = await wrapped.create(WidgetCreate(name="b"))
+
+        assert created.id == 2
+        assert [event.ids for event in resolver.events] == [(2,)]

@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial, wraps
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, NamedTuple, TypeVar, cast
 
 import msgspec
 
@@ -122,6 +122,42 @@ class _DependencySpec:
     fk_field: str
 
 
+class _PrimaryKey(NamedTuple):
+    """Primary key of the cached model as the wrapper reads it.
+
+    Attributes:
+        attribute: Name of the primary-key attribute; ``id`` when the wrapped
+            repository declares no model or the model declares no primary key.
+        python_type: Type of the key, or ``None`` when it is unresolvable or
+            not a plain class (``int | None``, for instance).
+    """
+
+    attribute: str
+    python_type: type | None
+
+
+_FALLBACK_PRIMARY_KEY = _PrimaryKey(attribute="id", python_type=None)
+
+
+def _resolve_primary_key(repository: Repository[Any, Any, Any, Any]) -> _PrimaryKey:
+    """Resolve the primary key of the wrapped repository's model.
+
+    Falls back to the attribute ``id`` with no type for a repository without a
+    model or whose model declares no primary key; the type alone is ``None``
+    when the key's annotation is not a plain class.  The cached index is then
+    used as it was decoded and the refill runs per id.
+    """
+    model = getattr(repository, "model", None)
+    if model is None:
+        return _FALLBACK_PRIMARY_KEY
+    try:
+        attribute = get_id_attribute(model)
+    except (TypeError, ValueError):
+        return _FALLBACK_PRIMARY_KEY
+    hint = resolve_type_hints(model).get(attribute)
+    return _PrimaryKey(attribute, hint if isinstance(hint, type) else None)
+
+
 class CachedRepository(
     Repository[OutputT, CreateT, UpdateT, IdT],
     Generic[OutputT, CreateT, UpdateT, IdT],
@@ -133,10 +169,11 @@ class CachedRepository(
     queries) is exactly the wrapped one.
 
     The cached list path reloads the entities missing from a warm index with a
-    single ``id IN (...)`` query, so the wrapped repository should support
-    :attr:`~loom.core.repository.abc.query.FilterOp.IN` on the primary key; a
-    repository whose ``allowed_filter_fields`` excludes ``id`` is detected and
-    served with per-id reads instead.
+    single ``<primary key> IN (...)`` query, so the wrapped repository should
+    support :attr:`~loom.core.repository.abc.query.FilterOp.IN` on the primary
+    key; a repository whose ``allowed_filter_fields`` excludes the primary key
+    is detected and served with per-id reads instead.  The key is read by the
+    attribute name the model declares (``id`` when there is no model).
 
     Concurrent misses of the same key on the entity read and on a
     ``@cache_query`` read are coalesced inside the process: the first caller
@@ -189,7 +226,7 @@ class CachedRepository(
         fallback_name = repository.__class__.__name__.lower()
         self._entity_name = getattr(repository, "entity_name", fallback_name)
         self._depends_on = self._parse_dependency_specs(self._collect_dependency_specs(repository))
-        self._id_type = self._resolve_id_type(repository)
+        self._primary_key = _resolve_primary_key(repository)
         self._single_flight = SingleFlight(self._log_abandoned_load)
         self._rng = random.Random()
         self._log = get_logger(__name__).bind(repository=repository.__class__.__name__)
@@ -383,7 +420,7 @@ class CachedRepository(
 
     async def create(self, data: CreateT) -> OutputT:
         created = await self._repository.create(data)
-        entity_id = getattr(created, "id", None)
+        entity_id = self._extract_entity_id(created)
         await self._publish_invalidation(
             MutationEvent(
                 entity=self.entity_name,
@@ -631,13 +668,12 @@ class CachedRepository(
         return max(1, round(ttl + self._rng.uniform(-spread, spread)))
 
     def _extract_entity_id(self, item: Any) -> object | None:
-        """Read the primary key of *item*.
+        """Read the primary key of *item* by the attribute the model declares.
 
-        The name ``id`` is assumed here and in the refill filter, which queries
-        the missing entities with ``FilterSpec(field="id", ...)``.
+        The same attribute names the refill filter, which queries the missing
+        entities with ``FilterSpec(field=<primary key>, ...)``.
         """
-        value = getattr(item, "id", None)
-        return value
+        return getattr(item, self._primary_key.attribute, None)
 
     async def _create_many(self, data: Sequence[msgspec.Struct]) -> tuple[OutputT, ...]:
         if not data:
@@ -832,12 +868,12 @@ class CachedRepository(
         """Whether the wrapped repository accepts a filter on the primary key.
 
         A repository may restrict the filterable fields (``allowed_filter_fields``).
-        When ``id`` is not among them the batched refill would be rejected, so the
-        wrapper degrades to per-id reads rather than failing the page; the
-        repository's declared policy is left untouched.
+        When the primary-key attribute is not among them the batched refill would
+        be rejected, so the wrapper degrades to per-id reads rather than failing
+        the page; the repository's declared policy is left untouched.
         """
         allowed = getattr(self._repository, "allowed_filter_fields", None)
-        return not allowed or "id" in allowed
+        return not allowed or self._primary_key.attribute in allowed
 
     async def _fetch_missing_one_by_one(
         self,
@@ -869,7 +905,9 @@ class CachedRepository(
 
     def _id_in_query(self, ids: Sequence[IdT]) -> QuerySpec:
         return QuerySpec(
-            filters=FilterGroup(filters=(FilterSpec(field="id", op=FilterOp.IN, value=ids),)),
+            filters=FilterGroup(
+                filters=(FilterSpec(field=self._primary_key.attribute, op=FilterOp.IN, value=ids),)
+            ),
             limit=len(ids),
         )
 
@@ -881,22 +919,35 @@ class CachedRepository(
         return list(await asyncio.gather(*(resolver.fingerprint(tags) for tags in tags_by_id)))
 
     async def _cache_entity_batch(self, items: Sequence[OutputT], profile: str) -> None:
-        if not items:
+        keyed = self._items_with_key(items)
+        if not keyed:
             return
         ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
-        entity_ids = [getattr(item, "id", None) for item in items]
         tags_by_id = [
             self._resolver.entity_tags(self.entity_name, entity_id)
             + self._entity_dependency_tags(entity_id)
-            for entity_id in entity_ids
+            for _item, entity_id in keyed
         ]
         fingerprints = await self._resolve_fingerprints(tags_by_id)
 
         pairs: list[tuple[str, Any]] = []
-        for item, entity_id, fingerprint in zip(items, entity_ids, fingerprints, strict=True):
+        for (item, entity_id), fingerprint in zip(keyed, fingerprints, strict=True):
             key = entity_key(self.entity_name, entity_id, profile, fingerprint)
             pairs.append((key, to_payload(item)))
         await self._cache.multi_set_values(pairs, ttl=ttl)
+
+    def _items_with_key(self, items: Sequence[OutputT]) -> list[tuple[OutputT, object]]:
+        """Pair each item with its primary key, leaving out the ones without one.
+
+        An item whose key resolves to ``None`` would be cached under a key that
+        no per-id bump ever reaches, so it is not cached at all.
+        """
+        keyed: list[tuple[OutputT, object]] = []
+        for item in items:
+            entity_id = self._extract_entity_id(item)
+            if entity_id is not None:
+                keyed.append((item, entity_id))
+        return keyed
 
     def _to_output_from_cache(self, payload: Any) -> OutputT | None:
         if payload is None:
@@ -912,26 +963,6 @@ class CachedRepository(
                 return cast(OutputT, to_struct(model, payload))
         return cast(OutputT, payload)
 
-    def _resolve_id_type(
-        self,
-        repository: Repository[OutputT, CreateT, UpdateT, IdT],
-    ) -> type | None:
-        """Resolve the Python type of the model's primary key, if it is declarable.
-
-        Returns ``None`` for a repository without a model, without a primary key
-        or whose key is not a plain class; the cached index is then used as it
-        was decoded and the refill runs per id.
-        """
-        model = getattr(repository, "model", None)
-        if model is None:
-            return None
-        try:
-            id_attribute = get_id_attribute(model)
-        except (TypeError, ValueError):
-            return None
-        hint = resolve_type_hints(model).get(id_attribute)
-        return hint if isinstance(hint, type) else None
-
     def _index_ids(self, raw_ids: list[Any]) -> list[IdT] | None:
         """Restore the ids of a cached index to the model's primary-key type.
 
@@ -945,10 +976,11 @@ class CachedRepository(
             The converted ids, or ``None`` when they do not fit the current
             primary-key type, which makes the index unusable.
         """
-        if self._id_type is None:
+        id_type = self._primary_key.python_type
+        if id_type is None:
             return cast(list[IdT], raw_ids)
         try:
-            return [cast(IdT, msgspec.convert(value, self._id_type)) for value in raw_ids]
+            return [cast(IdT, msgspec.convert(value, id_type)) for value in raw_ids]
         except msgspec.ValidationError:
             self._log.debug("CacheIndexIdTypeMismatch", entity=self.entity_name)
             return None

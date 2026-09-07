@@ -21,6 +21,7 @@ import msgspec
 from loom.core.cache import CacheConfig, CachedRepository, GenerationalDependencyResolver
 from loom.core.cache.decorators import cache_query
 from loom.core.model import BaseModel, ColumnField
+from loom.core.model.introspection import get_id_attribute
 from loom.core.repository import FilterParams, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import (
     CursorResult,
@@ -63,17 +64,26 @@ class DateWidget(BaseModel):
     name: str = ColumnField(length=32)
 
 
-RowT = TypeVar("RowT", Widget, UuidWidget, DateWidget)
+class CodeWidget(BaseModel):
+    """Row whose integer primary key is not named ``id``."""
+
+    __tablename__ = "code_widgets"
+
+    code: int = ColumnField(primary_key=True)
+    name: str = ColumnField(length=32)
+
+
+RowT = TypeVar("RowT", Widget, UuidWidget, DateWidget, CodeWidget)
 
 
 class WidgetCreate(msgspec.Struct):
-    """Creation payload; the doubles are read-only and never apply it."""
+    """Creation payload; only :class:`WritableRepository` applies it."""
 
     name: str
 
 
 class WidgetUpdate(msgspec.Struct, kw_only=True):
-    """Update payload; the doubles are read-only and never apply it."""
+    """Update payload; only :class:`WritableRepository` applies it."""
 
     name: str | msgspec.UnsetType = msgspec.UNSET
 
@@ -88,6 +98,7 @@ class CountingCacheBackend:
         multi_set_batches: Keys written by each ``multi_set_values`` call.
         set_ttls: TTL received by each ``set_value`` call, in order.
         multi_set_ttls: TTL received by each ``multi_set_values`` call, in order.
+        incr_keys: Key received by each ``incr`` call, in order.
     """
 
     def __init__(self) -> None:
@@ -96,6 +107,7 @@ class CountingCacheBackend:
         self.multi_set_batches: list[list[str]] = []
         self.set_ttls: list[int | None] = []
         self.multi_set_ttls: list[int | None] = []
+        self.incr_keys: list[str] = []
 
     @property
     def tag_multi_get_calls(self) -> int:
@@ -112,6 +124,7 @@ class CountingCacheBackend:
         self.multi_set_batches.clear()
         self.set_ttls.clear()
         self.multi_set_ttls.clear()
+        self.incr_keys.clear()
 
     def _decode(self, key: str, target: type[T] | None) -> T | Any | None:
         raw = self.data.get(key)
@@ -156,6 +169,7 @@ class CountingCacheBackend:
         return sum([await self.delete(key) for key in keys])
 
     async def incr(self, key: str, delta: int = 1) -> int:
+        self.incr_keys.append(key)
         current = int(self._decode(key, int) or 0) + delta
         self.data[key] = msgspec.msgpack.encode(current)
         return current
@@ -165,33 +179,41 @@ class CountingCacheBackend:
 
 
 class CountingRepository(Repository[RowT, WidgetCreate, WidgetUpdate, Any], Generic[RowT]):
-    """Read-only repository double that counts reads and honours ``id IN (...)``.
+    """Read-only repository double that counts reads and honours ``<pk> IN (...)``.
 
-    ``list_with_query`` matches ids by equality, as a typed backend does — a
-    SQLAlchemy ``DateTime`` column filtered with strings returns no rows — and
-    returns the matches in reverse insertion order so a test can tell whether
-    the caller re-orders them instead of trusting the backend order.  Offset
+    The primary key is whatever the row model declares (``id`` on
+    :class:`Widget`, ``code`` on :class:`CodeWidget`).  ``list_with_query``
+    matches keys by equality, as a typed backend does — a SQLAlchemy
+    ``DateTime`` column filtered with strings returns no rows — and returns
+    the matches in reverse insertion order so a test can tell whether the
+    caller re-orders them instead of trusting the backend order.  Offset
     queries build a :class:`PageParams` like the SQLAlchemy and Mongo
     repositories do, so an out-of-range limit raises here too.
 
     Attributes:
         model: Loom model of the rows, read by the wrapper to resolve the
-            primary-key type.
+            primary key; a test deletes it to stand for a repository that
+            declares none.
+        id_attribute: Name of the primary-key attribute of ``model``.
         storage: Rows keyed by primary key.
         get_by_id_calls: Number of ``get_by_id`` calls received.
         list_paginated_calls: Number of ``list_paginated`` calls received.
         list_with_query_calls: Number of ``list_with_query`` calls received.
+        note_count_calls: Number of ``note_count`` calls received.
         queries: Every ``QuerySpec`` received, in order.
     """
 
     entity_name = "widget"
 
     def __init__(self, rows: Sequence[RowT], row_type: type[RowT]) -> None:
-        self.storage: dict[Any, RowT] = {row.id: row for row in rows}
-        self.model = row_type
+        self.model: type[RowT] = row_type
+        self._row_type: type[RowT] = row_type
+        self.id_attribute = get_id_attribute(row_type)
+        self.storage: dict[Any, RowT] = {self.key_of(row): row for row in rows}
         self.get_by_id_calls = 0
         self.list_paginated_calls = 0
         self.list_with_query_calls = 0
+        self.note_count_calls = 0
         self.queries: list[QuerySpec] = []
 
     def reset_counters(self) -> None:
@@ -199,11 +221,16 @@ class CountingRepository(Repository[RowT, WidgetCreate, WidgetUpdate, Any], Gene
         self.get_by_id_calls = 0
         self.list_paginated_calls = 0
         self.list_with_query_calls = 0
+        self.note_count_calls = 0
         self.queries.clear()
+
+    def key_of(self, row: RowT) -> Any:
+        """Return the primary key of *row*."""
+        return getattr(row, self.id_attribute)
 
     def to_output_from_payload(self, payload: dict[str, Any]) -> RowT:
         """Rebuild a row from a cached builtins payload."""
-        return msgspec.convert(payload, self.model)
+        return msgspec.convert(payload, self._row_type)
 
     async def get_by_id(self, obj_id: Any, profile: str = "default") -> RowT | None:
         _ = profile
@@ -212,9 +239,16 @@ class CountingRepository(Repository[RowT, WidgetCreate, WidgetUpdate, Any], Gene
 
     async def get_by(self, field: str, value: Any, profile: str = "default") -> RowT | None:
         _ = profile
-        if field != "id":
+        if field != self.id_attribute:
             raise ValueError(f"unsupported field: {field}")
         return self.storage.get(value)
+
+    @cache_query(scope="entity")
+    async def note_count(self, obj_id: Any) -> int:
+        """Entity-scoped cached read keyed by the primary key."""
+        self.note_count_calls += 1
+        row = self.storage.get(obj_id)
+        return 0 if row is None else len(row.name)
 
     async def exists_by(self, field: str, value: Any) -> bool:
         return await self.get_by(field, value) is not None
@@ -255,10 +289,10 @@ class CountingRepository(Repository[RowT, WidgetCreate, WidgetUpdate, Any], Gene
             return rows[: query.limit]
         wanted: set[Any] = set()
         for spec in query.filters.filters:
-            if spec.field != "id" or spec.op is not FilterOp.IN:
+            if spec.field != self.id_attribute or spec.op is not FilterOp.IN:
                 raise ValueError(f"unsupported filter: {spec}")
             wanted.update(spec.value)
-        return [row for row in rows if row.id in wanted][: query.limit]
+        return [row for row in rows if self.key_of(row) in wanted][: query.limit]
 
     async def create(self, data: WidgetCreate) -> RowT:
         raise NotImplementedError("the counting double is read-only")
@@ -270,21 +304,75 @@ class CountingRepository(Repository[RowT, WidgetCreate, WidgetUpdate, Any], Gene
         raise NotImplementedError("the counting double is read-only")
 
 
-class RestrictedFilterRepository(CountingRepository[Widget]):
-    """Repository double whose filter allowlist does not include ``id``.
+class WritableRepository(CountingRepository[RowT], Generic[RowT]):
+    """Counting double whose writes mutate ``storage``.
+
+    ``create`` assigns the next free integer key, so it serves the
+    integer-keyed rows (:class:`Widget`, :class:`CodeWidget`).  The writes do
+    not publish anything: the cached wrapper around this double is what
+    turns them into mutation events.
+    """
+
+    async def create(self, data: WidgetCreate) -> RowT:
+        row = self._new_row(data)
+        self.storage[self.key_of(row)] = row
+        return row
+
+    async def create_many(self, data: Sequence[msgspec.Struct]) -> tuple[RowT, ...]:
+        """Persist every payload in *data*, in order."""
+        created = [
+            await self.create(msgspec.convert(msgspec.to_builtins(item), WidgetCreate))
+            for item in data
+        ]
+        return tuple(created)
+
+    async def update(self, obj_id: Any, data: WidgetUpdate) -> RowT | None:
+        row = self.storage.get(obj_id)
+        if row is None:
+            return None
+        if data.name is not msgspec.UNSET:
+            row.name = data.name
+        return row
+
+    async def delete(self, obj_id: Any) -> bool:
+        return self.storage.pop(obj_id, None) is not None
+
+    def _new_row(self, data: WidgetCreate) -> RowT:
+        next_key = max((int(key) for key in self.storage), default=0) + 1
+        payload = {self.id_attribute: next_key, "name": data.name}
+        return msgspec.convert(payload, self._row_type)
+
+
+class ParentRepository(CountingRepository[Widget]):
+    """Counting double for an entity whose reads depend on ``widget`` rows."""
+
+    entity_name = "parent"
+    depends_on = ("widgets:parent_id",)
+
+
+class RestrictedFilterRepository(CountingRepository[RowT], Generic[RowT]):
+    """Repository double with an explicit filter allowlist.
 
     Filtering outside the allowlist raises, exactly as the SQLAlchemy query
     compiler does, so a caller cannot satisfy this double by catching the
-    error and retrying.
+    error and retrying.  The default allowlist leaves out every primary key;
+    a test that wants the batched refill passes one that names it.
     """
 
-    allowed_filter_fields = frozenset({"name"})
+    def __init__(
+        self,
+        rows: Sequence[RowT],
+        row_type: type[RowT],
+        allowed_filter_fields: frozenset[str] = frozenset({"name"}),
+    ) -> None:
+        super().__init__(rows, row_type)
+        self.allowed_filter_fields = allowed_filter_fields
 
     async def list_with_query(
         self,
         query: QuerySpec,
         profile: str = "default",
-    ) -> PageResult[Widget] | CursorResult[Widget]:
+    ) -> PageResult[RowT] | CursorResult[RowT]:
         for spec in query.filters.filters if query.filters else ():
             if spec.field.split(".")[0] not in self.allowed_filter_fields:
                 raise UnsafeFilterError(spec.field)
@@ -416,7 +504,8 @@ class CodecRepository(CustomCallCountingRepository[RowT], Generic[RowT]):
         """Return a list of structs."""
         self.custom_calls["stats_list"] += 1
         return [
-            Stats(total=index, label=str(row.id)) for index, row in enumerate(self.storage.values())
+            Stats(total=index, label=str(self.key_of(row)))
+            for index, row in enumerate(self.storage.values())
         ]
 
     @cache_query(scope="list")
@@ -424,7 +513,8 @@ class CodecRepository(CustomCallCountingRepository[RowT], Generic[RowT]):
         """Return a tuple of structs, which builtins conversion flattens."""
         self.custom_calls["stats_tuple"] += 1
         return tuple(
-            Stats(total=index, label=str(row.id)) for index, row in enumerate(self.storage.values())
+            Stats(total=index, label=str(self.key_of(row)))
+            for index, row in enumerate(self.storage.values())
         )
 
     @cache_query(scope="list")
