@@ -1,6 +1,6 @@
 [project]
 name = "loom-kernel"
-version = "1.10.0"
+dynamic = ["version"]
 description = "Loom Python project"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -172,8 +172,17 @@ none = "loom.core.persistence.none:NoneBackend"
 [build-system]
 requires = [
     "hatchling>=1.24.0",
+    "hatch-vcs>=0.4.0",
 ]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+# A prerelease cannot carry a local version label, and the default scheme
+# appends the commit as one, so every dev build would be rejected by the index.
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
 
 [dependency-groups]
 # Isolated on purpose: fastmcp pulls a large transitive tree that only the MCP
@@ -380,11 +389,8 @@ markers = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "1.10.0"
 tag_format = "v$version"
-version_files = [
-    "pyproject.toml:project.version",
-]
+version_provider = "scm"
 update_changelog_on_bump = true
 
 # A few tests write a module into a pytest temp directory and import it, so
