@@ -70,7 +70,7 @@ jobs:
       - name: Quality report (strict gate)
         id: quality
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           src-dir: src
           test-dir: tests
@@ -81,7 +81,7 @@ jobs:
 
       - name: Publish PR quality comment
         if: ${{ always() && steps.quality.outputs.report-file != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- loom-quality-report -->"
@@ -89,15 +89,34 @@ jobs:
 
       - name: Compute candidate prerelease version
         id: version
-        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           branch: ${{ github.head_ref }}
           prerelease: "true"
 
+      # The calculator writes the version it computed into pyproject.toml. The
+      # version is declared dynamic now, and hatchling refuses a field that is
+      # both static and dynamic, so the build fails unless the file is put back.
+      # Only these three are ever touched; anything else is a bug, not drift.
+      - name: Restore action side effects
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do
+            case "${path}" in
+              pyproject.toml|uv.lock|CHANGELOG.md) ;;
+              *)
+                echo "Release actions modified unexpected tracked file: ${path}"
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only HEAD)
+          git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock CHANGELOG.md
+
       - name: Generate changelog preview
         id: changelog
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           mode: "pr"
           branch: ${{ github.event.pull_request.head.sha }}
@@ -108,7 +127,7 @@ jobs:
 
       - name: Publish PR changelog comment
         if: ${{ steps.changelog.outcome == 'success' && steps.changelog.outputs.output_path != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"
