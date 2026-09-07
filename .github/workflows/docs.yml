@@ -48,8 +48,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # uv is pinned to the same version in every workflow to avoid drift, and
-      # installed from wheels only so no sdist setup script can run.
+      # Wheels only, so no sdist setup script runs while installing uv.
       - name: Install uv
         run: |
           pip install --only-binary :all: "uv==0.10.2"

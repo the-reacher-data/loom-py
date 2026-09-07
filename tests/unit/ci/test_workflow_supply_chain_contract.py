@@ -50,7 +50,10 @@ def _logical_lines(script: str) -> Iterator[str]:
 def _run_commands(workflow_path: Path) -> Iterator[str]:
     workflow = cast(dict[str, Any], yaml.safe_load(workflow_path.read_text(encoding="utf-8")))
     for job in cast(dict[str, Any], workflow["jobs"]).values():
-        for step in cast(list[dict[str, Any]], cast(dict[str, Any], job)["steps"]):
+        steps = cast(dict[str, Any], job).get("steps")
+        if steps is None:
+            continue
+        for step in cast(list[dict[str, Any]], steps):
             script = cast(str, cast(dict[str, Any], step).get("run", ""))
             if script:
                 yield from _logical_lines(script)
@@ -132,3 +135,22 @@ def test_every_workflow_installs_the_same_pinned_uv() -> None:
 
     assert workflows_installing_uv
     assert all(specifiers == {PINNED_UV} for specifiers in workflows_installing_uv.values())
+
+
+def test_a_job_that_delegates_pins_what_it_calls() -> None:
+    """A called workflow runs commands this repository cannot audit, so it is pinned."""
+    delegating = {
+        (path.name, name): cast(str, job["uses"])
+        for path in _workflow_paths()
+        for name, job in cast(
+            dict[str, Any],
+            cast(dict[str, Any], yaml.safe_load(path.read_text(encoding="utf-8")))["jobs"],
+        ).items()
+        if "uses" in cast(dict[str, Any], job)
+    }
+
+    assert delegating, "no job delegates; drop this test with the last caller"
+    for (workflow, job), uses in delegating.items():
+        _, separator, revision = uses.partition("@")
+        assert separator, f"{workflow}:{job} calls {uses} without a revision"
+        assert len(revision) == 40, f"{workflow}:{job} pins {revision}, not a commit"

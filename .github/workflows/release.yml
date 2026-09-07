@@ -1,7 +1,7 @@
 name: release
 
 # Merging a pull request labelled `release` publishes everything merged since
-# the last tag. The dispatch is the recovery path for a run that stopped halfway.
+# the last tag. The dispatch resumes a run that stopped halfway.
 on:
   pull_request:
     types: [closed]
