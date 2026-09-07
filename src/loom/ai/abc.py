@@ -377,9 +377,9 @@ Called exactly once at build as ``factory(context, **params)``: the first
 positional is a :class:`ToolsetContext`, and the artifact's ``params`` arrive
 as keyword arguments. A factory declares its own named parameters, with
 defaults, and returns the engine-facing toolset. The parameter names are
-checked against the signature at compile time; a plain ``Callable`` alias
-rather than a Protocol, because a Protocol fixing ``**params`` would reject
-every factory that names them.
+checked against the signature at compile time. It is a plain ``Callable``
+alias rather than a Protocol because a Protocol fixing ``**params`` would
+reject every factory that names them.
 """
 
 

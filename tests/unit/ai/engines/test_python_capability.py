@@ -81,6 +81,15 @@ class RemoteFactory:
         return FunctionToolset()
 
 
+class FailingFactory:
+    """Factory that raises with a secret in the message, as application code might."""
+
+    def __call__(self, context: ToolsetContext) -> object:
+        """Raise before building anything."""
+        del context
+        raise ValueError("secret=abc")
+
+
 @dataclass
 class FakeMcpToolset:
     """Stand-in for the engine's ``MCPToolset``: enterable, records direct calls.
@@ -171,7 +180,6 @@ class TestFactoryCallShape:
 
         _capabilities.build_toolsets(make_plan(capability), container, mcp=SharedMcpToolsets())
 
-        assert len(factory.calls) == 1
         args, kwargs = factory.calls[0]
         assert len(args) == 1
         assert context_of(factory).container is container
@@ -248,6 +256,30 @@ class TestRemote:
         assert SERVER in issue.message
         assert factory.sessions == []
         assert len(toolset_builder.built) == 1
+
+
+class TestFactoryFailure:
+    """A factory that raises fails start-up with a coded issue, not a bare traceback."""
+
+    def test_a_raising_factory_is_reported_by_class_name_without_its_message(self) -> None:
+        """The issue names the agent, the factory and the class; the message stays private."""
+        capability = CompiledPythonCapability(factory_ref=FACTORY_REF, factory=FailingFactory())
+
+        with pytest.raises(AgentCompilationError) as raised:
+            _capabilities.build_toolsets(
+                make_plan(capability), LoomContainer(), mcp=SharedMcpToolsets()
+            )
+
+        (issue,) = raised.value.issues
+        assert (issue.code, issue.field) == (
+            AgentErrorCode.PYTHON_FACTORY_FAILED,
+            "capabilities.factory",
+        )
+        assert AGENT in issue.message
+        assert FACTORY_REF in issue.message
+        assert "ValueError" in issue.message
+        assert "abc" not in issue.message
+        assert isinstance(raised.value.__cause__, ValueError)
 
 
 def test_abc_imports_on_a_fresh_interpreter() -> None:

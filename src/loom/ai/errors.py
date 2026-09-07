@@ -96,6 +96,7 @@ class AgentErrorCode(StrEnum):
     PYTHON_FACTORY_NOT_CALLABLE = "PYTHON_FACTORY_NOT_CALLABLE"
     PYTHON_FACTORY_PARAMS_REJECTED = "PYTHON_FACTORY_PARAMS_REJECTED"
     PYTHON_REMOTE_NOT_GRANTED = "PYTHON_REMOTE_NOT_GRANTED"
+    PYTHON_FACTORY_FAILED = "PYTHON_FACTORY_FAILED"
     A2A_AGENT_UNKNOWN = "A2A_AGENT_UNKNOWN"
     A2A_URL_INVALID = "A2A_URL_INVALID"
     ANONYMOUS_WITH_DATA_CAPABILITY = "ANONYMOUS_WITH_DATA_CAPABILITY"
@@ -726,6 +727,20 @@ def python_remote_not_granted(component: str, factory: str, server: str) -> Agen
             f"{component}: python factory '{factory}' asked for mcp server '{server}', "
             f"but agent '{component}' has no mcp grant on that server"
         ),
+        component=component,
+        field="capabilities.factory",
+    )
+
+
+def python_factory_failed(component: str, factory: str, error: str) -> AgentCompilationIssue:
+    """A ``python`` factory raised while building its toolset at start-up.
+
+    Only the exception class is named: the message could carry a ``params``
+    value or anything else the factory touched.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.PYTHON_FACTORY_FAILED,
+        message=f"{component}: python factory '{factory}' raised {error} while building",
         component=component,
         field="capabilities.factory",
     )

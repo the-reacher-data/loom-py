@@ -770,8 +770,11 @@ artifact's self-description lists the parameter names only.
 Compilation refuses a reference that cannot be imported
 (`PYTHON_FACTORY_UNRESOLVABLE`), one that is not callable
 (`PYTHON_FACTORY_NOT_CALLABLE`) and a `params` block the signature cannot bind
-(`PYTHON_FACTORY_PARAMS_REJECTED`); `PYTHON_REMOTE_NOT_GRANTED` is the one
-failure raised at start-up, when the factory runs.
+(`PYTHON_FACTORY_PARAMS_REJECTED`). Three failures are raised at start-up, when
+the factory runs: `PYTHON_FACTORY_NOT_CALLABLE` when what it returns is not a
+toolset, `PYTHON_REMOTE_NOT_GRANTED` when it asks for a server the agent was not
+granted, and `PYTHON_FACTORY_FAILED` when the factory itself raises — the
+exception class is reported, its message is not.
 
 ```{admonition} Breaking change
 :class: warning

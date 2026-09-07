@@ -11,6 +11,12 @@ def build_any(context: object, **options: Any) -> object:
     return object()
 
 
+def build_keyword_only(*, max_results: int = 3) -> object:
+    """Leave no slot for the context positional; not a ``ToolsetFactory``."""
+    del max_results
+    return object()
+
+
 def build_strict(context: object, *, max_results: int) -> object:
     """Require ``max_results``; the artifact must supply it."""
     del context, max_results

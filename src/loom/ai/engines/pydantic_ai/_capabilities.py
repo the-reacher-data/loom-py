@@ -78,6 +78,7 @@ from loom.ai.errors import (
     AgentRunError,
     AgentRunErrorCode,
     provider_not_installed,
+    python_factory_failed,
     python_factory_not_callable,
     python_remote_not_granted,
 )
@@ -389,13 +390,31 @@ def _python_toolset(
     so its tools sit behind the same authenticated boundary a ``usecase`` tool
     does.
     """
-    python_context: ToolsetContext = _python_context(capability, context)
-    toolset = capability.factory(python_context, **capability.params)
+    toolset = _call_factory(capability, context)
     if not isinstance(toolset, AbstractToolset):
         raise AgentCompilationError(
             [python_factory_not_callable(context.agent, capability.factory_ref)]
         )
     return guarded_toolset(toolset, context, "python", authenticated_caller)
+
+
+def _call_factory(capability: CompiledPythonCapability, context: BuildContext) -> object:
+    """Run the factory, turning anything it raises into a coded issue.
+
+    A refusal the context itself raised (``PYTHON_REMOTE_NOT_GRANTED``) passes
+    through untouched. Any other exception is reported by class name only: its
+    text could echo a ``params`` value, and the artifact's issues are shown to
+    whoever deploys it.
+    """
+    python_context: ToolsetContext = _python_context(capability, context)
+    try:
+        return capability.factory(python_context, **capability.params)
+    except AgentCompilationError:
+        raise
+    except Exception as exc:
+        raise AgentCompilationError(
+            [python_factory_failed(context.agent, capability.factory_ref, type(exc).__name__)]
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

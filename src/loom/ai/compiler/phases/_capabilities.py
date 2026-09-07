@@ -392,29 +392,37 @@ def _compile_python(capability: PythonCapability, context: _Context) -> _Handler
         return None, [python_factory_unresolvable(context.component, capability.factory, str(exc))]
     if not callable(factory):
         return None, [python_factory_not_callable(context.component, capability.factory)]
-    reason = _rejected_params(factory, capability.params)
-    if reason is not None:
-        return None, [python_factory_params_rejected(context.component, capability.factory, reason)]
+    issue = _rejected_params(factory, capability.params, context.component, capability.factory)
+    if issue is not None:
+        return None, [issue]
     compiled = CompiledPythonCapability(
         factory_ref=capability.factory, factory=factory, params=capability.params
     )
     return compiled, []
 
 
-def _rejected_params(factory: Callable[..., object], params: Mapping[str, Any]) -> str | None:
-    """Return why ``params`` cannot bind to ``factory``'s signature, or ``None``.
+def _rejected_params(
+    factory: Callable[..., object], params: Mapping[str, Any], component: str, ref: str
+) -> AgentCompilationIssue | None:
+    """Return the issue that keeps ``factory(context, **params)`` from binding.
 
-    A callable whose signature cannot be inspected is accepted: Python's own
-    call at build reports whatever is wrong.
+    The context positional is bound alone first, so a factory with no slot for
+    it is reported as not a ``ToolsetFactory`` rather than as rejecting the
+    ``params``. A callable whose signature cannot be inspected is accepted:
+    Python's own call at build reports whatever is wrong.
     """
     try:
         signature = inspect.signature(factory)
     except (ValueError, TypeError):
         return None
     try:
+        signature.bind_partial(_FIRST_POSITIONAL)
+    except TypeError:
+        return python_factory_not_callable(component, ref)
+    try:
         signature.bind(_FIRST_POSITIONAL, **params)
     except TypeError as exc:
-        return str(exc)
+        return python_factory_params_rejected(component, ref, str(exc))
     return None
 
 

@@ -148,7 +148,7 @@ class BuildContext:
             timeout_s=plan.policies.tool_timeout_ms / _MS_PER_SECOND,
             mcp=mcp,
             mcp_grants=tuple(
-                grant for grant in plan.capabilities if isinstance(grant, CompiledMcpCapability)
+                grant for grant in plan.capabilities if type(grant) is CompiledMcpCapability
             ),
         )
 

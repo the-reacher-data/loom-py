@@ -204,7 +204,8 @@ class CompiledPythonCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     Attributes:
         factory_ref: ``module:factory`` reference, for the self-description.
         factory: Imported factory, called once at build as
-            ``factory(<first positional>, **params)``.
+            ``factory(context, **params)`` with a
+            :class:`~loom.ai.abc.ToolsetContext` first.
         params: Keyword arguments the artifact declared for the factory. The
             names bind to the factory's signature (checked at compile); the
             values are decoded YAML carried as-is.

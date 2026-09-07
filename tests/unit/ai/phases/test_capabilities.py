@@ -504,6 +504,20 @@ class TestPythonFactory:
             "capabilities.factory",
         )
 
+    def test_reports_not_callable_when_factory_leaves_no_slot_for_the_context(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        single_issue_for: Callable[..., AgentCompilationIssue],
+    ) -> None:
+        spec = spec_factory(
+            capabilities=(PythonCapability(factory="myapp.tools.params:build_keyword_only"),)
+        )
+        issue = single_issue_for(spec)
+        assert (issue.code, issue.field) == (
+            AgentErrorCode.PYTHON_FACTORY_NOT_CALLABLE,
+            "capabilities.factory",
+        )
+
     def test_carries_params_when_they_bind_to_the_factory_signature(
         self,
         spec_factory: Callable[..., AgentSpecV1],
