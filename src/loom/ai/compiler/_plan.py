@@ -152,6 +152,33 @@ class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     exclude: tuple[str, ...] = ()
 
 
+def mcp_connection(capability: CompiledMcpCapability) -> CompiledMcpCapability:
+    """Return the connection identity of one ``mcp`` grant, its filters cleared.
+
+    A worker opens one client per MCP connection and every agent granted it
+    works over that one client, so what makes two grants the same client is
+    every fact the connection is made of — transport, address, credential
+    reference, deadline, subprocess command, arguments and environment.
+    ``include`` and ``exclude`` are per-agent *views* over the same connection,
+    so they are emptied here and applied by the agent's own toolset instead.
+
+    Args:
+        capability: Compiled grant of one agent.
+
+    Returns:
+        The same grant with ``include`` and ``exclude`` emptied. It is
+        hashable, so it doubles as the key a shared client is stored under and
+        as the capability that client is built from.
+
+    Example::
+
+        assert mcp_connection(read_only) == mcp_connection(read_write)
+    """
+    if not capability.include and not capability.exclude:
+        return capability
+    return msgspec.structs.replace(capability, include=(), exclude=())
+
+
 class CompiledSkillsCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     """Skill library resolved to a directory and a selected set of skill names.
 

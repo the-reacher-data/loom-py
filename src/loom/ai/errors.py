@@ -100,6 +100,7 @@ class AgentErrorCode(StrEnum):
     PROVIDER_UNKNOWN = "PROVIDER_UNKNOWN"
     PROVIDER_SETTING_MISSING = "PROVIDER_SETTING_MISSING"
     MCP_SERVER_UNREACHABLE = "MCP_SERVER_UNREACHABLE"
+    MCP_CONNECTION_CONFLICT = "MCP_CONNECTION_CONFLICT"
     TOOL_FILTER_MATCHES_NOTHING = "TOOL_FILTER_MATCHES_NOTHING"
     SQL_READONLY_DRIFT = "SQL_READONLY_DRIFT"
     ENDPOINT_AUTH_MISSING = "ENDPOINT_AUTH_MISSING"
@@ -796,6 +797,28 @@ def provider_setting_missing(provider: str, setting: str) -> AgentCompilationIss
         message=f"provider '{provider}': required setting '{setting}' is missing",
         component=provider,
         field=setting,
+    )
+
+
+def mcp_connection_conflict(server: str, agents: Sequence[str]) -> AgentCompilationIssue:
+    """One MCP server name resolves to two different connections in one worker.
+
+    Args:
+        server: The registered server name, never its URL — a URL carries
+            credentials and hosts the redaction guarantee keeps out of
+            diagnostics (FR-030a/FR-038).
+        agents: Names of the two agents whose grants disagree, in plan order.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_CONNECTION_CONFLICT,
+        message=(
+            f"mcp server '{server}' resolves to different connections for agents "
+            f"{', '.join(agents)}: one worker opens a single client per server, so "
+            f"the transport, address, credential and deadline of every grant of that "
+            f"name must be identical"
+        ),
+        component=server,
+        field="capabilities.server",
     )
 
 

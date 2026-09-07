@@ -38,6 +38,7 @@ from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool, WrapperToolset
 
 from loom.ai.compiler import AgentPlan
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._returns import foreign_return, refusal
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.di import LoomContainer
@@ -104,21 +105,43 @@ class CapabilityDeps(Protocol):
 
 @dataclass(frozen=True)
 class BuildContext:
-    """Read-only facts shared by every toolset built for one plan."""
+    """Read-only facts shared by every toolset built for one plan.
+
+    Attributes:
+        agent: Name of the plan being built, reported on every span.
+        container: Application container a ``python`` factory receives.
+        observability: Runtime the capability spans open on, or ``None``.
+        timeout_s: The plan's ``tool_timeout_ms``, in seconds.
+        mcp: The worker's MCP toolsets, so every agent granted a server works
+            over the one connection the runtime opened for it. Required: a
+            default would be an isolated store, and omitting it is exactly how
+            per-agent connections would come back unnoticed.
+    """
 
     agent: str
     container: LoomContainer
     observability: ObservabilityRuntime | None
     timeout_s: float
+    mcp: SharedMcpToolsets
 
     @classmethod
-    def of(cls, plan: AgentPlan, container: LoomContainer) -> BuildContext:
-        """Derive the build context of one compiled plan."""
+    def of(cls, plan: AgentPlan, container: LoomContainer, mcp: SharedMcpToolsets) -> BuildContext:
+        """Derive the build context of one compiled plan.
+
+        Args:
+            plan: The compiled plan being built.
+            container: Application container.
+            mcp: The worker's shared MCP toolsets.
+
+        Returns:
+            The context every builder of this plan reads.
+        """
         return cls(
             agent=plan.name,
             container=container,
             observability=_observability(container),
             timeout_s=plan.policies.tool_timeout_ms / _MS_PER_SECOND,
+            mcp=mcp,
         )
 
 

@@ -30,6 +30,7 @@ from loom.ai.compiler._plan import AgentPlan, CompiledA2ACapability
 from loom.ai.config import AiConfig
 from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider, _a2a, _capabilities
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.ai.runtime import AgentRunError, AgentRuntime
@@ -209,7 +210,9 @@ class TestOutboundToolset:
         monkeypatch.setattr(_a2a, "find_spec", lambda name: None)
 
         with pytest.raises(AgentCompilationError) as failure:
-            _capabilities.build_toolsets(make_plan((a2a_capability(),)), LoomContainer())
+            _capabilities.build_toolsets(
+                make_plan((a2a_capability(),)), LoomContainer(), mcp=SharedMcpToolsets()
+            )
 
         issue = failure.value.issues[0]
         assert (issue.code, "ai-a2a" in issue.message) == (
@@ -224,7 +227,7 @@ class TestOutboundToolset:
         )
 
         with pytest.raises(AgentCompilationError) as failure:
-            _capabilities.build_toolsets(plan, LoomContainer())
+            _capabilities.build_toolsets(plan, LoomContainer(), mcp=SharedMcpToolsets())
 
         assert "a2a_market_eu" in failure.value.issues[0].message
 

@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from loom.ai.compiler import CompiledMcpCapability
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.runtime import AgentRuntime, SharedMcpSession
 from loom.core.di import LoomContainer
@@ -694,3 +695,61 @@ class TestSesionMcpCompartida:
         await second
 
         assert session.interleaved is False
+
+
+class TestOneConnectionPerServerName:
+    """One name, one connection: the worker shares a client between agents."""
+
+    def _runtime(
+        self,
+        plans: tuple[object, ...],
+        deps: StubDepsFactory,
+        container: LoomContainer,
+    ) -> AgentRuntime:
+        clients = {_SERVER_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=[])}
+        return _build_runtime(
+            plans=plans,
+            clients=clients,
+            provider=CountingEngineProvider(),
+            deps=deps,
+            container=container,
+        )
+
+    async def test_aborts_naming_both_agents_when_two_grants_of_one_name_disagree(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """A divergent connection fact is a boot failure, not a silent swap.
+
+        The de-duplication keeps the first grant of a name, so the second agent
+        would otherwise run against the first agent's URL and credential.
+        """
+        first = make_plan("reader", capabilities=(make_mcp_capability(_SERVER_A),))
+        second = make_plan(
+            "writer",
+            capabilities=(
+                CompiledMcpCapability(server=_SERVER_A, url="https://elsewhere.internal/mcp"),
+            ),
+        )
+        runtime = self._runtime((first, second), deps, container)
+
+        with pytest.raises(AgentCompilationError) as failure:
+            await runtime.__aenter__()
+
+        assert _codes(failure.value) == {AgentErrorCode.MCP_CONNECTION_CONFLICT}
+        message = str(failure.value)
+        assert "reader" in message
+        assert "writer" in message
+        assert _SERVER_A in message
+
+    async def test_starts_when_two_grants_of_one_name_differ_only_in_their_filter(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """``include``/``exclude`` are per-agent views, not connection facts."""
+        plans = (
+            make_plan("reader", capabilities=(make_mcp_capability(_SERVER_A, include=("alpha",)),)),
+            make_plan("writer", capabilities=(make_mcp_capability(_SERVER_A, exclude=("alpha",)),)),
+        )
+        runtime = self._runtime(plans, deps, container)
+
+        async with runtime:
+            assert runtime.agent_names() == ("reader", "writer")
