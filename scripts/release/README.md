@@ -1,50 +1,36 @@
-# Release scripts
+# Release
 
-`release.yml` drives three scripts:
+The release runs in `loom-actions`: `.github/workflows/release-on-label.yml`, called
+from `.github/workflows/release.yml` with `publish-to-pypi: true`. Nothing about the
+mechanism lives here any more — the scripts that used to plan the release, decide the
+state of a bump pull request and validate a merged one are gone.
 
-- `build_release_notes.py` — lists every non-merge commit between the highest version tag
-  reachable from `HEAD` and `HEAD`, and refuses a release whose range is empty.
-- `decide_release_pr.py` — decides whether a version needs a new bump (`create`), already
-  has a usable one (`reuse`), or has one that can never merge and must be rebuilt
-  (`recycle`).
-- `checkout_merged_release.py` — merges the bump through the API, then checks out and
-  validates the commit the release is tagged from.
+## How a release happens
 
-## Trunk assumptions
+```
+Author              GitHub                     loom-actions             PyPI
+  | merge PR (no label) --> master
+  |                     |   (nothing)
+  |
+  | label `release` on the PR that closes the batch
+  |------------------> |
+  | merge that PR ----> master, commit M
+  |                     | -- pull_request closed, merged, labelled --> |
+  |                     |                      | range = last tag .. M
+  |                     |                      | part  = MAX(branch prefixes in range)
+  |                     | <-- tag M ------------ | version = last tag + part
+  |                     |                      | ---------- publish -----------> |
+```
 
-These scripts implement one lifecycle: trunk-based, single long-lived branch. The
-assumptions are deliberate and live in known places:
+Labelling needs triage, merging needs write: the label proposes a release and the merge
+authorises it. A run that stops halfway resumes from `workflow_dispatch` with the merge
+SHA, because the tag step is idempotent.
 
-- The base branch is `master`: `_BASE_BRANCH` in `decide_release_pr.py`,
-  `_EXPECTED_BASE_REF` and the `refs/heads/master` fetches in
-  `checkout_merged_release.py`.
-- The bump branch is `docs/release-v<version>`, built in `release.yml` and passed to both
-  scripts as `--release-branch`.
-- The tag is cut from the bump's merge commit on the base branch.
+## What this repository still owns
 
-## Branch lifecycle
-
-The repository has `delete_branch_on_merge` enabled, so GitHub removes a head branch when
-its pull request merges — including the merge `checkout_merged_release.py` performs through
-the API. The release path does not depend on it: a version whose pull request is merged is
-reused whether or not `docs/release-v<version>` still exists, and a recycled one is closed
-with `--delete-branch`. The single state that needs a human is a release branch with no
-pull request at all, which `decide_release_pr.py` refuses.
-
-## Seam for a second lifecycle
-
-A gitflow-style lifecycle is a known future consumer and is **not** built. It would need,
-and none of it exists yet:
-
-- **Rules scoped per target branch.** `[tool.semantic_branch]` is one flat list of
-  prefixes, so it cannot say that `fix/*` into `develop` is a prerelease while `fix/*`
-  into `main` is a patch release.
-- **A release channel.** `develop` builds are alpha/beta, `release/x.y` builds are rc,
-  `main` builds are final. The version calculator answers only "which part to raise".
-- **The release target as an input.** In gitflow the release does not come from the trunk;
-  the three assumptions above would each become a parameter.
-- **A back-merge.** After a release into `main`, gitflow merges back into `develop`. There
-  is no step for it and no place it would hook into.
-
-None of this is parameterised in advance: today every caller passes the same values, so an
-input would be an unused code path.
+- **The version's source.** `project.version` is dynamic and `hatch-vcs` reads it from
+  the tag, so no commit carries a version and no bump pull request exists.
+- **The branch classes.** `[tool.semantic_branch]` is read by the planner from this
+  repository, so what `feat/` or `fix/` mean is decided here.
+- **Whether we publish.** `publish-to-pypi: true` in the call. A repository that ships an
+  application leaves it off and still gets the tag, the notes and the GitHub release.

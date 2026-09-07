@@ -4,10 +4,8 @@ on:
   pull_request:
     branches: ["master"]
 
-# One live run per pull request. A superseded push keeps no job alive, so an
-# obsolete run cannot spend a runner a current one is waiting for. Deliberately
-# not applied to ci-main: every commit on master has to be validated, so a push
-# there must never cancel the run validating the commit before it.
+# Not applied to ci-main: a push to master must never cancel the run validating
+# the commit before it.
 concurrency:
   group: ci-pr-${{ github.head_ref }}
   cancel-in-progress: true
@@ -16,17 +14,10 @@ permissions:
   contents: read
   pull-requests: write
   security-events: write
-  # The prerelease is published through trusted publishing, which needs the
-  # OIDC identity GitHub mints per run.
   id-token: write
 
 jobs:
-  # The suite runs once, split across two lanes that report to `validate`.
-  # Nothing is deselected away: every test that ran before runs here, and the
-  # two lanes together are the whole of `-m "not integration"`.
-  #
-  # Fast lane: everything except the Spark backend, in parallel. These tests are
-  # CPU-bound and independent, so xdist buys most of its wall clock here.
+  # The two lanes together are the whole of `-m "not integration"`.
   tests-fast:
     runs-on: ubuntu-latest
     steps:
@@ -39,8 +30,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # uv is pinned to the same version in every workflow to avoid drift, and
-      # installed from wheels only so no sdist setup script can run.
+      # Wheels only, so no sdist setup script runs while installing uv.
       - name: Install uv
         run: |
           pip install --only-binary :all: "uv==0.10.2"
@@ -51,13 +41,8 @@ jobs:
           set -euo pipefail
           echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-fast" >> "$GITHUB_ENV"
 
-      # Standalone artifact validation (FR-015): the published corpus must stay
-      # valid against the offline validator. The fake packages provide the corpus
-      # module:symbol references, as they would in an application. The glob is
-      # '*/agent.yaml', not '*.yaml': each corpus entry is a DIRECTORY holding its
-      # artifact next to its own skills, which is the layout an application uses.
-      # A top-level '*.yaml' matches nothing, and the validator exits 0 on an
-      # empty match — so the wrong glob is a step that passes without validating.
+      # The glob is '*/agent.yaml' because each corpus entry is a directory;
+      # '*.yaml' matches nothing and the validator still exits 0.
       - name: Validate agent artifact corpus
         shell: bash
         env:
@@ -66,11 +51,8 @@ jobs:
           set -euo pipefail
           uv run --frozen python -m loom.ai.validate 'tests/unit/ai/fixtures/corpus_v1/*/agent.yaml'
 
-      # `-m "not integration"` deselects the suites that need a provisioned
-      # external service; they run in the `integration` job with those services
-      # actually up. Deselecting is deliberate over letting them skip — a skipped
-      # test reads as approved, a deselected one reads as "not this lane".
-      # COVERAGE_FILE names the data file so `coverage combine` finds both lanes.
+      # Deselected rather than skipped: a skipped test reads as approved.
+      # COVERAGE_FILE names the data file so `coverage combine` finds every lane.
       - name: Run the fast lane with coverage
         shell: bash
         env:
@@ -83,10 +65,7 @@ jobs:
             -n 4 --cov --cov-report= \
             --junitxml=junit-fast.xml -o junit_family=legacy
 
-      # A `slow` test asserts a wall-clock budget, and a budget measured while
-      # four workers compete for the same cores measures the contention instead
-      # of the code. These run serially, in the same job so nothing waits on
-      # them, and their results join the other lanes in the gate.
+      # A wall-clock budget measured under four workers measures the contention.
       - name: Run the slow lane serially with coverage
         shell: bash
         env:
@@ -112,9 +91,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Spark lane: serial on purpose. Each xdist worker starts its own JVM, and
-  # under coverage that contention cancels the parallelism out — measured, not
-  # assumed.
+  # Serial: each xdist worker starts its own JVM, which under coverage cancels
+  # the parallelism out.
   tests-spark:
     runs-on: ubuntu-latest
     steps:
@@ -127,8 +105,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # uv is pinned to the same version in every workflow to avoid drift, and
-      # installed from wheels only so no sdist setup script can run.
+      # Wheels only, so no sdist setup script runs while installing uv.
       - name: Install uv
         run: |
           pip install --only-binary :all: "uv==0.10.2"
@@ -161,10 +138,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The gate. It runs the cheap checks (ruff, pyright, bandit), reports the test
-  # results both lanes produced, and holds every signal that needs the whole
-  # picture. `quality-report` reads `tests_failed` and `coverage` from the merged
-  # files, so a failure in either lane still blocks here.
+  # The gate: cheap checks plus the merged results, so a failure in either lane
+  # still blocks here.
   validate:
     needs: [tests-fast, tests-spark]
     runs-on: ubuntu-latest
@@ -183,8 +158,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # uv is pinned to the same version in every workflow to avoid drift, and
-      # installed from wheels only so no sdist setup script can run.
+      # Wheels only, so no sdist setup script runs while installing uv.
       - name: Install uv
         run: |
           pip install --only-binary :all: "uv==0.10.2"
@@ -224,9 +198,7 @@ jobs:
           uv run --frozen --with "pytest-cov==7.1.0" coverage json -o coverage.json
           uv run --frozen --with "pytest-cov==7.1.0" coverage xml -o coverage.xml
 
-      # test-results-dir points at the merged files, so the suite is not run a
-      # second time here. ruff, pyright and bandit still run: they cost ~45s and
-      # they are what this job is fast enough to front-load.
+      # test-results-dir points at the merged files, so the suite is not re-run.
       - name: Quality report (strict gate)
         id: quality
         continue-on-error: true
@@ -255,6 +227,23 @@ jobs:
           branch: ${{ github.head_ref }}
           prerelease: "true"
 
+      # The calculator writes project.version, which hatchling refuses next to a
+      # dynamic version, so every later `uv run` would fail to build the project.
+      - name: Restore the files the calculator rewrote
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do
+            case "${path}" in
+              pyproject.toml|uv.lock|CHANGELOG.md) ;;
+              *)
+                echo "Release actions modified unexpected tracked file: ${path}"
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only HEAD)
+          git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock CHANGELOG.md
+
       - name: Generate changelog preview
         id: changelog
         continue-on-error: true
@@ -275,22 +264,8 @@ jobs:
           tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"
           body-file: ${{ steps.changelog.outputs.output_path }}
 
-      # --frozen forces the committed uv.lock resolution and pytest-cov is
-      # pinned to the version already locked in the dev group.
-      # "--no-build" is intentionally omitted: omegaconf (a runtime dependency)
-      # requires antlr4-python3-runtime 4.9.3, which ships no wheel on PyPI, so
-      # the environment cannot be created from binaries only.
-      # Fast lane: `-m "not integration"` deselects the suites that need a
-      # provisioned external service; they run in the `integration` job with
-      # those services actually up. Deselecting is deliberate over letting them
-      # skip — a skipped test reads as approved, a deselected one reads as
-      # "not this lane".
-      # Standalone artifact validation (FR-015): the published corpus must
-      # stay valid against the offline validator. The fake packages provide
-      # the corpus module:symbol references, as they would in an application.
-      # The glob is '*/agent.yaml', not '*.yaml': each corpus entry is a
-      # DIRECTORY holding its artifact next to its own skills, which is the
-      # layout an application uses. A top-level '*.yaml' matches nothing, and
+      # --no-build is unusable: antlr4-python3-runtime, required by omegaconf,
+      # ships no wheel. The glob is '*/agent.yaml' because each corpus entry is a
       # the validator exits 0 on an empty match — so the wrong glob is a step
       # that passes without validating anything.
       - name: Upload coverage to Codecov
@@ -422,13 +397,9 @@ jobs:
       # ships no wheel.
       - name: Build the prerelease distributions
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository && steps.version.outputs.deploy == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
-          sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
           uv run --frozen --with "build==1.3.0" python -m build
 
       # Trusted publishing: TestPyPI mints a token for this repository and this
@@ -460,23 +431,9 @@ jobs:
             exit 1
           fi
 
-  # ---------------------------------------------------------------------------
-  # Churn canary (plan.md risk table): run the agent suites against the LATEST
-  # published pydantic-ai instead of the locked one.
-  #
-  # Why this job exists, concretely. During this feature three separate breaks
-  # were found by hand, each one the package disagreeing with its own docs:
-  #   * `Agent.to_a2a` had been removed;
-  #   * `FunctionToolResultEvent.result` did not exist;
-  #   * `Skills.include` accepted exact names only, not the patterns documented.
-  # Each cost a debugging session. The fourth should cost a CI annotation, and
-  # it should arrive on the day upstream ships it, not on the day we upgrade.
-  #
-  # Non-blocking by construction: `continue-on-error` on the job so a red canary
-  # never gates a PR, and a loud `::warning::` annotation plus a job summary so
-  # it is never a silent grey tick either. A canary nobody sees is not a canary.
-  #
-  # No `--frozen` and no `uv.lock` here — resolving fresh is the entire point.
+  # Runs the agent suites against the LATEST published pydantic-ai rather than
+  # the locked one, so an upstream break arrives as an annotation the day it
+  # ships. Non-blocking, but never a silent grey tick either.
   pydantic-ai-canary:
     if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
@@ -498,22 +455,15 @@ jobs:
           set -euo pipefail
           echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-canary" >> "$GITHUB_ENV"
 
-      # Sync the locked environment first so only the pydantic-ai family moves:
-      # a canary that also floats msgspec or fastapi would report churn without
-      # saying whose churn it is.
+      # Locked sync first, so only the pydantic-ai family moves.
       - name: Sync the locked environment
         shell: bash
         run: |
           set -euo pipefail
           uv sync --frozen
 
-      # Two steps rather than one `--upgrade`, on purpose. The repository's
-      # supply-chain contract requires every CI install to name an exact
-      # version and to refuse sdists, so nothing can execute a setup script on
-      # a runner. A canary that floated its version would break that rule; a
-      # canary that RESOLVES the latest version, records it, and then installs
-      # that exact pin from wheels keeps it — and gains reproducibility, since
-      # the log now says precisely which release was tested.
+      # Resolved first, then installed as an exact pin from wheels: the
+      # supply-chain contract refuses a floating version or an sdist.
       - name: Resolve the latest published versions
         id: resolve
         shell: bash

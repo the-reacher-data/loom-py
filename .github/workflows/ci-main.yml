@@ -30,8 +30,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # uv is pinned to the same version in every workflow to avoid drift, and
-      # installed from wheels only so no sdist setup script can run.
+      # Wheels only, so no sdist setup script runs while installing uv.
       - name: Install uv
         run: |
           pip install --only-binary :all: "uv==0.10.2"
@@ -46,24 +45,11 @@ jobs:
           fail-on-security: "high"
           include-security: "true"
 
-      # --frozen forces the committed uv.lock resolution and pytest-cov is
-      # pinned to the version already locked in the dev group.
-      # "--no-build" is intentionally omitted: omegaconf (a runtime dependency)
-      # requires antlr4-python3-runtime 4.9.3, which ships no wheel on PyPI, so
-      # the environment cannot be created from binaries only.
-      # Fast lane: `-m "not integration"` deselects the suites that need a
-      # provisioned external service; they run in the `integration` job with
-      # those services actually up. Deselecting is deliberate over letting them
-      # skip — a skipped test reads as approved, a deselected one reads as
-      # "not this lane".
-      # Standalone artifact validation (FR-015): the published corpus must
-      # stay valid against the offline validator. The fake packages provide
-      # the corpus module:symbol references, as they would in an application.
-      # The glob is '*/agent.yaml', not '*.yaml': each corpus entry is a
-      # DIRECTORY holding its artifact next to its own skills, which is the
-      # layout an application uses. A top-level '*.yaml' matches nothing, and
-      # the validator exits 0 on an empty match — so the wrong glob is a step
-      # that passes without validating anything.
+      # --no-build is unusable: antlr4-python3-runtime, required by omegaconf,
+      # ships no wheel.
+      # Deselected rather than skipped: a skipped test reads as approved.
+      # The glob is '*/agent.yaml' because each corpus entry is a directory;
+      # '*.yaml' matches nothing and the validator still exits 0.
       - name: Validate agent artifact corpus
         shell: bash
         env:
