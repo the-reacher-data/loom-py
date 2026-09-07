@@ -20,7 +20,7 @@ jobs:
   release:
     permissions:
       contents: write
-    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@c47e17856207952f00ff3fd7974873723949d3e2 # v1.2.1
+    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@28ac23a8f40757a8e162ba9d4fdc847a69d13c1e # v1.2.2
     with:
       build-distribution: true
       package-name: loom-kernel
@@ -43,5 +43,11 @@ jobs:
           name: distributions
           path: dist
 
+      # skip-existing so a re-run finishes an upload that landed one file and
+      # failed on the next. Without it a partial upload can never be completed:
+      # the index rejects the file it already has and takes the run down with it,
+      # and a version on PyPI cannot be replaced.
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 2026-07-28 (handles Metadata-Version 2.5)
+        with:
+          skip-existing: true

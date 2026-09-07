@@ -78,7 +78,14 @@ class TestThePublishStaysHere:
             for s in cast(list[dict[str, Any]], job["steps"])
             if "pypi-publish" in str(s.get("uses"))
         )
-        assert "with" not in upload
+        assert "password" not in str(upload.get("with", {}))
+
+    def test_a_partial_upload_can_be_finished_by_a_rerun(self) -> None:
+        """A version on PyPI cannot be replaced, so a re-run must be able to
+        upload the files that are missing rather than fail on the ones that landed."""
+        steps = cast(list[dict[str, Any]], self._publish_job()["steps"])
+        upload = next(s for s in steps if "pypi-publish" in str(s.get("uses")))
+        assert cast(dict[str, Any], upload["with"])["skip-existing"] is True
 
     def test_it_does_not_publish_a_failed_release(self) -> None:
         job = self._publish_job()
