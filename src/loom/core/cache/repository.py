@@ -9,14 +9,16 @@ from typing import Any, Generic, cast
 
 import msgspec
 
+from loom.core.cache._batching import REFILL_BATCH_SIZE, batched
 from loom.core.cache.abc.backend import CacheBackend
 from loom.core.cache.abc.config import CacheConfig
-from loom.core.cache.abc.dependency import DependencyResolver
+from loom.core.cache.abc.dependency import BatchFingerprintResolver, DependencyResolver
 from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.logger import get_logger
 from loom.core.model.convert import to_struct
 from loom.core.model.enums import Cardinality
 from loom.core.model.introspection import (
+    get_id_attribute,
     get_projections,
     get_relations,
     list_element_type,
@@ -26,7 +28,14 @@ from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
 from loom.core.projection.loaders import resolve_model_reference
 from loom.core.repository import FilterParams, MutationEvent, PageParams, PageResult, Repository
-from loom.core.repository.abc.query import CursorResult, FilterGroup, PaginationMode, QuerySpec
+from loom.core.repository.abc.query import (
+    CursorResult,
+    FilterGroup,
+    FilterOp,
+    FilterSpec,
+    PaginationMode,
+    QuerySpec,
+)
 from loom.core.repository.abc.repo_for import BulkCreatable
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
 
@@ -99,6 +108,12 @@ class CachedRepository(
     Attributes the wrapper does not define pass through to the wrapped
     repository, so its capability set (``create_many``, ``count``, custom
     queries) is exactly the wrapped one.
+
+    The cached list path reloads the entities missing from a warm index with a
+    single ``id IN (...)`` query, so the wrapped repository should support
+    :attr:`~loom.core.repository.abc.query.FilterOp.IN` on the primary key; a
+    repository whose ``allowed_filter_fields`` excludes ``id`` is detected and
+    served with per-id reads instead.
     """
 
     def __init__(
@@ -116,6 +131,7 @@ class CachedRepository(
         fallback_name = repository.__class__.__name__.lower()
         self._entity_name = getattr(repository, "entity_name", fallback_name)
         self._depends_on = self._parse_dependency_specs(self._collect_dependency_specs(repository))
+        self._id_type = self._resolve_id_type(repository)
         self._log = get_logger(__name__).bind(repository=repository.__class__.__name__)
 
     @property
@@ -194,8 +210,8 @@ class CachedRepository(
             deps_fingerprint=fingerprint,
         )
         cached_index = await self._cache.get_value(index_key, type=_ListIndexPayload)
-        if cached_index is not None:
-            entity_ids = cast(list[IdT], cached_index.ids)
+        entity_ids = None if cached_index is None else self._index_ids(cached_index.ids)
+        if cached_index is not None and entity_ids is not None:
             total_count = cached_index.total_count
             items = await self._load_items_from_index(entity_ids, profile=profile)
             if len(items) == len(entity_ids):
@@ -251,8 +267,8 @@ class CachedRepository(
         )
 
         cached_index = await self._cache.get_value(query_key, type=_QueryIndexPayload)
-        if cached_index is not None:
-            entity_ids = cast(list[IdT], cached_index.ids)
+        entity_ids = None if cached_index is None else self._index_ids(cached_index.ids)
+        if cached_index is not None and entity_ids is not None:
             items = await self._load_items_from_index(entity_ids, profile=profile)
             if len(items) == len(entity_ids):
                 self._log.debug("CacheHitQuery", key=query_key)
@@ -388,6 +404,11 @@ class CachedRepository(
     # ------------------------------------------------------------------
 
     def _extract_entity_id(self, item: Any) -> object | None:
+        """Read the primary key of *item*.
+
+        The name ``id`` is assumed here and in the refill filter, which queries
+        the missing entities with ``FilterSpec(field="id", ...)``.
+        """
         value = getattr(item, "id", None)
         return value
 
@@ -457,48 +478,109 @@ class CachedRepository(
             self._resolver.entity_tags(self.entity_name, eid) + self._entity_dependency_tags(eid)
             for eid in ids
         ]
-        fingerprints = list(
-            await asyncio.gather(*(self._resolver.fingerprint(tags) for tags in tags_by_id))
-        )
+        fingerprints = await self._resolve_fingerprints(tags_by_id)
         entity_keys = [
             entity_key(self.entity_name, eid, profile, fp)
-            for eid, fp in zip(ids, fingerprints, strict=False)
+            for eid, fp in zip(ids, fingerprints, strict=True)
         ]
         cached_values = await self._cache.multi_get_values(entity_keys)
-        items: list[OutputT] = []
-        missing_ids: list[IdT] = []
-        missing_positions: list[int] = []
+        restored = self._restore_cached_page(cached_values)
+        missing = [
+            (position, ids[position]) for position, item in enumerate(restored) if item is None
+        ]
+        if not missing:
+            return cast(list[OutputT], restored)
 
-        for index, value in enumerate(cached_values):
-            if value is None:
-                missing_ids.append(ids[index])
-                missing_positions.append(index)
-                items.append(cast(OutputT, None))
-                continue
-            restored = self._to_output_from_cache(value)
-            if restored is None:
-                missing_ids.append(ids[index])
-                missing_positions.append(index)
-                items.append(cast(OutputT, None))
-                continue
-            items.append(restored)
-
-        if not missing_ids:
-            return items
-
-        for missing_id, position in zip(missing_ids, missing_positions, strict=False):
-            loaded = await self._repository.get_by_id(missing_id, profile=profile)
+        loaded_by_id = await self._fetch_missing_by_ids(
+            [missing_id for _, missing_id in missing],
+            profile=profile,
+        )
+        refill: list[tuple[str, OutputT]] = []
+        for position, missing_id in missing:
+            loaded = loaded_by_id.get(missing_id)
             if loaded is None:
+                # The index points at an id the backend no longer returns:
+                # let the caller fall back to its own repository query.
                 return []
-            items[position] = loaded
+            restored[position] = loaded
+            refill.append((entity_keys[position], loaded))
 
-        refill_pairs: list[tuple[str, Any]] = []
+        await self._refill_cache(refill)
+        return cast(list[OutputT], restored)
+
+    def _restore_cached_page(self, cached_values: list[Any]) -> list[OutputT | None]:
+        """Rebuild each cached payload, leaving ``None`` where the entry is unusable."""
+        return [
+            None if value is None else self._to_output_from_cache(value) for value in cached_values
+        ]
+
+    async def _refill_cache(self, entries: list[tuple[str, OutputT]]) -> None:
+        """Write back only the entities that were missing, leaving warm TTLs alone."""
         ttl = self._config.ttl_for_single(self.entity_name)
-        for obj, ek in zip(items, entity_keys, strict=False):
-            refill_pairs.append((ek, self._to_builtins(obj)))
-        await self._cache.multi_set_values(refill_pairs, ttl=ttl)
+        pairs = [(key, self._to_builtins(item)) for key, item in entries]
+        await self._cache.multi_set_values(pairs, ttl=ttl)
 
-        return items
+    async def _fetch_missing_by_ids(
+        self,
+        missing_ids: list[IdT],
+        profile: str,
+    ) -> dict[object, OutputT]:
+        """Reload the entities missing from the cache, keyed by their id."""
+        if len(missing_ids) == 1 or not self._supports_id_filter():
+            return await self._fetch_missing_one_by_one(missing_ids, profile)
+        return await self._fetch_missing_with_query(missing_ids, profile)
+
+    def _supports_id_filter(self) -> bool:
+        """Whether the wrapped repository accepts a filter on the primary key.
+
+        A repository may restrict the filterable fields (``allowed_filter_fields``).
+        When ``id`` is not among them the batched refill would be rejected, so the
+        wrapper degrades to per-id reads rather than failing the page; the
+        repository's declared policy is left untouched.
+        """
+        allowed = getattr(self._repository, "allowed_filter_fields", None)
+        return not allowed or "id" in allowed
+
+    async def _fetch_missing_one_by_one(
+        self,
+        missing_ids: Sequence[IdT],
+        profile: str,
+    ) -> dict[object, OutputT]:
+        loaded: dict[object, OutputT] = {}
+        for missing_id in missing_ids:
+            item = await self._repository.get_by_id(missing_id, profile=profile)
+            if item is not None:
+                loaded[missing_id] = item
+        return loaded
+
+    async def _fetch_missing_with_query(
+        self,
+        missing_ids: Sequence[IdT],
+        profile: str,
+    ) -> dict[object, OutputT]:
+        loaded: dict[object, OutputT] = {}
+        for batch in batched(missing_ids, REFILL_BATCH_SIZE):
+            # Sequential on purpose: the wrapped repository may hold a single
+            # session, which is not safe to drive concurrently.
+            page = await self._repository.list_with_query(self._id_in_query(batch), profile=profile)
+            for item in page.items:
+                entity_id = self._extract_entity_id(item)
+                if entity_id is not None:
+                    loaded[entity_id] = item
+        return loaded
+
+    def _id_in_query(self, ids: Sequence[IdT]) -> QuerySpec:
+        return QuerySpec(
+            filters=FilterGroup(filters=(FilterSpec(field="id", op=FilterOp.IN, value=ids),)),
+            limit=len(ids),
+        )
+
+    async def _resolve_fingerprints(self, tags_by_id: list[list[str]]) -> list[str]:
+        """Resolve one fingerprint per tag group, batched when the resolver allows it."""
+        resolver = self._resolver
+        if isinstance(resolver, BatchFingerprintResolver):
+            return await resolver.fingerprint_many(tags_by_id)
+        return list(await asyncio.gather(*(resolver.fingerprint(tags) for tags in tags_by_id)))
 
     async def _cache_entity_batch(self, items: Sequence[OutputT], profile: str) -> None:
         if not items:
@@ -510,12 +592,10 @@ class CachedRepository(
             + self._entity_dependency_tags(entity_id)
             for entity_id in entity_ids
         ]
-        fingerprints = await asyncio.gather(
-            *(self._resolver.fingerprint(tags) for tags in tags_by_id)
-        )
+        fingerprints = await self._resolve_fingerprints(tags_by_id)
 
         pairs: list[tuple[str, Any]] = []
-        for item, entity_id, fingerprint in zip(items, entity_ids, fingerprints, strict=False):
+        for item, entity_id, fingerprint in zip(items, entity_ids, fingerprints, strict=True):
             key = entity_key(self.entity_name, entity_id, profile, fingerprint)
             pairs.append((key, self._to_builtins(item)))
         await self._cache.multi_set_values(pairs, ttl=ttl)
@@ -533,6 +613,47 @@ class CachedRepository(
             if isinstance(model, type) and issubclass(model, msgspec.Struct):
                 return cast(OutputT, to_struct(model, payload))
         return cast(OutputT, payload)
+
+    def _resolve_id_type(
+        self,
+        repository: Repository[OutputT, CreateT, UpdateT, IdT],
+    ) -> type | None:
+        """Resolve the Python type of the model's primary key, if it is declarable.
+
+        Returns ``None`` for a repository without a model, without a primary key
+        or whose key is not a plain class; the cached index is then used as it
+        was decoded and the refill runs per id.
+        """
+        model = getattr(repository, "model", None)
+        if model is None:
+            return None
+        try:
+            id_attribute = get_id_attribute(model)
+        except (TypeError, ValueError):
+            return None
+        hint = resolve_type_hints(model).get(id_attribute)
+        return hint if isinstance(hint, type) else None
+
+    def _index_ids(self, raw_ids: list[Any]) -> list[IdT] | None:
+        """Restore the ids of a cached index to the model's primary-key type.
+
+        The index round-trips through msgpack, which renders a ``datetime``, a
+        ``date`` or a ``UUID`` as a string, while the repository binds the
+        declared type: SQLAlchemy returns no rows for a ``datetime`` column
+        filtered with strings.  Converting here keeps every later use of the id
+        — cache key, filter value, identity match — in the declared type.
+
+        Returns:
+            The converted ids, or ``None`` when they do not fit the current
+            primary-key type, which makes the index unusable.
+        """
+        if self._id_type is None:
+            return cast(list[IdT], raw_ids)
+        try:
+            return [cast(IdT, msgspec.convert(value, self._id_type)) for value in raw_ids]
+        except msgspec.ValidationError:
+            self._log.debug("CacheIndexIdTypeMismatch", entity=self.entity_name)
+            return None
 
     def _list_dependency_tags(self) -> list[str]:
         tags: list[str] = []

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
+
+from loom.core.cache._batching import COUNTER_BATCH_SIZE, batched
 from loom.core.cache.abc.backend import CacheBackend
-from loom.core.cache.abc.dependency import DependencyResolver
+from loom.core.cache.abc.dependency import BatchFingerprintResolver, DependencyResolver
 from loom.core.cache.keys import stable_hash
 from loom.core.repository.mutation import MutationEvent
 
 
-class GenerationalDependencyResolver(DependencyResolver):
+class GenerationalDependencyResolver(DependencyResolver, BatchFingerprintResolver):
     """Generational tags with monotonic counters in cache backend."""
 
     def __init__(self, cache: CacheBackend) -> None:
@@ -32,8 +36,49 @@ class GenerationalDependencyResolver(DependencyResolver):
         if not tags:
             return "0"
         values = await self._cache.multi_get_values([self._tag_key(tag) for tag in tags], type=int)
-        parts = [str(0 if value is None else value) for value in values]
-        return stable_hash("|".join(parts))
+        return self._compose(values)
+
+    async def fingerprint_many(self, tag_groups: Sequence[list[str]]) -> list[str]:
+        """Compute one fingerprint per tag group, reading every counter once.
+
+        The distinct tags of every group are read together, in batches, so the
+        cost is one round trip per
+        :data:`~loom.core.cache._batching.COUNTER_BATCH_SIZE` distinct tags
+        instead of one per group.
+
+        Args:
+            tag_groups: Dependency tag names, grouped per entity.
+
+        Returns:
+            One fingerprint per group, in input order; each value is identical
+            to what :meth:`fingerprint` returns for the same group.
+        """
+        unique_tags = list(dict.fromkeys(tag for tags in tag_groups for tag in tags))
+        if not unique_tags:
+            return ["0" for _ in tag_groups]
+        counters = await self._read_counters(unique_tags)
+        return [self._compose([counters.get(tag) for tag in tags]) for tags in tag_groups]
+
+    async def _read_counters(self, tags: Sequence[str]) -> dict[str, int | None]:
+        batches = list(batched(tags, COUNTER_BATCH_SIZE))
+        results = await asyncio.gather(
+            *(
+                self._cache.multi_get_values([self._tag_key(tag) for tag in batch], type=int)
+                for batch in batches
+            )
+        )
+        return {
+            tag: value
+            for batch, values in zip(batches, results, strict=True)
+            for tag, value in zip(batch, values, strict=True)
+        }
+
+    @staticmethod
+    def _compose(counters: Sequence[int | None]) -> str:
+        """Hash generation counters in tag order; the only definition of the rule."""
+        if not counters:
+            return "0"
+        return stable_hash("|".join("0" if value is None else str(value) for value in counters))
 
     async def bump_from_events(self, events: tuple[MutationEvent, ...]) -> None:
         """Increment generation counters for all tags affected by mutation events.

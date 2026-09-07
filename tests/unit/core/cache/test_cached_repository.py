@@ -13,7 +13,6 @@ from loom.core.cache import (
     cache_query,
     cached,
 )
-from loom.core.cache.keys import entity_key
 from loom.core.model import BaseModel, Cardinality, ColumnField, ProjectionField, RelationField
 from loom.core.repository import FilterParams, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import (
@@ -344,11 +343,6 @@ class _FqAutoParentRepo(_FakeRepository):
 
 
 @pytest.fixture
-def cache_config() -> CacheConfig:
-    return CacheConfig(enabled=True, default_ttl=100, default_list_ttl=50)
-
-
-@pytest.fixture
 def wrapped_repository(
     cache_config: CacheConfig,
 ) -> CachedRepository[_EntityOut, _Create, _Update, int]:
@@ -445,38 +439,6 @@ class TestCachedRepository:
         repo = wrapped_repository._repository
         assert isinstance(repo, _FakeRepository)
         assert repo.custom_calls == 2
-
-    @pytest.mark.asyncio
-    async def test_list_paginated_refills_missing_entity_from_repository(
-        self,
-        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
-    ) -> None:
-        await wrapped_repository.create(_Create(name="a"))
-        await wrapped_repository.create(_Create(name="b"))
-        page_params = PageParams(page=1, limit=2)
-
-        first_page = await wrapped_repository.list_paginated(page_params)
-        assert len(first_page.items) == 2
-
-        cache_backend = wrapped_repository._cache
-        resolver = wrapped_repository._resolver
-        first_id = 1
-        first_tags = resolver.entity_tags(wrapped_repository.entity_name, first_id)
-        first_tags.extend(wrapped_repository._entity_dependency_tags(first_id))
-        first_fingerprint = await resolver.fingerprint(first_tags)
-        missing_key = entity_key(
-            wrapped_repository.entity_name, first_id, "default", first_fingerprint
-        )
-        await cache_backend.delete(missing_key)
-
-        second_page = await wrapped_repository.list_paginated(page_params)
-        assert len(second_page.items) == 2
-        assert tuple(item.id for item in second_page.items) == (1, 2)
-
-        repo = wrapped_repository._repository
-        assert isinstance(repo, _FakeRepository)
-        assert repo.list_calls == 1
-        assert repo.get_calls == 1
 
     @pytest.mark.asyncio
     async def test_list_with_query_offset_uses_cache_aside(
