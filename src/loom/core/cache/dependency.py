@@ -96,6 +96,12 @@ class GenerationalDependencyResolver(DependencyResolver, BatchFingerprintResolve
         is never bumped by the framework: it is reserved for a manual
         entity-wide flush.
 
+        The counters are bumped concurrently rather than one round trip at a
+        time: with K distinct tags, a sequential loop pays K round trips in
+        series, while awaiting them together pays roughly one round trip
+        regardless of K once the backend is network-bound (see the benchmark
+        referenced in the PR that introduced this).
+
         Args:
             events: Mutation events to process.
         """
@@ -109,8 +115,7 @@ class GenerationalDependencyResolver(DependencyResolver, BatchFingerprintResolve
                 bump_keys.add(self._tag_key(f"{event.entity}:id:{entity_id}"))
             for tag in event.tags:
                 bump_keys.add(self._tag_key(tag))
-        for key in bump_keys:
-            await self._cache.incr(key, delta=1)
+        await asyncio.gather(*(self._cache.incr(key, delta=1) for key in bump_keys))
 
     def entity_tags(self, entity: str, entity_id: object | None) -> list[str]:
         """Return dependency tags for a single entity lookup.
