@@ -223,6 +223,26 @@ class RepositoryMongo(
         )
         self._compiler = MongoQueryCompiler(model, self._id_attr, self._ids.to_storage)
 
+    def has_caller_scoped_session(self) -> bool:
+        """Whether a read would run inside a session bound to the caller's context.
+
+        True while the ``session_provider`` yields a session, which
+        :class:`~loom.core.repository.mongo.uow.MongoUnitOfWork` publishes for
+        the duration of its transaction: it dies when that caller unwinds and
+        holds writes only that caller can see.  False with the default
+        provider, and with ``transactions: false``, where every driver call
+        autocommits on its own.
+
+        Implements
+        :class:`~loom.core.repository.abc.session_scope.SupportsCallerScopedSession`.
+        The capability is provisional and expected to be superseded by a
+        neutral transaction marker; do not build on it.
+
+        Returns:
+            ``True`` when a caller-scoped session is bound to the context.
+        """
+        return self._session() is not None
+
     @property
     def model(self) -> type:
         """Loom model bound to the collection."""

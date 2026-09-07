@@ -33,6 +33,7 @@ from loom.core.repository.abc.repository import (
     RepositoryWrite,
     UpdateT,
 )
+from loom.core.repository.abc.session_scope import SupportsCallerScopedSession
 
 __all__ = [
     "CreateT",
@@ -61,6 +62,7 @@ __all__ = [
     "RepositoryRead",
     "RepositoryWrite",
     "SortSpec",
+    "SupportsCallerScopedSession",
     "UnsupportedQuery",
     "UpdateT",
     "build_page_result",

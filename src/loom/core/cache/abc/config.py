@@ -28,6 +28,11 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             injected automatically for memory backends.
         default_ttl: Default TTL in seconds for single-entity lookups.
         default_list_ttl: Default TTL in seconds for list / index queries.
+        ttl_jitter: Fraction of the TTL used as a random spread on every cache
+            write, in ``[0, 1)``.  A write receives its TTL multiplied by a
+            random factor in ``[1 - ttl_jitter, 1 + ttl_jitter]`` (never below
+            one second), so entries populated in the same burst do not expire
+            at the same instant.  ``0`` disables the spread.
         ttl: Per-entity TTL overrides keyed by entity name.  Append ``_list``
             for list overrides (e.g. ``{"user": 300, "user_list": 150}``).
         max_size: Maximum number of entries for ``aiocache.SimpleMemoryCache``
@@ -42,6 +47,7 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
           counter_alias: counters
           default_ttl: 300
           default_list_ttl: 120
+          ttl_jitter: 0.1
           max_size: 1000
           ttl:
             user: 600
@@ -83,8 +89,14 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     aiocache_config: dict[str, Any] = msgspec.field(default_factory=dict)
     default_ttl: int = 200
     default_list_ttl: int = 120
+    ttl_jitter: float = 0.1
     ttl: dict[str, int] = msgspec.field(default_factory=dict)
     max_size: int | None = None
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.ttl_jitter < 1.0:
+            msg = f"ttl_jitter must be in [0, 1), got {self.ttl_jitter}"
+            raise ValueError(msg)
 
     @property
     def effective_counter_alias(self) -> str:
@@ -110,6 +122,7 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             aiocache_config=dict(data.get("aiocache_config") or data.get("aiocache") or {}),
             default_ttl=int(data.get("default_ttl", 200)),
             default_list_ttl=int(data.get("default_list_ttl", 120)),
+            ttl_jitter=float(data.get("ttl_jitter", 0.1)),
             ttl={str(k): int(v) for k, v in dict(data.get("ttl", {})).items()},
             max_size=int(raw_max_size) if raw_max_size is not None else None,
         )
