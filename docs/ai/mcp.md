@@ -444,7 +444,7 @@ shared session for one of the agent's own `mcp` grants, so the registration and
 the credential above are still resolved once per worker. The context is
 build-time only, the reach is bounded to that agent's grants, and calls through
 the session bypass the grant's `include`/`exclude`. Details and failure codes in
-[the `python` capability](artifacts.md#python-application-owned-toolsets).
+[the `python` capability](#python-application-owned-toolsets).
 
 ## The rule: your own tools are a `usecase` grant
 

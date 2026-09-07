@@ -711,6 +711,7 @@ tool the server actually offers fails **start-up**, not the first request — se
 Requires the `ai-harness` extra. Two libraries granted to one agent that expose
 the same skill name fail compilation with `SKILLS_NAME_COLLISION`.
 
+(python-application-owned-toolsets)=
 ### `python` — application-owned toolsets
 
 ```yaml
