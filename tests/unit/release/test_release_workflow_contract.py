@@ -39,19 +39,51 @@ class TestTheCall:
         assert reference == REUSABLE
         assert len(revision) == 40, "the reusable workflow must be pinned to a commit"
 
-    def test_publishing_is_asked_for_with_the_name_it_checks(self) -> None:
+    def test_building_is_asked_for_with_the_name_it_checks(self) -> None:
         inputs = cast(dict[str, Any], _release_job()["with"])
-        assert inputs["publish-to-pypi"] is True
+        assert inputs["build-distribution"] is True
         assert inputs["package-name"] == "loom-kernel"
 
-    def test_the_call_grants_what_publishing_needs(self) -> None:
+    def test_the_call_grants_only_what_the_release_needs(self) -> None:
         permissions = cast(dict[str, Any], _release_job()["permissions"])
         assert permissions["contents"] == "write"
-        assert permissions["id-token"] == "write"
+        assert "id-token" not in permissions
 
     def test_a_dispatch_can_resume_a_halted_release(self) -> None:
         assert "merge_sha" in _triggers()["workflow_dispatch"]["inputs"]
         assert "inputs.merge_sha" in cast(str, _release_job()["with"]["merge-sha"])
+
+
+class TestThePublishStaysHere:
+    """PyPI's trusted publishing rejects a token minted inside a reusable
+    workflow, so the upload has to run from this file, which the publisher names."""
+
+    def _publish_job(self) -> dict[str, Any]:
+        return cast(dict[str, Any], cast(dict[str, Any], _workflow()["jobs"])["publish"])
+
+    def test_the_upload_runs_in_this_repository_own_workflow(self) -> None:
+        steps = cast(list[dict[str, Any]], self._publish_job()["steps"])
+        assert any("pypi-publish" in str(step.get("uses")) for step in steps)
+
+    def test_it_publishes_what_the_called_workflow_built(self) -> None:
+        steps = cast(list[dict[str, Any]], self._publish_job()["steps"])
+        download = next(s for s in steps if "download-artifact" in str(s.get("uses")))
+        assert download["with"]["name"] == "distributions"
+
+    def test_it_carries_the_oidc_identity_and_no_password(self) -> None:
+        job = self._publish_job()
+        assert job["permissions"]["id-token"] == "write"
+        upload = next(
+            s
+            for s in cast(list[dict[str, Any]], job["steps"])
+            if "pypi-publish" in str(s.get("uses"))
+        )
+        assert "with" not in upload
+
+    def test_it_does_not_publish_a_failed_release(self) -> None:
+        job = self._publish_job()
+        assert job["needs"] == "release"
+        assert "needs.release.result == 'success'" in cast(str, job["if"])
 
 
 class TestNothingElsePublishes:
