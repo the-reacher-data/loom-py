@@ -348,6 +348,15 @@ class CountingEngineProvider:
     # needs: the composition root reads these off the provider rather than
     # importing an engine package, so announcing a kind without its factory is
     # now an inconsistency the runtime reports instead of one it hides.
+    #
+    # Kept as a staticmethod on purpose: 'engine_client_factories' reads the
+    # attribute with getattr, so a third-party engine may still declare one,
+    # and this double is where that shape is recorded. It is never invoked --
+    # this provider builds ScriptedEngines, which serve no real MCP grant, and
+    # every runtime here is handed an explicit factory. A pydantic-ai
+    # deployment must instead read 'mcp_client_factory' off the very provider
+    # instance that builds its engines, which 'SharedMcpToolsets.for_build'
+    # now refuses to let a deployment get wrong.
     mcp_client_factory = staticmethod(create_mcp_client)
     a2a_client_factory = staticmethod(create_a2a_client)
 

@@ -54,6 +54,7 @@ from loom.ai.compiler._plan import (
 from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider, _capabilities
 from loom.ai.engines.pydantic_ai._events import translate
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.errors import AgentCompilationError, AgentRunErrorCode
 from loom.ai.runtime import AgentRunError
 from loom.core.bootstrap import create_kernel
@@ -739,7 +740,8 @@ def _granted_native_tools(engine: AgentEngine) -> list[Any]:
     """Return the provider tools the built agent carries, in the agent's order."""
     from pydantic_ai.capabilities import NativeTool
 
-    agent = engine._agent  # noqa: SLF001 — the built agent is what this asserts about
+    # noqa/ignore pre-existing: the AI test tree is not under pyright (task A7)
+    agent = engine._agent  # noqa: SLF001 # pyright: ignore[reportAttributeAccessIssue]
     granted = getattr(agent.root_capability, "capabilities", ())
     return [capability for capability in granted if isinstance(capability, NativeTool)]
 
@@ -859,7 +861,7 @@ class TestSkillsCapability:
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing"),))
 
-        assert _capabilities.build_toolsets(plan, app_container) == ()
+        assert _capabilities.build_toolsets(plan, app_container, mcp=SharedMcpToolsets()) == ()
 
     def test_no_construye_capabilities_cuando_el_plan_no_concede_skills(
         self,
@@ -1094,7 +1096,9 @@ def python_capability(calls: list[str]) -> CompiledPythonCapability:
     )
 
 
-def stub_mcp_server(calls: list[str]) -> Callable[[CompiledMcpCapability], AbstractToolset[Any]]:
+def stub_mcp_server(
+    calls: list[str],
+) -> Callable[[CompiledMcpCapability, Any], AbstractToolset[Any]]:
     """Stand in for the MCP client, which is an optional dependency.
 
     The client is not installed in the test environment, so the remote toolset
@@ -1107,14 +1111,16 @@ def stub_mcp_server(calls: list[str]) -> Callable[[CompiledMcpCapability], Abstr
         calls.append("remote_ping")
         return "pong"
 
-    def _server(capability: CompiledMcpCapability) -> AbstractToolset[Any]:
-        del capability
+    def _server(capability: CompiledMcpCapability, context: Any) -> AbstractToolset[Any]:
+        del capability, context
         return FunctionToolset([remote_ping])
 
     return _server
 
 
-def stub_mcp_catalogue(*tool_names: str) -> Callable[[CompiledMcpCapability], AbstractToolset[Any]]:
+def stub_mcp_catalogue(
+    *tool_names: str,
+) -> Callable[[CompiledMcpCapability, Any], AbstractToolset[Any]]:
     """Stand in for an MCP server offering ``tool_names`` and nothing else."""
 
     def _named_tool(name: str) -> Tool[Any]:
@@ -1129,8 +1135,8 @@ def stub_mcp_catalogue(*tool_names: str) -> Callable[[CompiledMcpCapability], Ab
             takes_ctx=False,
         )
 
-    def _server(capability: CompiledMcpCapability) -> AbstractToolset[Any]:
-        del capability
+    def _server(capability: CompiledMcpCapability, context: Any) -> AbstractToolset[Any]:
+        del capability, context
         return FunctionToolset([_named_tool(name) for name in tool_names])
 
     return _server

@@ -19,7 +19,7 @@ import pytest
 from loom.ai.compiler import AgentCompiler, AgentPlan
 from loom.ai.config import AiConfig, McpServerConfig
 from loom.ai.declarative import AgentSpecV1, JsonSchemaOutput, McpCapability
-from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider, create_mcp_client
+from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
@@ -90,13 +90,16 @@ def _runtime(config: AiConfig, plan: AgentPlan, model: ScriptedToolModel) -> Any
     """Build the runtime the composition root builds, with the real MCP factory."""
     from loom.ai.runtime import AgentRuntime
 
+    provider = PydanticAIEngineProvider(model_resolver=lambda target: model.as_model())
     return AgentRuntime(
         plans=[plan],
         config=config,
-        engine_provider=PydanticAIEngineProvider(model_resolver=lambda target: model.as_model()),
+        engine_provider=provider,
         deps=CapabilityDepsFactory(),  # type: ignore[arg-type]
         container=LoomContainer(),
-        mcp_client_factory=create_mcp_client,
+        # Read off the provider, as ``create_app`` does: the start-up session
+        # and the run's toolset are then one shared connection per server.
+        mcp_client_factory=provider.mcp_client_factory,
     )
 
 

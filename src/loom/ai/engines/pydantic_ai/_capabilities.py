@@ -56,7 +56,7 @@ from loom.ai.engines.pydantic_ai._guards import (
     guarded_toolset,
     require_authenticated,
 )
-from loom.ai.engines.pydantic_ai._mcp import build_mcp_toolset
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._native import native_capability as _native_capability
 from loom.ai.engines.pydantic_ai._returns import (
     bounded_return,
@@ -275,20 +275,26 @@ def _mcp_toolset(capability: CompiledMcpCapability, context: BuildContext) -> Ab
     A remote server is reachable only by an authenticated caller, and only
     within the plan's tool timeout.
     """
-    toolset: AbstractToolset[Any] = _mcp_server(capability)
+    toolset: AbstractToolset[Any] = _mcp_server(capability, context)
     if capability.include or capability.exclude:
         toolset = toolset.filtered(_tool_predicate(capability.include, capability.exclude))
     return guarded_toolset(toolset, context, "mcp", authenticated_caller)
 
 
-def _mcp_server(capability: CompiledMcpCapability) -> AbstractToolset[Any]:
-    """Build the grant's server toolset through the module that owns its rules.
+def _mcp_server(capability: CompiledMcpCapability, context: BuildContext) -> AbstractToolset[Any]:
+    """Return the worker's shared toolset for the grant's server.
 
-    The same builder serves the start-up client of
-    :func:`~loom.ai.engines.pydantic_ai._mcp.create_mcp_client`, so a run can
-    never reach a server start-up validated under different connection rules.
+    The same object serves the runtime's start-up client, so a run can never
+    reach a server start-up validated under different connection rules, and a
+    worker holds one connection per server however many agents were granted it
+    (FR-026). A deployment that wired some other MCP client factory is refused
+    here rather than silently given a second, unvalidated connection.
+
+    The filter and the call boundary the caller wraps around it are
+    ``WrapperToolset`` composition: each holds a reference and mutates nothing,
+    so two agents keep independent views over this one shared toolset.
     """
-    return build_mcp_toolset(capability)
+    return context.mcp.for_build(capability, context.agent)
 
 
 def _tool_predicate(
@@ -496,7 +502,9 @@ SUPPORTED_KINDS: Final[frozenset[str]] = frozenset(compiled.kind for compiled in
 """Capability kinds this engine serves, derived from :data:`_KINDS`."""
 
 
-def build_toolsets(plan: AgentPlan, container: LoomContainer) -> tuple[AbstractToolset[Any], ...]:
+def build_toolsets(
+    plan: AgentPlan, container: LoomContainer, *, mcp: SharedMcpToolsets
+) -> tuple[AbstractToolset[Any], ...]:
     """Build one engine toolset per grant of ``plan`` whose kind produces one.
 
     Args:
@@ -504,6 +512,9 @@ def build_toolsets(plan: AgentPlan, container: LoomContainer) -> tuple[AbstractT
         container: Application container; a ``python`` factory receives it here,
             at build time, and every other toolset resolves through the
             per-invocation bundle instead.
+        mcp: The worker's MCP toolsets. Passing the *same* store for every plan
+            is what makes an ``mcp`` grant reuse the connection the runtime
+            already opened instead of adding one per agent.
 
     Returns:
         The toolsets, in the plan's capability order; a kind bound to
@@ -515,7 +526,7 @@ def build_toolsets(plan: AgentPlan, container: LoomContainer) -> tuple[AbstractT
             name is longer than a provider accepts, an optional dependency is
             missing, or a factory does not produce a toolset.
     """
-    context = BuildContext.of(plan, container)
+    context = BuildContext.of(plan, container, mcp)
     reject_unusable_names(plan.capabilities, context.agent)
     return tuple(_build(plan, _Destination.TOOLSET, context))
 
@@ -538,7 +549,11 @@ def build_capabilities(
         AgentCompilationError: When an optional dependency the kind needs is not
             installed.
     """
-    return tuple(_build(plan, _Destination.CAPABILITY, BuildContext.of(plan, container)))
+    # ``mcp`` is bound to ``_Destination.TOOLSET``, so no capability built here
+    # can reach a server: the store handed over is a fresh, empty one rather
+    # than the worker's.
+    context = BuildContext.of(plan, container, SharedMcpToolsets())
+    return tuple(_build(plan, _Destination.CAPABILITY, context))
 
 
 def _build(plan: AgentPlan, destination: _Destination, context: BuildContext) -> Iterator[Any]:

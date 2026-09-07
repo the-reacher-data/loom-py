@@ -9,6 +9,7 @@ import pytest
 from loom.ai.compiler._plan import CompiledNativeCapability
 from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai._capabilities import build_capabilities, build_toolsets
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._native import TOOL_CLASSES, supported_native_tools
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
@@ -82,14 +83,19 @@ def test_construye_una_capacidad_por_concesion_en_el_orden_del_plan() -> None:
     """Order is the artifact's, and each grant becomes exactly one capability."""
     from pydantic_ai.native_tools import CodeExecutionTool, WebSearchTool
 
-    built = build_capabilities(_Plan("web_search", "code_execution"), LoomContainer())
+    # The plan doubles are structural, not subclasses.
+    # Pre-existing: the AI test tree is not under pyright (task A7).
+    built = build_capabilities(_Plan("web_search", "code_execution"), LoomContainer())  # pyright: ignore[reportArgumentType]
 
-    assert [type(capability.tool) for capability in built] == [WebSearchTool, CodeExecutionTool]
+    assert [type(capability.tool) for capability in built] == [  # pyright: ignore[reportAttributeAccessIssue]
+        WebSearchTool,
+        CodeExecutionTool,
+    ]
 
 
 def test_no_construye_nada_cuando_el_plan_no_concede_ninguna() -> None:
     """A plan without native grants leaves the engine call untouched."""
-    assert build_capabilities(_Plan(), LoomContainer()) == ()
+    assert build_capabilities(_Plan(), LoomContainer()) == ()  # pyright: ignore[reportArgumentType]
 
 
 def test_el_provider_expone_el_oraculo_que_el_registro_lee() -> None:
@@ -121,8 +127,8 @@ def test_el_grant_native_no_produce_toolset_y_llega_como_capacidad() -> None:
 
     plan = _NativePlan()
 
-    assert build_toolsets(plan, LoomContainer()) == ()
-    assert len(build_capabilities(plan, LoomContainer())) == 1
+    assert build_toolsets(plan, LoomContainer(), mcp=SharedMcpToolsets()) == ()  # pyright: ignore[reportArgumentType]
+    assert len(build_capabilities(plan, LoomContainer())) == 1  # pyright: ignore[reportArgumentType]
 
 
 def test_el_registro_retira_native_cuando_el_motor_no_aporta_oraculo(

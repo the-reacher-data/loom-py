@@ -189,7 +189,9 @@ class TestGrantMcp:
         """
         from pydantic_ai.toolsets import FunctionToolset
 
-        monkeypatch.setattr(_capabilities, "_mcp_server", lambda capability: FunctionToolset([]))
+        monkeypatch.setattr(
+            _capabilities, "_mcp_server", lambda capability, context: FunctionToolset([])
+        )
 
     async def test_el_runtime_arranca_cuando_el_artefacto_concede_mcp(self) -> None:
         """The grant no longer fails start-up for want of a client factory."""
@@ -214,7 +216,9 @@ class TestGrantsCombinados:
         """Same engine-side stand-in as :class:`TestGrantMcp`."""
         from pydantic_ai.toolsets import FunctionToolset
 
-        monkeypatch.setattr(_capabilities, "_mcp_server", lambda capability: FunctionToolset([]))
+        monkeypatch.setattr(
+            _capabilities, "_mcp_server", lambda capability, context: FunctionToolset([])
+        )
 
     async def test_el_runtime_arranca_cuando_el_artefacto_concede_ambos(self) -> None:
         """One plan, two live dependencies, one entered runtime."""

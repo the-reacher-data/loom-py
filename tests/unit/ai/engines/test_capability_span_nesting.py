@@ -17,6 +17,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 
 from loom.ai.engines.pydantic_ai._guards import BuildContext, capability_call
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
@@ -57,6 +58,7 @@ async def test_tool_span_is_a_child_of_the_agent_span() -> None:
         container=LoomContainer(),
         observability=runtime,
         timeout_s=5.0,
+        mcp=SharedMcpToolsets(),
     )
 
     agent = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
@@ -84,6 +86,7 @@ async def test_a_timed_out_tool_closes_its_span_as_an_error_under_the_agent_span
         container=LoomContainer(),
         observability=runtime,
         timeout_s=0.001,
+        mcp=SharedMcpToolsets(),
     )
 
     agent = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
