@@ -1,9 +1,7 @@
 name: release
 
-# A release ships everything merged since the last tag, up to the pull request
-# that carries the `release` label. Merging that pull request is the
-# authorisation; every other merge runs ci-main and publishes nothing. The
-# dispatch is the recovery path for a release that stopped halfway.
+# Merging a pull request labelled `release` publishes everything merged since
+# the last tag. The dispatch is the recovery path.
 on:
   pull_request:
     types: [closed]
@@ -19,10 +17,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The version is derived, never typed: the part is the highest one any branch
-  # merged since the last tag asks for, so a batch holding a feature cannot ship
-  # as a patch. The tag lands on the merge commit, which fixes the range — a
-  # pull request merging a second later belongs to the next release.
   plan:
     if: >-
       ${{ github.event_name == 'workflow_dispatch'
@@ -51,8 +45,6 @@ jobs:
         run: |
           pip install --only-binary :all: "uv==0.10.2"
 
-      # A commit reachable only from a branch would tag something master does
-      # not carry, so the release refuses rather than tagging a side history.
       - name: Require the release commit on master
         shell: bash
         run: |
@@ -106,10 +98,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      # The tag is created before the build because the version is derived from
-      # it: hatch-vcs reads the tag, so a build without one produces a dev
-      # version. Creating a tag that already points at this commit is not an
-      # error, which is what makes a halted release re-runnable.
+      # Before the build, because hatch-vcs reads the tag to get the version.
+      # Idempotent, so a halted release can be re-run.
       - name: Create the immutable version tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -145,8 +135,6 @@ jobs:
     env:
       VERSION: ${{ needs.plan.outputs.version }}
     steps:
-      # Checked out at the tag, with its history, because hatch-vcs derives the
-      # version from the tag this commit carries.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
@@ -177,9 +165,6 @@ jobs:
             exit 1
           fi
 
-      # The artifact must carry the version the tag names. A dev version here
-      # means the build never saw the tag, and publishing it would burn a
-      # version number on PyPI that nobody asked for.
       - name: Require the built version to match the tag
         shell: bash
         run: |
@@ -252,17 +237,10 @@ jobs:
           name: v${{ needs.plan.outputs.version }}
           body_path: CHANGELOG_RELEASE.md
 
-      # Trusted publishing, with no fallback: PyPI mints a token for this
-      # repository and this workflow, for this run. A long-lived API token in a
-      # repository secret publishes as us until someone revokes it, and anything
-      # that reaches this job reaches it — which is what the branch name
-      # interpolated into a shell script would have done.
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 2026-07-28 (handles Metadata-Version 2.5)
 
-      # No push event announces a released commit, and nothing here changes
-      # master, so ask for the run that validates the tip explicitly. Never
-      # fatal: this asks for a check, it is not one.
+      # A GITHUB_TOKEN merge emits no push event, so the run is asked for.
       - name: Validate the released commit on master
         continue-on-error: true
         env:

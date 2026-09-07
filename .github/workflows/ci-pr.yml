@@ -16,8 +16,7 @@ permissions:
   contents: read
   pull-requests: write
   security-events: write
-  # TestPyPI publishes through trusted publishing, which needs the OIDC identity
-  # GitHub mints per run. A fork never receives one, so a fork cannot publish.
+  # TestPyPI publishes through trusted publishing; a fork gets no OIDC identity.
   id-token: write
 
 jobs:
@@ -94,10 +93,8 @@ jobs:
           branch: ${{ github.head_ref }}
           prerelease: "true"
 
-      # The calculator writes the version it computed into pyproject.toml. The
-      # version is declared dynamic now, and hatchling refuses a field that is
-      # both static and dynamic, so the build fails unless the file is put back.
-      # Only these three are ever touched; anything else is a bug, not drift.
+      # The calculator writes project.version, which hatchling refuses next to
+      # a dynamic version. Only these three files are ever touched.
       - name: Restore action side effects
         shell: bash
         run: |
@@ -133,24 +130,10 @@ jobs:
           tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"
           body-file: ${{ steps.changelog.outputs.output_path }}
 
-      # --frozen forces the committed uv.lock resolution and pytest-cov is
-      # pinned to the version already locked in the dev group.
-      # "--no-build" is intentionally omitted: omegaconf (a runtime dependency)
-      # requires antlr4-python3-runtime 4.9.3, which ships no wheel on PyPI, so
-      # the environment cannot be created from binaries only.
-      # Fast lane: `-m "not integration"` deselects the suites that need a
-      # provisioned external service; they run in the `integration` job with
-      # those services actually up. Deselecting is deliberate over letting them
-      # skip — a skipped test reads as approved, a deselected one reads as
-      # "not this lane".
-      # Standalone artifact validation (FR-015): the published corpus must
-      # stay valid against the offline validator. The fake packages provide
-      # the corpus module:symbol references, as they would in an application.
-      # The glob is '*/agent.yaml', not '*.yaml': each corpus entry is a
-      # DIRECTORY holding its artifact next to its own skills, which is the
-      # layout an application uses. A top-level '*.yaml' matches nothing, and
-      # the validator exits 0 on an empty match — so the wrong glob is a step
-      # that passes without validating anything.
+      # --no-build is unusable: antlr4-python3-runtime 4.9.3, required by
+      # omegaconf, ships no wheel. The glob is '*/agent.yaml' because each
+      # corpus entry is a directory, and '*.yaml' would match nothing while
+      # the validator still exits 0.
       - name: Validate agent artifact corpus
         shell: bash
         env:
@@ -291,9 +274,6 @@ jobs:
             echo "::warning title=Snyk scan did not complete::No dependency was scanned. This does NOT block the build. A 401 with SNYK-0005 means the SNYK_TOKEN is expired or unprovisioned; renew it in Snyk and update the repository secret."
           fi
 
-      # The version is derived from the tag and the distance from it, so nothing
-      # rewrites pyproject.toml here: the build produces the dev version this
-      # commit already has. A fork gets no OIDC identity, so it does not publish.
       - name: Build the prerelease distributions
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         shell: bash
