@@ -614,8 +614,9 @@ class TestFallosDelLoader:
             if record.name == "loom.ai.runtime._bounded" and record.levelno == logging.ERROR
         ]
         assert len(records) == 1
-        assert "2049" in caplog.text
-        assert "2048" in caplog.text
+        assert records[0].exc_text is not None
+        assert "2049" in records[0].exc_text
+        assert "2048" in records[0].exc_text
         assert "2049" not in str(error)
         assert "2048" not in str(error)
 

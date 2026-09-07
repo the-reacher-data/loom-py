@@ -565,7 +565,7 @@ the same timeout: it runs after the model spent tokens, so a retry is not free.
 
 | The loader… | The caller gets |
 |---|---|
-| raises | `500` `CONVERSATION_LOAD_FAILED` with a fixed message — `the conversation could not be loaded; the detail is recorded server-side`. The exception never reaches the caller; the server log carries it under the `interaction_id`. |
+| raises anything but `TimeoutError` | `500` `CONVERSATION_LOAD_FAILED` with a fixed message — `the conversation could not be loaded; the detail is recorded server-side`. The exception never reaches the caller; the server log carries it under the `interaction_id`. |
 | raises `Forbidden`, `Unauthenticated`, `RoleNotAllowedError` or `RolesNotBoundError` | `403` `UNAUTHORIZED`, exactly as the hook and a `kind: usecase` tool. |
 | times out — cut at `tool_timeout_ms`, or a `TimeoutError` of its own | `504` `CONVERSATION_LOAD_TIMEOUT` with a fixed message — `the conversation loader exceeded its time limit`. Retriable; the origin is in the server log. |
 | returns anything but `bytes` or `None` — a `str`, a list, a dict | `CONVERSATION_LOAD_FAILED`; the value is never coerced and never logged. |

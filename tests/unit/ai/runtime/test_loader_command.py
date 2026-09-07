@@ -1,4 +1,4 @@
-"""``loader_command`` and ``failure_error``: the loader command and the failure mapping (006 T5)."""
+"""``loader_command``, ``_as_history`` and ``failure_error``: the loader side of a run (006 T5)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.ai.runtime._bounded import RunContext, failure_error
-from loom.ai.runtime._conversation import loader_command
+from loom.ai.runtime._conversation import _as_history, loader_command
 from loom.core.command import Command
 from loom.core.errors import Forbidden
 from loom.core.identity import Identity
@@ -150,3 +150,25 @@ class TestFailureError:
             "conversation loader" in record.getMessage() and "int-1" in record.getMessage()
             for record in caplog.records
         )
+
+
+class TestAsHistory:
+    def test_devuelve_none_cuando_el_loader_no_devuelve_nada(self) -> None:
+        """``None`` is single-shot and is never measured."""
+        assert _as_history(None, 1024) is None
+
+    def test_devuelve_el_mismo_objeto_cuando_los_bytes_igualan_el_limite(self) -> None:
+        """Bytes exactly at the bound pass through untouched."""
+        history = b"x" * 1024
+
+        assert _as_history(history, 1024) is history
+
+    def test_lanza_value_error_con_ambos_tamanos_cuando_los_bytes_superan_el_limite(self) -> None:
+        """One byte over the bound is refused and the message names both sizes."""
+        with pytest.raises(ValueError, match=r"1025(?s:.*)1024"):
+            _as_history(b"x" * 1025, 1024)
+
+    def test_lanza_type_error_cuando_el_loader_devuelve_un_str(self) -> None:
+        """A ``str`` is never coerced to bytes."""
+        with pytest.raises(TypeError):
+            _as_history("not bytes", 1024)
