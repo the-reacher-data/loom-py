@@ -15,6 +15,7 @@ artifact format they run is not.  See :mod:`loom.ai` for the distinction.
 from __future__ import annotations
 
 from loom.ai.abc import HealthState as HealthState
+from loom.ai.abc import McpSession as McpSession
 from loom.ai.errors import (
     # Re-exported: ``AgentRunError`` lives with its code in 'loom.ai.errors',
     # so an engine adapter reaches it without importing this whole runtime.
@@ -22,7 +23,7 @@ from loom.ai.errors import (
 )
 from loom.ai.runtime._health import AgentHealth
 from loom.ai.runtime._lifecycle import A2AClientFactory, AgentRuntime
-from loom.ai.runtime._mcp import McpClientFactory, McpSession, SharedMcpSession
+from loom.ai.runtime._mcp import McpClientFactory, SharedMcpSession
 
 __all__ = [
     "A2AClientFactory",

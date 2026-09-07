@@ -17,6 +17,7 @@ from typing import Any, ClassVar, cast
 import msgspec
 import pytest
 
+from loom.ai.abc import ToolsetContext
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledA2ACapability,
@@ -32,7 +33,6 @@ from loom.ai.compiler._plan import (
 from loom.ai.declarative import PolicySpec
 from loom.ai.describe import _as_builtin, describe_agent, describe_agents
 from loom.ai.inference import InferenceTarget, _RedactedOptions
-from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.introspection import IntrospectionError
 from loom.core.model import LoomFrozenStruct
@@ -63,9 +63,9 @@ class _GrantedUseCase:
 class _GeoToolsetFactory:
     """Imported toolset factory a ``python`` grant resolved to."""
 
-    def __call__(self, container: LoomContainer) -> object:
+    def __call__(self, context: ToolsetContext) -> object:
         """Build the engine-facing toolset."""
-        del container
+        del context
         return object()
 
 
@@ -123,7 +123,11 @@ def _skills_capability() -> CompiledSkillsCapability:
 
 def _python_capability() -> CompiledPythonCapability:
     """Build the ``python`` grant: the reference is public, the callable is not."""
-    return CompiledPythonCapability(factory_ref=_FACTORY_REF, factory=_GeoToolsetFactory())
+    return CompiledPythonCapability(
+        factory_ref=_FACTORY_REF,
+        factory=_GeoToolsetFactory(),
+        params={"radius_km": 25, "max_results": 3},
+    )
 
 
 def _a2a_capability() -> CompiledA2ACapability:
@@ -302,9 +306,12 @@ class TestAjustesPorKind:
             "names": ("tone-of-voice", "release-notes"),
         }
 
-    def test_publica_solo_la_referencia_cuando_la_capacidad_es_python(self) -> None:
-        """The factory reference is public; the imported callable is not."""
-        assert _settings_of(_python_capability()) == {"factory_ref": _FACTORY_REF}
+    def test_publishes_factory_ref_and_param_names_for_a_python_capability(self) -> None:
+        """The reference and the sorted parameter names are public; callable and values are not."""
+        assert _settings_of(_python_capability()) == {
+            "factory_ref": _FACTORY_REF,
+            "params": ("max_results", "radius_km"),
+        }
 
     def test_publica_agente_y_filtro_cuando_la_capacidad_es_a2a(self) -> None:
         """The remote agent name and filter are public; URL and headers are not."""

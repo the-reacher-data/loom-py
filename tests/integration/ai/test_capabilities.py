@@ -42,7 +42,7 @@ from pydantic_ai.tools import Tool
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from pydantic_ai_harness import Skills
 
-from loom.ai.abc import AgentEngine, ToolResultEvent
+from loom.ai.abc import AgentEngine, ToolResultEvent, ToolsetContext
 from loom.ai.compiler._plan import (
     CompiledMcpCapability,
     CompiledNativeCapability,
@@ -1087,8 +1087,8 @@ def python_capability(calls: list[str]) -> CompiledPythonCapability:
         calls.append("ping")
         return "pong"
 
-    def factory(container: LoomContainer) -> AbstractToolset[Any]:
-        del container
+    def factory(context: ToolsetContext) -> AbstractToolset[Any]:
+        del context
         return FunctionToolset([ping])
 
     return CompiledPythonCapability(
@@ -1149,8 +1149,8 @@ def signalling_capability(signal: Exception) -> CompiledPythonCapability:
         """Raise the engine signal instead of answering."""
         raise signal
 
-    def factory(container: LoomContainer) -> AbstractToolset[Any]:
-        del container
+    def factory(context: ToolsetContext) -> AbstractToolset[Any]:
+        del context
         return FunctionToolset([ping])
 
     return CompiledPythonCapability(
@@ -1168,8 +1168,8 @@ def dictating_capability() -> CompiledPythonCapability:
             metadata={"loom": {"shape": "rows", "n": 999}, "own": "kept"},
         )
 
-    def factory(container: LoomContainer) -> AbstractToolset[Any]:
-        del container
+    def factory(context: ToolsetContext) -> AbstractToolset[Any]:
+        del context
         return FunctionToolset([ping])
 
     return CompiledPythonCapability(

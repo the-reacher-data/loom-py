@@ -37,7 +37,7 @@ from pydantic_ai.exceptions import (
 from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool, WrapperToolset
 
-from loom.ai.compiler import AgentPlan
+from loom.ai.compiler import AgentPlan, CompiledMcpCapability
 from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._returns import foreign_return, refusal
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
@@ -116,6 +116,10 @@ class BuildContext:
             over the one connection the runtime opened for it. Required: a
             default would be an isolated store, and omitting it is exactly how
             per-agent connections would come back unnoticed.
+        mcp_grants: The plan's ``mcp`` grants, in declaration order: the only
+            servers a ``python`` factory may reach through its context.
+            Required for the same reason ``mcp`` is: a default would make
+            every ``remote()`` on a hand-built context miss silently.
     """
 
     agent: str
@@ -123,6 +127,7 @@ class BuildContext:
     observability: ObservabilityRuntime | None
     timeout_s: float
     mcp: SharedMcpToolsets
+    mcp_grants: tuple[CompiledMcpCapability, ...]
 
     @classmethod
     def of(cls, plan: AgentPlan, container: LoomContainer, mcp: SharedMcpToolsets) -> BuildContext:
@@ -142,6 +147,9 @@ class BuildContext:
             observability=_observability(container),
             timeout_s=plan.policies.tool_timeout_ms / _MS_PER_SECOND,
             mcp=mcp,
+            mcp_grants=tuple(
+                grant for grant in plan.capabilities if type(grant) is CompiledMcpCapability
+            ),
         )
 
 

@@ -263,11 +263,15 @@ class PythonCapability(
     """Toolset built by application-owned Python code.
 
     Args:
-        factory: ``module:factory`` satisfying the toolset factory protocol.
+        factory: ``module:factory`` called once at build as ``factory(context, **params)``.
             A factory, never a constructed object.
+        params: Nested block passed to the factory as keyword arguments. The
+            names are validated against the factory's signature at compile;
+            the values are decoded YAML, not validated. Settings, never secrets.
     """
 
     factory: _SymbolRef
+    params: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
 class A2ACapability(

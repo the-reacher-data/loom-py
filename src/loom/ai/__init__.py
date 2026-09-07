@@ -25,9 +25,11 @@ from loom.ai.abc import (
     FinalEvent,
     HealthState,
     HealthStatus,
+    McpSession,
     TextDeltaEvent,
     ToolCallEvent,
     ToolResultEvent,
+    ToolsetContext,
     ToolsetFactory,
 )
 from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
@@ -68,8 +70,10 @@ __all__ = [
     "FinalEvent",
     "HealthStatus",
     "InferenceTarget",
+    "McpSession",
     "TextDeltaEvent",
     "ToolCallEvent",
     "ToolResultEvent",
+    "ToolsetContext",
     "ToolsetFactory",
 ]

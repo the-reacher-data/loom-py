@@ -94,6 +94,9 @@ class AgentErrorCode(StrEnum):
     SKILLS_ROOT_MISSING = "SKILLS_ROOT_MISSING"
     PYTHON_FACTORY_UNRESOLVABLE = "PYTHON_FACTORY_UNRESOLVABLE"
     PYTHON_FACTORY_NOT_CALLABLE = "PYTHON_FACTORY_NOT_CALLABLE"
+    PYTHON_FACTORY_PARAMS_REJECTED = "PYTHON_FACTORY_PARAMS_REJECTED"
+    PYTHON_REMOTE_NOT_GRANTED = "PYTHON_REMOTE_NOT_GRANTED"
+    PYTHON_FACTORY_FAILED = "PYTHON_FACTORY_FAILED"
     A2A_AGENT_UNKNOWN = "A2A_AGENT_UNKNOWN"
     A2A_URL_INVALID = "A2A_URL_INVALID"
     ANONYMOUS_WITH_DATA_CAPABILITY = "ANONYMOUS_WITH_DATA_CAPABILITY"
@@ -699,6 +702,45 @@ def python_factory_not_callable(component: str, factory: str) -> AgentCompilatio
     return AgentCompilationIssue(
         code=AgentErrorCode.PYTHON_FACTORY_NOT_CALLABLE,
         message=f"{component}: python factory '{factory}' does not satisfy ToolsetFactory",
+        component=component,
+        field="capabilities.factory",
+    )
+
+
+def python_factory_params_rejected(
+    component: str, factory: str, reason: str
+) -> AgentCompilationIssue:
+    """A ``python`` capability's ``params`` do not bind to the factory's signature."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.PYTHON_FACTORY_PARAMS_REJECTED,
+        message=f"{component}: python factory '{factory}' rejects params: {reason}",
+        component=component,
+        field="capabilities.params",
+    )
+
+
+def python_remote_not_granted(component: str, factory: str, server: str) -> AgentCompilationIssue:
+    """A ``python`` factory asked for an MCP server its agent was not granted."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.PYTHON_REMOTE_NOT_GRANTED,
+        message=(
+            f"{component}: python factory '{factory}' asked for mcp server '{server}', "
+            f"but agent '{component}' has no mcp grant on that server"
+        ),
+        component=component,
+        field="capabilities.factory",
+    )
+
+
+def python_factory_failed(component: str, factory: str, error: str) -> AgentCompilationIssue:
+    """A ``python`` factory raised while building its toolset at start-up.
+
+    Only the exception class is named: the message could carry a ``params``
+    value or anything else the factory touched.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.PYTHON_FACTORY_FAILED,
+        message=f"{component}: python factory '{factory}' raised {error} while building",
         component=component,
         field="capabilities.factory",
     )

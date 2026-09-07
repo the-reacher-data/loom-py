@@ -36,6 +36,7 @@ from loom.ai.abc import (
     ErrorEvent,
     FinalEvent,
     HealthState,
+    McpSession,
 )
 from loom.ai.compiler._plan import (
     AgentPlan,
@@ -64,7 +65,6 @@ from loom.ai.runtime._limits import cancel_task, supervised_events
 from loom.ai.runtime._mcp import (
     FilterTarget,
     McpClientFactory,
-    McpSession,
     SharedMcpSession,
     connection_conflicts,
     filter_issues,

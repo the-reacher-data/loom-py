@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from loom.ai.declarative import agent_spec_json_schema, agent_spec_schema_path
 
@@ -165,6 +166,40 @@ def test_la_capacidad_emitida_declara_el_filtro_plano_cuando_se_construye(kind: 
     properties = _capability_variant(_emitted(), kind)["properties"]
 
     assert {"include", "exclude"} <= set(properties)
+
+
+def _python_artifact(capability: dict[str, Any]) -> dict[str, Any]:
+    """Build a minimal v1 artifact declaring exactly one ``python`` capability."""
+    return {
+        "spec_version": 1,
+        "name": "incident-triage",
+        "description": "Classifies an incident from its description.",
+        "instructions": "Read the incident description and return a report.",
+        "output": {"kind": "json_schema", "schema": {"type": "object"}},
+        "capabilities": [{"kind": "python", **capability}],
+    }
+
+
+def _schema_errors(payload: dict[str, Any]) -> list[str]:
+    """Validate an artifact against the emitted schema and return the messages."""
+    validator = Draft202012Validator(_emitted())
+    return [error.message for error in validator.iter_errors(payload)]
+
+
+def test_emitted_python_capability_accepts_params_as_an_object() -> None:
+    """``params`` is an object with arbitrary keys nested under the capability."""
+    payload = _python_artifact(
+        {"factory": "myapp.tools.geo:build_geo_toolset", "params": {"max_results": 3}}
+    )
+
+    assert _schema_errors(payload) == []
+
+
+def test_emitted_python_capability_rejects_a_sibling_of_factory() -> None:
+    """A parameter placed beside ``factory`` instead of under ``params`` is rejected."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset", "max_results": 3})
+
+    assert _schema_errors(payload) != []
 
 
 @pytest.mark.parametrize("retired", ["tool_filter", "refs", "url", "headers_ref", "timeout_ms"])

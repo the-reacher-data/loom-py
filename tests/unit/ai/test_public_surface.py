@@ -20,6 +20,7 @@ import pytest
 
 import loom.ai
 import loom.ai.declarative
+import loom.ai.runtime
 from loom.ai.abc import AgentEngine
 
 _REQUIRED_EXPORTS = frozenset(
@@ -41,6 +42,8 @@ _REQUIRED_EXPORTS = frozenset(
         "AgentEngine",
         "AgentEngineProvider",
         "ToolsetFactory",
+        "ToolsetContext",
+        "McpSession",
         "DepsFactory",
     }
 )
@@ -68,6 +71,10 @@ class TestPublicExports:
     def test_all_contiene_la_superficie_publica_cuando_se_importa_loom_ai(self) -> None:
         """Every engine-neutral name of the fixed surface is exported."""
         assert set(loom.ai.__all__) >= _REQUIRED_EXPORTS
+
+    def test_mcp_session_is_one_object_under_both_public_names(self) -> None:
+        """``loom.ai.McpSession`` and ``loom.ai.runtime.McpSession`` are the same Protocol."""
+        assert loom.ai.McpSession is loom.ai.runtime.McpSession
 
     def test_all_no_contiene_nombres_privados_cuando_se_importa_loom_ai(self) -> None:
         """No underscore-prefixed symbol leaks into the public surface."""
