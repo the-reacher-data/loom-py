@@ -45,15 +45,18 @@ from loom.ai.compiler._plan import (
 )
 from loom.ai.config import AiConfig
 from loom.ai.errors import (
+    INVOKER_MISSING_REASON,
     AgentCompilationError,
     AgentCompilationIssue,
     AgentRunError,
     AgentRunErrorCode,
     a2a_agent_unreachable,
+    conversation_invoker_missing,
     mcp_server_unreachable,
     on_output_invoker_missing,
     sql_readonly_drift,
 )
+from loom.ai.runtime._conversation import load_conversation
 from loom.ai.runtime._health import AgentHealth, worst
 from loom.ai.runtime._hooks import HookRun, hooked_events, no_terminal_message
 from loom.ai.runtime._limits import cancel_task, supervised_events
@@ -87,6 +90,7 @@ reaches a model provider, so its failures carry endpoints and credential
 references that an anonymous ``/health`` scrape must never receive."""
 
 _INVOKER_UNBOUND = "the use-case invoker is not bound to a caller"
+"""Probe reason when the bundle's invoker was never bound to a caller."""
 
 _OPTIONAL_REMOTE_CLIENTS = "optional"
 """Value of ``ai.remote_clients`` under which a connection failure is tolerated."""
@@ -217,7 +221,7 @@ class AgentRuntime:
         deadline = self._startup_deadline()
         try:
             self._verify_sql_readonly()
-            self._verify_hook_invoker()
+            self._verify_invoker()
             self._verify_mcp_connections()
             tolerated = await self._open_clients(stack, deadline)
             # A tolerated failure spent the shared budget on a server start-up
@@ -281,6 +285,20 @@ class AgentRuntime:
         """
         return name in self._plans
 
+    def has_conversation(self, name: str) -> bool:
+        """Report whether one agent declares a conversation loader.
+
+        Args:
+            name: Agent to describe.
+
+        Returns:
+            ``True`` when the artifact declares a ``conversation`` loader.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        return self._require_plan(name).conversation is not None
+
     def capability_kinds(self, name: str) -> tuple[str, ...]:
         """Return the capability kinds one agent was granted.
 
@@ -315,19 +333,22 @@ class AgentRuntime:
             name: Agent to run.
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
-            conversation_id: Opaque value the application supplies; copied
-                verbatim into the output hook's command, never read.
+            conversation_id: Opaque value the application supplies; selects
+                the conversation the loader use case receives, when the
+                artifact declares one, and is copied verbatim into the output
+                hook's command.  Never read by loom.
 
         Returns:
-            The decoded output, the run's usage, its ``interaction_id`` and the
-            output hook's result.
+            The decoded output, the run's usage, its ``interaction_id``, the
+            output hook's result and the run's new messages.
 
         Raises:
             KeyError: When no agent is named *name*.
             ValueError: When ``conversation_id`` is empty or longer than
                 :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
-            AgentRunError: When the run is refused (``TOO_MANY_RUNS``), breaches
-                a declared limit, or ends in a failure event.
+            AgentRunError: When the run is refused (``TOO_MANY_RUNS``), the
+                conversation cannot be loaded (``CONVERSATION_LOAD_FAILED``),
+                breaches a declared limit, or ends in a failure event.
         """
         result: AgentResult | None = None
         stream = self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
@@ -346,6 +367,7 @@ class AgentRuntime:
                         usage=event.usage,
                         interaction_id=event.interaction_id,
                         hook_result=event.hook_result,
+                        messages=event.messages,
                     )
         if result is None:
             # Defensive only: ``hooked_events`` closes every exhausted stream
@@ -370,8 +392,10 @@ class AgentRuntime:
             name: Agent to run.
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
-            conversation_id: Opaque value the application supplies; copied
-                verbatim into the output hook's command, never read.
+            conversation_id: Opaque value the application supplies; selects
+                the conversation the loader use case receives, when the
+                artifact declares one, and is copied verbatim into the output
+                hook's command.  Never read by loom.
 
         Returns:
             An async context manager yielding the limit-supervised events; the
@@ -382,7 +406,8 @@ class AgentRuntime:
             ValueError: On entry, when ``conversation_id`` is empty or longer
                 than :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
             AgentRunError: On entry, when the worker's ``max_concurrent_runs``
-                is already taken (``TOO_MANY_RUNS``).
+                is already taken (``TOO_MANY_RUNS``) or the conversation
+                cannot be loaded (``CONVERSATION_LOAD_FAILED``).
         """
         return self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
 
@@ -404,24 +429,38 @@ class AgentRuntime:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def _verify_hook_invoker(self) -> None:
-        """Abort start-up when a hook is declared but no bundle carries an invoker.
+    def _verify_invoker(self) -> None:
+        """Abort start-up when a hook or a loader is declared but no bundle carries an invoker.
 
         Probed once, before any client opens: without it a misconfigured
         deployment would fail only after every paid run.
         """
         hooked = [name for name, plan in self._plans.items() if plan.on_output is not None]
-        if not hooked:
+        conversational = [
+            name for name, plan in self._plans.items() if plan.conversation is not None
+        ]
+        if not hooked and not conversational:
             return
+        reason = self._invoker_reason()
+        if reason is None:
+            return
+        issues: list[AgentCompilationIssue] = []
+        if hooked:
+            issues.append(on_output_invoker_missing(hooked, reason=reason))
+        if conversational:
+            issues.append(conversation_invoker_missing(conversational, reason=reason))
+        raise AgentCompilationError(issues)
+
+    def _invoker_reason(self) -> str | None:
+        """Return why the probed bundle's invoker is unusable, or ``None`` when it is fine."""
         invoker = getattr(self._deps.build(ANONYMOUS, self._container), "invoker", None)
         if not isinstance(invoker, ApplicationInvoker):
-            raise AgentCompilationError([on_output_invoker_missing(hooked)])
+            return INVOKER_MISSING_REASON
         # An invoker built for a caller carries that caller (``ANONYMOUS`` here);
-        # one carrying ``None`` was never bound and would run every hook as nobody.
+        # one carrying ``None`` was never bound and would run every use case as nobody.
         if getattr(invoker, "identity", ANONYMOUS) is None:
-            raise AgentCompilationError(
-                [on_output_invoker_missing(hooked, reason=_INVOKER_UNBOUND)]
-            )
+            return _INVOKER_UNBOUND
+        return None
 
     def _verify_sql_readonly(self) -> None:
         """Abort start-up when a SQL grant's read-only state drifted (FR-046)."""
@@ -699,7 +738,10 @@ class AgentRuntime:
                 interaction_id=uuid4().hex,
                 conversation_id=conversation_id,
             )
-            async with slot.engine.run_stream(prompt, identity=identity) as events:
+            conversation = await load_conversation(run, self._deps, self._container)
+            async with slot.engine.run_stream(
+                prompt, identity=identity, conversation=conversation
+            ) as events:
                 supervised = supervised_events(events, slot.plan.policies)
                 hooked = hooked_events(supervised, run, self._deps, self._container)
                 try:

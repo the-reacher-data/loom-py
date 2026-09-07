@@ -16,8 +16,13 @@ from __future__ import annotations
 import inspect
 
 from loom.ai.errors import (
+    INVOKER_MISSING_REASON,
     AgentErrorCode,
     a2a_agent_unreachable,
+    conversation_input_unsatisfied,
+    conversation_invoker_missing,
+    conversation_usecase_also_granted,
+    conversation_usecase_unknown,
     mcp_server_unreachable,
     mcp_transport_invalid,
     on_output_input_unsatisfied,
@@ -109,6 +114,77 @@ def test_on_output_invoker_missing_es_un_problema_de_despliegue_que_nombra_los_a
     assert issue.component == "ai"
     assert issue.field == "on_output"
     assert "triage-bot, escalation-bot" in issue.message
+
+
+def test_on_output_invoker_missing_conserva_el_texto_original_cuando_no_hay_razon() -> None:
+    """The default message is byte-identical to the one shipped before the shared constant."""
+    issue = on_output_invoker_missing(["a"])
+
+    assert INVOKER_MISSING_REASON in issue.message
+    assert issue.message == "agents declare an output hook but no use-case invoker is configured: a"
+
+
+def test_conversation_usecase_unknown_apunta_al_campo_conversation_usecase() -> None:
+    """The unknown key is attributed to the loader field, not to the capabilities."""
+    issue = conversation_usecase_unknown("triage-bot", "conversations.load")
+
+    assert issue.code is AgentErrorCode.CONVERSATION_USECASE_UNKNOWN
+    assert issue.component == "triage-bot"
+    assert issue.field == "conversation.usecase"
+    assert "conversations.load" in issue.message
+
+
+def test_conversation_input_unsatisfied_lleva_la_razon_en_el_mensaje() -> None:
+    """The reason is the only clue the author gets about which Input field fails."""
+    issue = conversation_input_unsatisfied(
+        "triage-bot", "conversations.load", "field 'tenant' has no default"
+    )
+
+    assert issue.code is AgentErrorCode.CONVERSATION_INPUT_UNSATISFIED
+    assert issue.component == "triage-bot"
+    assert issue.field == "conversation.usecase"
+    assert "conversations.load" in issue.message
+    assert "field 'tenant' has no default" in issue.message
+
+
+def test_conversation_usecase_also_granted_apunta_al_campo_conversation_usecase() -> None:
+    """A key that is both loader and capability is reported once, on the loader field."""
+    issue = conversation_usecase_also_granted("triage-bot", "conversations.load")
+
+    assert issue.code is AgentErrorCode.CONVERSATION_USECASE_ALSO_GRANTED
+    assert issue.component == "triage-bot"
+    assert issue.field == "conversation.usecase"
+    assert "conversations.load" in issue.message
+
+
+def test_conversation_invoker_missing_es_un_problema_de_despliegue_que_nombra_los_agentes() -> None:
+    """No single agent owns the missing invoker, so the issue belongs to ``ai``."""
+    issue = conversation_invoker_missing(["triage-bot", "escalation-bot"])
+
+    assert issue.code is AgentErrorCode.CONVERSATION_INVOKER_MISSING
+    assert issue.component == "ai"
+    assert issue.field == "conversation"
+    assert "triage-bot, escalation-bot" in issue.message
+
+
+def test_conversation_invoker_missing_usa_la_razon_por_defecto_cuando_no_se_indica() -> None:
+    """Both invoker-missing issues share one default reason, so operators read one wording."""
+    issue = conversation_invoker_missing(["a"])
+
+    assert INVOKER_MISSING_REASON in issue.message
+    assert (
+        issue.message
+        == "agents declare a conversation loader but no use-case invoker is configured: a"
+    )
+
+
+def test_conversation_invoker_missing_lleva_la_razon_cuando_se_indica() -> None:
+    """An invoker that exists but is unusable is reported with its own reason."""
+    issue = conversation_invoker_missing(["triage-bot"], reason="the use-case invoker is unbound")
+
+    assert issue.code is AgentErrorCode.CONVERSATION_INVOKER_MISSING
+    assert "the use-case invoker is unbound" in issue.message
+    assert "triage-bot" in issue.message
 
 
 def test_mcp_transport_invalid_nombra_el_componente_y_lleva_la_razon() -> None:

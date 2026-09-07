@@ -47,7 +47,7 @@ ENGINE_ENTRY_POINT_GROUP = "loom.ai.engines"
 ENGINE_API_ATTRIBUTE = "LOOM_AI_ENGINE_API"
 """Attribute a provider declares its handshake version on."""
 
-SUPPORTED_ENGINE_APIS: frozenset[int] = frozenset({1})
+SUPPORTED_ENGINE_APIS: frozenset[int] = frozenset({2})
 """Handshake versions this release of loom accepts."""
 
 _ENGINE_API_REQUIREMENT = ApiVersionRequirement(

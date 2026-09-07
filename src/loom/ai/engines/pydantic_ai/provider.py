@@ -64,7 +64,7 @@ class PydanticAIEngineProvider:
         engine = provider.create_engine(plan, deps=deps, container=container)
     """
 
-    LOOM_AI_ENGINE_API: ClassVar[int] = 1
+    LOOM_AI_ENGINE_API: ClassVar[int] = 2
 
     a2a_client_factory = staticmethod(create_a2a_client)
     """Client factory for ``a2a`` grants, read off the provider by the

@@ -134,6 +134,27 @@ class OutputHookSpec(
     usecase: _NonEmptyStr
 
 
+class ConversationSpec(
+    msgspec.Struct,
+    frozen=True,
+    kw_only=True,
+    forbid_unknown_fields=True,
+):
+    """Use case the runtime executes before a run that carries a ``conversation_id``.
+
+    It returns the prior history of that conversation as opaque bytes in the
+    engine's serialised form, or ``None`` on the first turn. The key uses the
+    same vocabulary as :attr:`UsecaseCapability.keys` and is resolved against
+    the same registry at compile time. The model never sees it: it is not a
+    tool, and it never enters the instructions.
+
+    Args:
+        usecase: Use-case key of the registry that loads the prior history.
+    """
+
+    usecase: _NonEmptyStr
+
+
 class UsecaseCapability(
     msgspec.Struct,
     frozen=True,
@@ -349,6 +370,9 @@ class AgentSpecV1(
         output:        Declaration of the structured answer the agent returns.
         on_output:     Use case executed once per completed run with the
             validated output; ``None`` when the artifact declares no hook.
+        conversation:  Use case executed before a run that carries a
+            ``conversation_id`` to load the prior history; ``None`` when the
+            artifact declares no loader.
         capabilities:  Explicitly granted capabilities; empty by default.
         policies:      Execution limits; documented defaults when omitted.
         metadata:      Free-form string labels carried alongside the agent.
@@ -361,6 +385,7 @@ class AgentSpecV1(
     model_role: Annotated[str, msgspec.Meta(pattern=MODEL_ROLE_PATTERN)] = DEFAULT_MODEL_ROLE
     output: OutputSpec
     on_output: OutputHookSpec | None = None
+    conversation: ConversationSpec | None = None
     capabilities: tuple[CapabilitySpec, ...] = ()
     policies: PolicySpec = msgspec.field(default_factory=PolicySpec)
     metadata: Mapping[str, str] = msgspec.field(default_factory=dict)

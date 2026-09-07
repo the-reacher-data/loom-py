@@ -126,6 +126,14 @@ class TestFormatoDeTrama:
 
         assert _split_frame(encode_sse_event(event))[1] == payload
 
+    def test_no_emite_messages_cuando_el_final_los_lleva(self) -> None:
+        """The run's new messages never reach the wire: ``final`` keeps its four keys."""
+        event, payload = _EVENTS["final"]
+        assert isinstance(event, FinalEvent)
+        with_messages = FinalEvent(output=event.output, usage=event.usage, messages=b"[]")
+
+        assert _split_frame(encode_sse_event(with_messages))[1] == payload
+
     @pytest.mark.parametrize("name", _NAMES)
     def test_no_filtra_el_tag_type_cuando_codifica(self, name: str) -> None:
         """The ``type`` tag lives on the event line, never inside the payload."""

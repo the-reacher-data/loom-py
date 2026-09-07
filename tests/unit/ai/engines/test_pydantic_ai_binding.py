@@ -292,7 +292,7 @@ class TestEntryPoint:
         provider = resolve_engine_provider("pydantic-ai")
 
         assert isinstance(provider, PydanticAIEngineProvider)
-        assert PydanticAIEngineProvider.LOOM_AI_ENGINE_API == 1
+        assert PydanticAIEngineProvider.LOOM_AI_ENGINE_API == 2
 
     # The kinds this adapter declares are asserted by
     # ``tests/integration/ai/test_capabilities.py::TestSupportedCapabilityKinds``,

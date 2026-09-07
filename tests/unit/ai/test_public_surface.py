@@ -4,9 +4,11 @@ Pins two properties of the pillar's public API:
 
 * ``loom.ai.__all__`` exposes exactly the engine-neutral surface — no private
   names, no engine or vendor types, and every listed name resolves.
-* The ``AgentEngine`` protocol is conversation-free (FR-034): no message,
-  history or conversation parameters; runs take a ``prompt`` and a
-  keyword-only ``identity``, and ``run_stream`` is an async context manager.
+* The ``AgentEngine`` protocol takes a single prompt and, optionally, the
+  conversation the run continues as loom's opaque ``Conversation`` (FR-034):
+  runs take a ``prompt``, a keyword-only ``identity`` and a keyword-only
+  ``conversation`` defaulting to ``None``; no ``message``/``history``-style
+  parameter exists, and ``run_stream`` is an async context manager.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ _REQUIRED_EXPORTS = frozenset(
         "AgentEvent",
         "AgentResult",
         "AgentUsage",
+        "Conversation",
         "HealthStatus",
         "AgentEngine",
         "AgentEngineProvider",
@@ -50,8 +53,10 @@ _ENGINE_NAME_FRAGMENTS = ("Pydantic", "OpenAI", "Bedrock", "LangChain", "Fake")
 _RETIRED_EXPORTS = frozenset({"ToolFilter"})
 
 _FORBIDDEN_RUN_PARAMS = frozenset(
-    {"message", "messages", "history", "chat_history", "conversation"}
+    {"message", "messages", "history", "chat_history", "message_history"}
 )
+
+_RUN_PARAMS = frozenset({"self", "prompt", "identity", "conversation"})
 
 
 def _run_signature(method_name: str) -> inspect.Signature:
@@ -111,10 +116,41 @@ class TestAgentEngineProtocol:
         self,
         method_name: str,
     ) -> None:
-        """Runs are single-shot: no message, history or conversation params (FR-034)."""
+        """No message-list parameter: the history rides inside ``Conversation`` (FR-034)."""
         parameters = set(_run_signature(method_name).parameters)
 
         assert parameters & _FORBIDDEN_RUN_PARAMS == set()
+
+    @pytest.mark.parametrize("method_name", ["run", "run_stream"])
+    def test_el_conjunto_de_parametros_es_exacto_cuando_se_inspecciona(
+        self,
+        method_name: str,
+    ) -> None:
+        """The run contract is exactly prompt, identity and conversation (AC14)."""
+        parameters = set(_run_signature(method_name).parameters)
+
+        assert parameters == _RUN_PARAMS
+
+    @pytest.mark.parametrize("method_name", ["run", "run_stream"])
+    def test_conversation_es_keyword_only_con_default_none_cuando_se_inspecciona(
+        self,
+        method_name: str,
+    ) -> None:
+        """``conversation`` is optional and keyword-only: ``None`` means single-shot."""
+        conversation = _run_signature(method_name).parameters["conversation"]
+
+        assert conversation.kind is inspect.Parameter.KEYWORD_ONLY
+        assert conversation.default is None
+
+    @pytest.mark.parametrize("method_name", ["run", "run_stream"])
+    def test_conversation_se_anota_con_el_tipo_neutral_cuando_se_inspecciona(
+        self,
+        method_name: str,
+    ) -> None:
+        """The parameter is typed with loom's ``Conversation``, never an engine type."""
+        conversation = _run_signature(method_name).parameters["conversation"]
+
+        assert "Conversation" in str(conversation.annotation)
 
     @pytest.mark.parametrize("method_name", ["run", "run_stream"])
     def test_identity_es_keyword_only_cuando_se_inspecciona(

@@ -17,6 +17,7 @@ from typing import Any
 
 import msgspec
 from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -99,6 +100,57 @@ def answering_model(payload: bytes) -> Model:
     async def stream(
         messages: list[ModelMessage], info: AgentInfo
     ) -> AsyncIterator[DeltaToolCalls]:
+        tool = info.output_tools[0].name
+        yield {0: DeltaToolCall(name=tool, json_args=text, tool_call_id="contract-call")}
+
+    return FunctionModel(respond, stream_function=stream)
+
+
+def recording_model(payload: bytes, seen: list[list[ModelMessage]]) -> Model:
+    """A model answering like :func:`answering_model` that records what it is sent.
+
+    Args:
+        payload: JSON arguments of the output-tool call the model answers.
+        seen: Receives a copy of the messages of every request, in order.
+    """
+    return _answering(payload, seen, failures=0)
+
+
+def flaky_model(
+    failures: int, payload: bytes, *, seen: list[list[ModelMessage]] | None = None
+) -> Model:
+    """A model failing with HTTP 503 ``failures`` times, then answering ``payload``.
+
+    Both run modes share one counter, so a run that falls back from one mode
+    to the other still sees the scripted number of outages.
+
+    Args:
+        failures: Requests that raise before the first that answers.
+        payload: JSON arguments of the output-tool call the model answers.
+        seen: When given, receives a copy of the messages of every request,
+            failing ones included.
+    """
+    return _answering(payload, seen if seen is not None else [], failures=failures)
+
+
+def _answering(payload: bytes, seen: list[list[ModelMessage]], *, failures: int) -> Model:
+    text = payload.decode()
+    outages = iter(range(failures))
+
+    def observe(messages: list[ModelMessage]) -> None:
+        seen.append(list(messages))
+        if next(outages, None) is not None:
+            raise ModelHTTPError(status_code=503, model_name="scripted", body=None)
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        observe(messages)
+        tool = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool, args=text)])
+
+    async def stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[DeltaToolCalls]:
+        observe(messages)
         tool = info.output_tools[0].name
         yield {0: DeltaToolCall(name=tool, json_args=text, tool_call_id="contract-call")}
 

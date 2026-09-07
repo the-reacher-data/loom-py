@@ -48,7 +48,7 @@ from loom.ai.abc import (
 )
 from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
-from loom.ai.fastapi.response import AgentJSONResponse, error_response
+from loom.ai.fastapi.response import AgentJSONResponse, error_response, result_payload
 from loom.ai.fastapi.streaming import encode_sse_event, stream_sse
 from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
@@ -78,14 +78,16 @@ _STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = {
     AgentRunErrorCode.TOO_MANY_RUNS: 429,
     AgentRunErrorCode.UNAUTHORIZED: 403,
     AgentRunErrorCode.HOOK_FAILED: 500,
+    AgentRunErrorCode.CONVERSATION_LOAD_FAILED: 500,
 }
 
 
 class _AgentRunRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     """Body accepted by ``/run`` and ``/stream``: one prompt and an optional thread.
 
-    ``conversation_id`` is opaque to the runtime: it is only ever copied into
-    the output hook's command. Its bounds are enforced here, at decode, so an
+    ``conversation_id`` is opaque to the runtime: it selects the conversation the
+    loader use case receives, when the artifact declares one, and is copied
+    verbatim into the output hook's command. Its bounds are enforced here, at decode, so an
     out-of-range value is a ``422`` and never reaches the runtime.
     """
 
@@ -211,7 +213,7 @@ def _make_run_handler(
             # closing attributes are where an operator reads what it spent.
             with always_closed(span), span.as_current():
                 result = await _annotated_run(runtime, span, name, body, identity)
-            return AgentJSONResponse(content=result)
+            return AgentJSONResponse(content=result_payload(result))
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
         except AgentRunError as exc:
@@ -414,7 +416,7 @@ def _announce_mount(
         endpoint.auth,
         endpoint.allow_anonymous,
         ",".join(kinds) or "none",
-        _identity_notice(endpoint, kinds),
+        _identity_notice(endpoint, kinds, conversational=runtime.has_conversation(name)),
     )
 
 
@@ -422,7 +424,9 @@ _DEPLOYMENT_CREDENTIAL_KINDS = frozenset({"mcp", "a2a"})
 """Capability kinds reached with the deployment's credential, not the caller's."""
 
 
-def _identity_notice(endpoint: AgentEndpointConfig, kinds: Sequence[str]) -> str:
+def _identity_notice(
+    endpoint: AgentEndpointConfig, kinds: Sequence[str], *, conversational: bool = False
+) -> str:
     """State plainly which identity the capability calls of this mount run as.
 
     ``allow_anonymous`` is not a relaxation of the caller check on top of an
@@ -434,12 +438,19 @@ def _identity_notice(endpoint: AgentEndpointConfig, kinds: Sequence[str]) -> str
     configured for it, shared by every caller of every agent granted it.
     """
     if endpoint.allow_anonymous:
-        return (
+        notice = (
             "allow_anonymous is set, so callers are NOT authenticated: every capability "
             "call runs with no verified identity, and every run spends model tokens on "
             "behalf of an unidentified caller — only 'max_concurrent_runs' and "
             "'run_timeout_ms' bound that cost, there is no rate limit"
         )
+        if conversational:
+            notice += (
+                "; 'conversation' is declared, and every anonymous caller shares one "
+                "subject, so threads are separated by 'conversation_id' alone: the id is "
+                "the credential"
+            )
+        return notice
     remote = sorted(_DEPLOYMENT_CREDENTIAL_KINDS.intersection(kinds))
     if not remote:
         return (

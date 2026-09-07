@@ -20,6 +20,7 @@ from loom.ai.abc import (
     AgentEvent,
     AgentResult,
     AgentUsage,
+    Conversation,
     ErrorEvent,
     FinalEvent,
     HealthStatus,
@@ -113,25 +114,40 @@ class FakeAgentEngine:
         self._terminal = _validated_terminal(events)
         self._script = events
 
-    async def run(self, prompt: str, *, identity: Identity) -> AgentResult:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+    ) -> AgentResult:
         """Replay the script to completion.
 
         Args:
             prompt: Caller prompt; ignored, the script is fixed.
             identity: Verified caller; ignored, the script is fixed.
+            conversation: Conversation to continue; ignored, the script is fixed.
 
         Returns:
-            The terminal ``FinalEvent``'s output and usage.
+            The terminal ``FinalEvent``'s output, usage and messages.
 
         Raises:
             FakeAgentRunError: If the script ends in an ``ErrorEvent``.
         """
         if isinstance(self._terminal, ErrorEvent):
             raise FakeAgentRunError(self._terminal.code, self._terminal.message)
-        return AgentResult(output=self._terminal.output, usage=self._terminal.usage)
+        return AgentResult(
+            output=self._terminal.output,
+            usage=self._terminal.usage,
+            messages=self._terminal.messages,
+        )
 
     def run_stream(
-        self, prompt: str, *, identity: Identity
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Replay the script as an event stream.
 
@@ -143,6 +159,7 @@ class FakeAgentEngine:
         Args:
             prompt: Caller prompt; ignored, the script is fixed.
             identity: Verified caller; ignored, the script is fixed.
+            conversation: Conversation to continue; ignored, the script is fixed.
 
         Returns:
             An async context manager yielding the scripted event stream.

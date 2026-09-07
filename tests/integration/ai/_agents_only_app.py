@@ -87,7 +87,7 @@ class _UnbuiltEngine:
 class _EngineProvider:
     """Smallest provider ``resolve_engine_provider`` accepts."""
 
-    LOOM_AI_ENGINE_API = 1
+    LOOM_AI_ENGINE_API = 2
 
     def create_engine(self, plan: object, *, deps: object, container: object) -> _UnbuiltEngine:
         del plan, deps, container

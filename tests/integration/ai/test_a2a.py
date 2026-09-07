@@ -31,6 +31,7 @@ from loom.ai.a2a.card import card_path
 from loom.ai.a2a.server import bind_a2a_endpoints
 from loom.ai.abc import (
     AgentEvent,
+    Conversation,
     FinalEvent,
     HealthStatus,
     TextDeltaEvent,
@@ -90,14 +91,18 @@ class ExplodingEngine:
     a stub error string.
     """
 
-    def run_stream(self, prompt: str, *, identity: Identity) -> Any:
+    def run_stream(
+        self, prompt: str, *, identity: Identity, conversation: Conversation | None = None
+    ) -> Any:
         """Return a stream whose entry raises before any event exists."""
-        del prompt, identity
+        del prompt, identity, conversation
         return _FailingStream()
 
-    async def run(self, prompt: str, *, identity: Identity) -> object:
+    async def run(
+        self, prompt: str, *, identity: Identity, conversation: Conversation | None = None
+    ) -> object:
         """Fail the same way the stream does; the runtime drives the stream."""
-        del prompt, identity
+        del prompt, identity, conversation
         raise RuntimeError(_CATCH_ALL_CANARY)
 
     async def health(self) -> HealthStatus:

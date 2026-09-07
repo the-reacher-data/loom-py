@@ -31,7 +31,7 @@ from loom.ai.abc import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from loom.ai.fastapi.response import ENCODER
+from loom.ai.fastapi.response import ENCODER, result_payload
 
 __all__ = ["HEARTBEAT_FRAME", "encode_sse_event", "stream_sse"]
 
@@ -58,16 +58,6 @@ def _error_payload(event: ErrorEvent) -> Mapping[str, object]:
     return {"code": event.code, "message": event.message, "interaction_id": event.interaction_id}
 
 
-def _final_payload(event: FinalEvent) -> Mapping[str, object]:
-    # Both keys are always present, ``null`` when absent: a fixed shape.
-    return {
-        "output": event.output,
-        "usage": event.usage,
-        "interaction_id": event.interaction_id,
-        "hook_result": event.hook_result,
-    }
-
-
 # The event class is the key: one mapping lookup per event, no reflection.
 # ``Any`` in the callable signature is the price of a heterogeneous table; each
 # entry pairs a class with the builder written for exactly that class.
@@ -76,7 +66,7 @@ _DISPATCH: Mapping[type[Any], tuple[bytes, Callable[[Any], Mapping[str, object]]
     ToolCallEvent: (b"tool_call", _tool_call_payload),
     ToolResultEvent: (b"tool_result", _tool_result_payload),
     ErrorEvent: (b"error", _error_payload),
-    FinalEvent: (b"final", _final_payload),
+    FinalEvent: (b"final", result_payload),
 }
 
 _TERMINAL_TYPES: frozenset[type[Any]] = frozenset({ErrorEvent, FinalEvent})

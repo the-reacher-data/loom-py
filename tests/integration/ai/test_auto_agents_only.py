@@ -32,6 +32,7 @@ from loom.ai.abc import (
     AgentEvent,
     AgentResult,
     AgentUsage,
+    Conversation,
     DepsFactory,
     FinalEvent,
     HealthStatus,
@@ -96,8 +97,10 @@ class _PingEngine:
         self._container = container
         self.executor: RuntimeExecutor | None = None
 
-    def run_stream(self, prompt: str, *, identity: Identity) -> Any:
-        del prompt
+    def run_stream(
+        self, prompt: str, *, identity: Identity, conversation: Conversation | None = None
+    ) -> Any:
+        del prompt, conversation
 
         @asynccontextmanager
         async def _stream() -> AsyncIterator[AsyncIterator[AgentEvent]]:
@@ -130,7 +133,7 @@ class _PingEngine:
 class _EngineProvider:
     """Provider keeping ``deps``/``container`` and exposing the engines it built."""
 
-    LOOM_AI_ENGINE_API = 1
+    LOOM_AI_ENGINE_API = 2
     engines: list[_PingEngine] = []
 
     def create_engine(

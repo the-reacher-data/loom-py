@@ -96,6 +96,18 @@ Every agent matched by `specs` is compiled. Only the agents named in
 agent absent from `endpoints` exists in the process and is reachable by nobody.
 Exposure is always an explicit opt-in, never a default.
 
+### Conversation memory belongs to the application
+
+An artifact may declare a `conversation` use case beside `on_output`: for
+every run that carries a `conversation_id`, the runtime executes it before the
+model starts and it returns the prior turns as opaque, engine-native bytes —
+or `None` on the first turn. The engine replays them and hands the turn's new
+messages to the `on_output` use case as `messages`, so the application
+persists them under its own `conversation_id`, in its own store, under its own
+tenancy rules. Loom stores nothing, caches nothing and never reads a message;
+no history travels on the wire in either direction. See
+[`conversation`](artifacts.md#conversation--loading-the-prior-turns).
+
 ## An application that is only agents
 
 An application does not need a model, a use case or a REST interface to run an
@@ -171,7 +183,10 @@ database.
   format, field by field, and the folder layout an agent lives in. It includes
   [`on_output`](artifacts.md#on_output--a-use-case-run-once-per-completed-run),
   the use case the runtime executes once per completed run with the validated
-  output.
+  output, and
+  [`conversation`](artifacts.md#conversation--loading-the-prior-turns), the
+  use case that loads the prior turns of a `conversation_id` before the model
+  starts.
 - **[Model providers](providers.md)** — the provider matrix, and why an
   OpenAI-compatible endpoint is one provider covering many vendors.
 - **[A2A surface](a2a.md)** — publishing an agent to other agents, and exactly

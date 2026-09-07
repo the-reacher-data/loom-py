@@ -7,6 +7,8 @@ Pins the two guarantees of the testing surface's ``FakeAgentEngine``:
   bytes for both ``run()`` and the full ``run_stream()`` event sequence.
 * **T040 — no network, no credentials**: the fake must never open a socket
   and must work with every provider API key stripped from the environment.
+* **AC14 (006) — ``conversation`` is ignored**: passing a ``Conversation``
+  changes neither the result nor the event list; the script is fixed.
 
 These tests are written before the implementation exists; until
 ``src/loom/testing/agents.py`` lands they fail at collection with
@@ -26,6 +28,7 @@ from loom.ai.abc import (
     AgentEvent,
     AgentResult,
     AgentUsage,
+    Conversation,
     FinalEvent,
     HealthStatus,
     TextDeltaEvent,
@@ -49,6 +52,8 @@ _SCRIPT: tuple[AgentEvent, ...] = (
 )
 
 _OUTPUT: dict[str, Any] = {"answer": "todo verde"}
+
+_CONVERSATION = Conversation(conversation_id="c", history=b"[]")
 
 
 def _build_scripted_engine() -> FakeAgentEngine:
@@ -117,6 +122,56 @@ class TestReproducibilidadT039:
         result = await engine.run(_PROMPT, identity=_IDENTITY)
 
         assert result == AgentResult(output=_OUTPUT, usage=_USAGE)
+
+
+class TestConversacionIgnoradaAC14:
+    """AC14 — the fake accepts ``conversation=`` and replays the same script."""
+
+    async def test_run_devuelve_el_mismo_resultado_cuando_se_pasa_conversation(
+        self,
+    ) -> None:
+        engine = _build_scripted_engine()
+
+        with_conversation = await engine.run(
+            _PROMPT, identity=_IDENTITY, conversation=_CONVERSATION
+        )
+        without_conversation = await engine.run(_PROMPT, identity=_IDENTITY)
+
+        assert with_conversation == without_conversation
+
+    async def test_run_stream_emite_los_mismos_eventos_cuando_se_pasa_conversation(
+        self,
+    ) -> None:
+        engine = _build_scripted_engine()
+
+        with_conversation: list[AgentEvent] = []
+        async with engine.run_stream(
+            _PROMPT, identity=_IDENTITY, conversation=_CONVERSATION
+        ) as stream:
+            async for event in stream:
+                with_conversation.append(event)
+        without_conversation: list[AgentEvent] = []
+        async with engine.run_stream(_PROMPT, identity=_IDENTITY) as stream:
+            async for event in stream:
+                without_conversation.append(event)
+
+        assert with_conversation == without_conversation
+
+
+class TestMensajesDelGuion:
+    """``run`` and ``run_stream`` agree on the terminal event's ``messages``."""
+
+    async def test_run_devuelve_los_messages_del_final_cuando_el_guion_los_lleva(self) -> None:
+        script = (FinalEvent(output=_OUTPUT, usage=_USAGE, messages=b"[1]"),)
+        engine = FakeAgentEngine(script=script)
+
+        result = await engine.run(_PROMPT, identity=_IDENTITY, conversation=_CONVERSATION)
+        async with engine.run_stream(_PROMPT, identity=_IDENTITY) as stream:
+            events = [event async for event in stream]
+
+        assert result.messages == b"[1]"
+        assert isinstance(events[-1], FinalEvent)
+        assert events[-1].messages == result.messages
 
 
 class TestSinRedNiCredencialesT040:

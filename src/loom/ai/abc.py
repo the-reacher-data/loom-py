@@ -4,6 +4,12 @@ Everything the compiler, the runtime and the HTTP layer share with an engine
 lives here, and nothing here imports an engine: the bootstrap resolves the
 provider through :mod:`loom.ai.registry` and hands the compiler plain values.
 
+A run may continue a conversation the application loaded (FR-034): the prior
+history crosses this boundary as opaque, engine-native bytes inside
+:class:`Conversation`, and the run's new messages come back the same way on
+:attr:`AgentResult.messages` and :attr:`FinalEvent.messages`.  Loom defines no
+message model and stores no history.
+
 These contracts are experimental and may change within a major line; the
 artifact format they serve is not.  See :mod:`loom.ai` for the distinction.
 """
@@ -84,6 +90,20 @@ class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
         return self.cache_read_tokens / self.input_tokens
 
 
+class Conversation(LoomFrozenStruct, frozen=True, kw_only=True):
+    """The conversation a run continues.
+
+    Attributes:
+        conversation_id: The application's identifier of the conversation;
+            opaque to loom.
+        history: Prior turns in the engine's own serialised form, opaque to
+            loom; ``None`` on the first turn.
+    """
+
+    conversation_id: str
+    history: bytes | None = None
+
+
 class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
     """Outcome of a non-streaming agent run.
 
@@ -94,12 +114,15 @@ class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
         interaction_id: Identifier the runtime minted for this run.
         hook_result: Return value of the ``on_output`` use case, when the plan
             declares one.
+        messages: New messages of this run in the engine's own serialised
+            form; ``None`` unless the run carried a conversation.
     """
 
     output: object
     usage: AgentUsage
     interaction_id: str | None = None
     hook_result: object | None = None
+    messages: bytes | None = None
 
 
 class TextDeltaEvent(
@@ -177,12 +200,15 @@ class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_f
         interaction_id: Identifier the runtime minted for this run.
         hook_result: Return value of the ``on_output`` use case, when the plan
             declares one.
+        messages: New messages of this run in the engine's own serialised
+            form; ``None`` unless the run carried a conversation.
     """
 
     output: object
     usage: AgentUsage
     interaction_id: str | None = None
     hook_result: object | None = None
+    messages: bytes | None = None
 
 
 AgentEvent = TextDeltaEvent | ToolCallEvent | ToolResultEvent | ErrorEvent | FinalEvent
@@ -200,24 +226,39 @@ client, test fake and contract suite must understand.
 class AgentEngine(Protocol):
     """One compiled agent, ready to run.
 
-    Engines take a single prompt and never a message history: multi-turn is
-    out of scope by design (FR-034).
+    Engines take a single prompt and, optionally, the conversation the run
+    continues: an opaque, engine-native history the application loaded
+    (FR-034).  Loom defines no message model and stores no history; an engine
+    that receives ``conversation=None`` runs single-shot.
     """
 
-    async def run(self, prompt: str, *, identity: Identity) -> AgentResult:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+    ) -> AgentResult:
         """Run the agent to completion.
 
         Args:
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
+            conversation: The conversation this run continues; ``None`` runs
+                single-shot.
 
         Returns:
-            The validated output and the run's usage.
+            The validated output and the run's usage, plus ``messages`` when a
+            conversation was passed.
         """
         ...
 
     def run_stream(
-        self, prompt: str, *, identity: Identity
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Run the agent, streaming events.
 
@@ -228,6 +269,8 @@ class AgentEngine(Protocol):
         Args:
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
+            conversation: The conversation this run continues; ``None`` runs
+                single-shot.
 
         Returns:
             An async context manager yielding the event stream.
