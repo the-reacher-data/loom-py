@@ -335,7 +335,10 @@ class AgentRuntime:
             async for event in events:
                 if type(event) is ErrorEvent:
                     raise AgentRunError(
-                        event.code, str(event.message), interaction_id=event.interaction_id
+                        event.code,
+                        str(event.message),
+                        interaction_id=event.interaction_id,
+                        usage=event.usage,
                     )
                 if type(event) is FinalEvent:
                     result = AgentResult(

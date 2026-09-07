@@ -32,9 +32,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from loom.core.model import LoomFrozenStruct
+
+if TYPE_CHECKING:
+    # Type-only: ``loom.ai.abc`` imports this module for the code enum, so a
+    # run-time import here would close the cycle. Nothing below needs the
+    # class at run time — the error only carries the value it is handed.
+    from loom.ai.abc import AgentUsage
 
 
 class AgentErrorCode(StrEnum):
@@ -1033,10 +1039,13 @@ class AgentRunError(Exception):
         message: Human-readable description, safe to return to the caller.
         interaction_id: Identifier of the admitted run, when the failure
             happened after admission; ``None`` for pre-admission failures.
+        usage: What the failed run had already spent, when the engine knew it;
+            ``None`` when nothing was spent or nothing was measurable.
 
     Attributes:
         code: The failure code carried by this error.
         interaction_id: The run this error belongs to, or ``None``.
+        usage: The partial accounting of the failed run, or ``None``.
 
     Example::
 
@@ -1044,11 +1053,17 @@ class AgentRunError(Exception):
     """
 
     def __init__(
-        self, code: AgentRunErrorCode, message: str, *, interaction_id: str | None = None
+        self,
+        code: AgentRunErrorCode,
+        message: str,
+        *,
+        interaction_id: str | None = None,
+        usage: AgentUsage | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.interaction_id = interaction_id
+        self.usage = usage
 
 
 _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProxyType(

@@ -345,11 +345,36 @@ verbatim into the hook's command and nowhere else; an out-of-range value is a
 ```json
 {
   "output": {"incident_ref": "INC-1", "severity": "high", "confidence": 0.71, "alerts": ["A-7", "A-9"]},
-  "usage": {"input_tokens": 1840, "output_tokens": 412, "requests": 3, "duration_ms": 5210},
+  "usage": {
+    "input_tokens": 1840, "output_tokens": 412, "requests": 3, "duration_ms": 5210,
+    "cache_read_tokens": 1200, "cache_write_tokens": 64, "tool_calls": 2,
+    "cost": "0.0413", "details": {"reasoning_tokens": 96}
+  },
   "interaction_id": "7f3c9a0e4b2d4c1e9a7b5d6e8f0a1b2c",
   "hook_result": {"triage_id": "7f3c9a0e4b2d4c1e9a7b5d6e8f0a1b2c"}
 }
 ```
+
+`usage` is the whole accounting the engine reported, not a selection of it:
+the counters any engine would report are named fields, and every other field it
+returned — the audio counters, a provider's extras, a counter a newer engine
+release adds — rides under its own name in `details`. `cache_read_tokens` is
+already included in `input_tokens`, so a model with a warm prompt cache is
+compared on the split, not on the total.
+
+Three properties to code against:
+
+- **`cost` is a decimal *string*, or `null` — never a JSON number.** A JSON
+  float would round money, so it travels as `"0.0413"`. `usage.cost * runs` is
+  `NaN` in JavaScript; parse it with a decimal type. `null` means the engine
+  could not price the model, and must not be read as free.
+- **`details` is not disjoint from the named counters.** Providers report their
+  own entry beside the normalised one — OpenAI's `cached_tokens` next to
+  `cache_read_tokens` — and loom does not decide which of the two is
+  redundant, so summing `details.*` double-counts.
+- **`usage` is open for extension.** A future engine release adds keys to it
+  without a major version of loom; decode it into a struct that tolerates
+  unknown fields.
 
 Over `/stream`, the last frame is:
 

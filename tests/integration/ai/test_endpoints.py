@@ -53,6 +53,7 @@ from tests.integration.ai.conftest import (
     CountingEngineProvider,
     RecordingDepsFactory,
     RecordingMcpSession,
+    RecordingObserver,
     ScriptedEngine,
     StubDepsFactory,
     StubMcpClient,
@@ -82,17 +83,6 @@ class StubAuthenticator:
         """Authenticate every caller as the same fixed subject."""
         del credentials
         return Identity(subject="stub-user", mechanism=self.name)
-
-
-class _RecordingObserver:
-    """Lifecycle observer keeping every event a span emitted, in order."""
-
-    def __init__(self) -> None:
-        self.events: list[LifecycleEvent] = []
-
-    def on_event(self, event: LifecycleEvent) -> None:
-        """Record one lifecycle event."""
-        self.events.append(event)
 
 
 class _IdentityMiddleware:
@@ -565,6 +555,11 @@ class TestRun:
                     "output_tokens": DEFAULT_USAGE.output_tokens,
                     "requests": DEFAULT_USAGE.requests,
                     "duration_ms": DEFAULT_USAGE.duration_ms,
+                    "cache_read_tokens": DEFAULT_USAGE.cache_read_tokens,
+                    "cache_write_tokens": DEFAULT_USAGE.cache_write_tokens,
+                    "tool_calls": DEFAULT_USAGE.tool_calls,
+                    "cost": str(DEFAULT_USAGE.cost),
+                    "details": dict(DEFAULT_USAGE.details),
                 },
                 "hook_result": None,
             }
@@ -946,7 +941,7 @@ class TestTrazaDelStream:
         identity: Identity,
     ) -> list[LifecycleEvent]:
         """Drive one full ``/stream`` request and return the events it emitted."""
-        recorder = _RecordingObserver()
+        recorder = RecordingObserver()
         engine = ScriptedEngine(script=TestTrazaDelStream._script())
         async with _serving(
             deps=deps,
@@ -1032,7 +1027,7 @@ class TestTrazaDelStream:
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A disconnect terminates the span: an abandoned stream leaks no open span."""
-        recorder = _RecordingObserver()
+        recorder = RecordingObserver()
         # The second delta never arrives, so the run is still in flight — and
         # its span still open — when the client disconnects after the first.
         engine = ScriptedEngine(
@@ -1072,6 +1067,136 @@ class TestTrazaDelStream:
         assert start.meta["mechanism"] == identity.mechanism
         assert start.meta["route"] == f"{_PREFIX}/{{name}}/stream"
         assert start.meta["method"] == "POST"
+
+
+class TestUsageOnTheAgentSpan:
+    """The closing attributes of the agent span carry what the run spent.
+
+    The response has carried the usage from the start; the span had none, so
+    an operator comparing two models on cost or on model round trips had to
+    correlate provider-side invocation logs by time window.
+    """
+
+    @staticmethod
+    async def _agent_events(
+        suffix: str,
+        *,
+        deps: StubDepsFactory,
+        container: LoomContainer,
+        identity: Identity,
+        engine: ScriptedEngine | None = None,
+    ) -> list[LifecycleEvent]:
+        """Drive one successful request and return the agent-scope events."""
+        recorder = RecordingObserver()
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            engines={_AGENT: engine if engine is not None else ScriptedEngine()},
+            observability_runtime=ObservabilityRuntime([recorder]),
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/{suffix}", json={"prompt": "p"})
+            assert response.status_code == 200
+        return [event for event in recorder.events if event.scope is Scope.AGENT]
+
+    @staticmethod
+    def _closing_usage(events: Sequence[LifecycleEvent]) -> Mapping[str, object]:
+        """Return the usage attributes of the single closing event."""
+        end = next(event for event in events if event.kind is EventKind.END)
+        return {key: value for key, value in end.meta.items() if key.startswith("gen_ai.usage.")}
+
+    async def test_publishes_every_counter_when_a_run_completes(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """Cost and model round trips are readable off the span, not off provider logs."""
+        events = await self._agent_events("run", deps=deps, container=container, identity=identity)
+
+        assert self._closing_usage(events) == {
+            "gen_ai.usage.input_tokens": DEFAULT_USAGE.input_tokens,
+            "gen_ai.usage.output_tokens": DEFAULT_USAGE.output_tokens,
+            "gen_ai.usage.cache_read.input_tokens": DEFAULT_USAGE.cache_read_tokens,
+            "gen_ai.usage.cache_creation.input_tokens": DEFAULT_USAGE.cache_write_tokens,
+            "gen_ai.usage.requests": DEFAULT_USAGE.requests,
+            "gen_ai.usage.tool_calls": DEFAULT_USAGE.tool_calls,
+            "gen_ai.usage.cost": pytest.approx(0.0021),
+            "gen_ai.usage.cost_known": True,
+            "gen_ai.usage.details.reasoning_tokens": 5,
+        }
+
+    async def test_keeps_the_usage_off_the_opening_attributes(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """Nothing is spent yet when the span opens, so nothing is claimed there."""
+        events = await self._agent_events("run", deps=deps, container=container, identity=identity)
+
+        start = next(event for event in events if event.kind is EventKind.START)
+        assert not [key for key in start.meta if key.startswith("gen_ai.usage.")]
+
+    async def test_publishes_no_cost_when_the_model_has_no_price(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """An absent cost publishes no attribute: a zero would read as a free run."""
+        engine = ScriptedEngine(
+            script=(
+                FinalEvent(
+                    output=DEFAULT_OUTPUT, usage=msgspec.structs.replace(DEFAULT_USAGE, cost=None)
+                ),
+            )
+        )
+        events = await self._agent_events(
+            "run", deps=deps, container=container, identity=identity, engine=engine
+        )
+
+        usage = self._closing_usage(events)
+        assert "gen_ai.usage.cost" not in usage
+        # Published as unknown rather than omitted in silence: a dashboard
+        # summing the cost must be able to tell a total from a lower bound.
+        assert usage["gen_ai.usage.cost_known"] is False
+
+    async def test_publishes_what_a_failed_run_burned(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """A run that spends and then fails reports the spend: it was not free."""
+        recorder = RecordingObserver()
+        engine = ScriptedEngine(
+            script=(
+                ErrorEvent(
+                    code=AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION,
+                    message="the model answered outside the declared schema",
+                    usage=DEFAULT_USAGE,
+                ),
+            )
+        )
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            engines={_AGENT: engine},
+            observability_runtime=ObservabilityRuntime([recorder]),
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+            assert response.status_code == 422
+
+        closing = next(
+            event
+            for event in recorder.events
+            if event.scope is Scope.AGENT and event.kind is not EventKind.START
+        )
+        assert closing.meta["gen_ai.usage.requests"] == DEFAULT_USAGE.requests
+        assert closing.meta["gen_ai.usage.cost"] == pytest.approx(0.0021)
+
+    async def test_publishes_the_same_counters_when_it_streams(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """A streamed run is attributed like a complete one: same run, same span."""
+        completed = await self._agent_events(
+            "run", deps=deps, container=container, identity=identity
+        )
+        streamed = await self._agent_events(
+            "stream", deps=deps, container=container, identity=identity
+        )
+
+        assert self._closing_usage(streamed) == self._closing_usage(completed)
 
 
 class TestHealth:

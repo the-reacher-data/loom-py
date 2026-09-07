@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
+from decimal import Decimal
 from typing import Any, ClassVar, Final, Literal, Protocol
 
 from loom.ai.errors import AgentRunErrorCode
@@ -27,17 +28,60 @@ CONVERSATION_ID_MAX_LENGTH: Final[int] = 128
 class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
     """Resource accounting of one agent run.
 
+    Nothing the engine reported is dropped. The counters any engine would
+    plausibly report are named fields; every other field it returned — the
+    audio counters, a provider's own extras, a field a future engine release
+    adds — rides verbatim in ``details``, so a new counter reaches the caller
+    without a change here. The engine's own usage type never crosses this
+    boundary: a second engine fills this struct.
+
     Attributes:
-        input_tokens: Tokens sent to the model across the run.
+        input_tokens: Tokens sent to the model across the run, cached ones
+            included.
         output_tokens: Tokens produced by the model across the run.
         requests: Model requests issued during the run.
         duration_ms: Wall-clock duration of the run in milliseconds.
+        cache_read_tokens: Input tokens served from the provider's prompt
+            cache, already counted in ``input_tokens``. A cached token costs a
+            fraction of a fresh one, so comparing models on ``input_tokens``
+            alone can invert the ranking.
+        cache_write_tokens: Input tokens written to the prompt cache, already
+            counted in ``input_tokens``.
+        tool_calls: Tool invocations the model completed during the run.
+        cost: Run cost in the engine's currency, or ``None`` when the engine
+            could not price the model. Absent rather than zero: a zero would
+            silently win a cost comparison.
+        details: Every field the engine reported that has no named field
+            here, under the engine's own names. Not disjoint from the named
+            counters: a provider that reports its own ``cached_tokens``
+            alongside the normalised ``cache_read_tokens`` has both, so
+            summing ``details`` double-counts.
     """
 
     input_tokens: int
     output_tokens: int
     requests: int
     duration_ms: int
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    tool_calls: int = 0
+    cost: Decimal | None = None
+    details: Mapping[str, int | float] = {}
+
+    @property
+    def total_tokens(self) -> int:
+        """Return the input plus output tokens of the run."""
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Return the fraction of input tokens served from the prompt cache.
+
+        Zero when the run reported no input tokens.
+        """
+        if self.input_tokens == 0:
+            return 0.0
+        return self.cache_read_tokens / self.input_tokens
 
 
 class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -108,11 +152,19 @@ class ErrorEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="error", tag_f
         message: Human-readable description.
         interaction_id: Identifier of the admitted run this failure belongs
             to; ``None`` before admission.
+        usage: What the failed run had already spent, when the engine knew it.
+            A run that made three model round trips and then failed its output
+            schema still cost money, and a model that fails more must not rank
+            better on cost for it. ``None`` when nothing was spent or nothing
+            was measurable — a refusal before admission, a run a declared
+            limit killed from outside the engine. Not on the wire: the stream
+            contract puts ``usage`` on ``final`` only.
     """
 
     code: AgentRunErrorCode
     message: str
     interaction_id: str | None = None
+    usage: AgentUsage | None = None
 
 
 class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_field="type"):

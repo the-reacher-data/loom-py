@@ -14,6 +14,7 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from types import TracebackType
 from typing import Any, ClassVar
 
@@ -55,16 +56,47 @@ from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
+from loom.core.observability.event import LifecycleEvent
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.invoker import AppInvoker
 from loom.core.use_case.registry import UseCaseRegistry
 
-DEFAULT_USAGE = AgentUsage(input_tokens=11, output_tokens=7, requests=1, duration_ms=3)
-"""Fixed usage every scripted terminal event carries."""
+DEFAULT_USAGE = AgentUsage(
+    input_tokens=11,
+    output_tokens=7,
+    requests=1,
+    duration_ms=3,
+    cache_read_tokens=4,
+    cache_write_tokens=2,
+    tool_calls=1,
+    cost=Decimal("0.0021"),
+    details={"reasoning_tokens": 5},
+)
+"""Fixed usage every scripted terminal event carries.
+
+Every counter is distinct and non-zero, including one that only exists in
+``details``, so a surface that drops or confuses one of them fails a test
+rather than passing on a shared default of ``0``.
+"""
 
 DEFAULT_OUTPUT: Mapping[str, Any] = {"answer": "42"}
 """Fixed decoded output the default script returns."""
+
+
+class RecordingObserver:
+    """Lifecycle observer keeping every event a span emitted, in order.
+
+    Attributes:
+        events: Every event received, in arrival order.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[LifecycleEvent] = []
+
+    def on_event(self, event: LifecycleEvent) -> None:
+        """Record one lifecycle event."""
+        self.events.append(event)
 
 
 # ---------------------------------------------------------------------------

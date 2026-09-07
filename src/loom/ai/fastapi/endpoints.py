@@ -35,10 +35,17 @@ from loom.ai._transport import (
     HEARTBEAT_MS,
     TransportError,
     always_closed,
+    annotate_usage,
     read_body_capped,
     require_caller,
 )
-from loom.ai.abc import CONVERSATION_ID_MAX_LENGTH, ErrorEvent
+from loom.ai.abc import (
+    CONVERSATION_ID_MAX_LENGTH,
+    AgentEvent,
+    AgentResult,
+    ErrorEvent,
+    FinalEvent,
+)
 from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.fastapi.response import AgentJSONResponse, error_response
@@ -49,6 +56,7 @@ from loom.core.identity import Identity, current_identity
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.observability.span import LoomSpan
 from loom.core.tracing import get_trace_id
 from loom.rest.auth.abc import Authenticator
 
@@ -134,6 +142,44 @@ def _require_agent(
     raise TransportError(404, "AGENT_NOT_FOUND", f"no agent named {name!r} is exposed")
 
 
+async def _annotated_run(
+    runtime: AgentRuntime,
+    span: LoomSpan,
+    name: str,
+    body: _AgentRunRequest,
+    identity: Identity,
+) -> AgentResult:
+    """Run one agent, publishing what it spent however it ends.
+
+    A run that made three model round trips and then failed its output schema
+    cost exactly as much as one that succeeded, so the failure publishes its
+    counters too — otherwise a model that fails often would rank better on
+    cost than one that answers.
+
+    Args:
+        runtime: Runtime serving the agent.
+        span: Open span of this run.
+        name: Agent to run.
+        body: Decoded request.
+        identity: Verified caller.
+
+    Returns:
+        The completed run's result.
+
+    Raises:
+        AgentRunError: Whatever the run failed with, unchanged.
+    """
+    try:
+        result = await runtime.run(
+            name, body.prompt, identity=identity, conversation_id=body.conversation_id
+        )
+    except AgentRunError as exc:
+        annotate_usage(span, exc.usage)
+        raise
+    annotate_usage(span, result.usage)
+    return result
+
+
 def _make_run_handler(
     runtime: AgentRuntime,
     config: AiConfig,
@@ -149,7 +195,7 @@ def _make_run_handler(
             identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
             body = await _read_request(request, max_prompt_bytes=config.max_prompt_bytes)
-            with observability_runtime.span(
+            span = observability_runtime.open_span(
                 Scope.AGENT,
                 "agent_run",
                 trace_id=get_trace_id(),
@@ -159,10 +205,12 @@ def _make_run_handler(
                 agent=name,
                 subject=identity.subject,
                 mechanism=identity.mechanism,
-            ):
-                result = await runtime.run(
-                    name, body.prompt, identity=identity, conversation_id=body.conversation_id
-                )
+            )
+            # The handle is opened rather than a lexical span entered because
+            # the run's usage is only known once the run is over, and the
+            # closing attributes are where an operator reads what it spent.
+            with always_closed(span), span.as_current():
+                result = await _annotated_run(runtime, span, name, body, identity)
             return AgentJSONResponse(content=result)
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
@@ -173,6 +221,30 @@ def _make_run_handler(
             return error_response(500, "INTERNAL_ERROR", "An unexpected error occurred")
 
     return run_agent
+
+
+async def _annotating_usage(
+    events: AsyncIterator[AgentEvent], span: LoomSpan
+) -> AsyncIterator[AgentEvent]:
+    """Relay *events*, annotating *span* with the usage the final one carries.
+
+    A stream reports its usage in its terminal event, which is already encoded
+    by the time a frame exists, so the annotation is taken here — where the
+    event is still typed — and lands on the same closing attributes the
+    non-streaming run publishes. A failed run publishes what it burned before
+    it failed; a stream that never reaches a terminal event annotates nothing.
+
+    Args:
+        events: Run events, terminal event last.
+        span: Open span of the run, closed by its owner.
+
+    Yields:
+        Every event, unchanged and in order.
+    """
+    async for event in events:
+        if isinstance(event, FinalEvent | ErrorEvent):
+            annotate_usage(span, event.usage)
+        yield event
 
 
 def _stream_frames(
@@ -200,27 +272,29 @@ def _stream_frames(
     """
 
     async def _frames() -> AsyncIterator[bytes]:
-        with always_closed(
-            observability_runtime.open_span(
-                Scope.AGENT,
-                "agent_run",
-                trace_id=get_trace_id(),
-                route=path,
-                method="POST",
-                agent=name,
-                subject=identity.subject,
-                mechanism=identity.mechanism,
-            )
-        ):
+        span = observability_runtime.open_span(
+            Scope.AGENT,
+            "agent_run",
+            trace_id=get_trace_id(),
+            route=path,
+            method="POST",
+            agent=name,
+            subject=identity.subject,
+            mechanism=identity.mechanism,
+        )
+        with always_closed(span):
             try:
                 async with runtime.run_stream(
                     name, body.prompt, identity=identity, conversation_id=body.conversation_id
                 ) as events:
-                    async for frame in stream_sse(events, heartbeat_ms=HEARTBEAT_MS):
+                    async for frame in stream_sse(
+                        _annotating_usage(events, span), heartbeat_ms=HEARTBEAT_MS
+                    ):
                         yield frame
             except AgentRunError as exc:
                 # Admission failures surface once the response exists, so they
                 # can only travel in-band, as this stream's terminal frame.
+                annotate_usage(span, exc.usage)
                 yield encode_sse_event(
                     ErrorEvent(code=exc.code, message=str(exc), interaction_id=exc.interaction_id)
                 )

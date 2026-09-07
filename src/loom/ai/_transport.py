@@ -26,7 +26,7 @@ from typing import Final
 
 from starlette.requests import Request
 
-from loom.ai.abc import ErrorEvent
+from loom.ai.abc import AgentUsage, ErrorEvent
 from loom.ai.config import AgentEndpointConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.identity import Identity, current_identity
@@ -159,6 +159,65 @@ def require_caller(name: str, endpoint: AgentEndpointConfig | None) -> Identity:
     raise TransportError(401, "UNAUTHORIZED", f"agent {name!r} requires a verified caller")
 
 
+_USAGE_PREFIX: Final[str] = "gen_ai.usage."
+"""Prefix of the OpenTelemetry GenAI usage attributes both surfaces publish."""
+
+
+def usage_attributes(usage: AgentUsage) -> dict[str, object]:
+    """Return the closing span attributes carrying one run's usage.
+
+    Mapped from loom's own :class:`~loom.ai.abc.AgentUsage`, not from the
+    engine's usage type, so a second engine publishes the same attributes and
+    no engine type reaches a transport. The names follow the OpenTelemetry
+    GenAI semantic conventions where those define one, and stay under the same
+    prefix where they do not — cost, requests and tool calls, which the
+    conventions leave out and an operator comparing models needs most.
+
+    An unpriced model contributes no cost key at all — a zero would read as a
+    free run and win a cost comparison it never entered — but it always
+    contributes ``cost_known``, so a dashboard summing the cost can tell a
+    complete total from a lower bound instead of silently reporting one as the
+    other.
+
+    Args:
+        usage: Accounting of the run that is about to close its span.
+
+    Returns:
+        The attributes, ready for
+        :meth:`~loom.core.observability.span.LoomSpan.annotate`.
+    """
+    attributes: dict[str, object] = {
+        f"{_USAGE_PREFIX}input_tokens": usage.input_tokens,
+        f"{_USAGE_PREFIX}output_tokens": usage.output_tokens,
+        f"{_USAGE_PREFIX}cache_read.input_tokens": usage.cache_read_tokens,
+        f"{_USAGE_PREFIX}cache_creation.input_tokens": usage.cache_write_tokens,
+        f"{_USAGE_PREFIX}requests": usage.requests,
+        f"{_USAGE_PREFIX}tool_calls": usage.tool_calls,
+        f"{_USAGE_PREFIX}cost_known": usage.cost is not None,
+    }
+    if usage.cost is not None:
+        attributes[f"{_USAGE_PREFIX}cost"] = float(usage.cost)
+    for name, value in usage.details.items():
+        attributes[f"{_USAGE_PREFIX}details.{name}"] = value
+    return attributes
+
+
+def annotate_usage(span: LoomSpan, usage: AgentUsage | None) -> None:
+    """Publish *usage* on the closing attributes of *span*, when there is any.
+
+    A run that fails before the engine measured anything — a refusal, a limit
+    that killed it from outside the engine — has no usage to publish, and an
+    invented zero would be read as a free run.
+
+    Args:
+        span: Open span of the run.
+        usage: What the run spent, or ``None`` when nothing was measurable.
+    """
+    if usage is None:
+        return
+    span.annotate(usage_attributes(usage))
+
+
 @contextmanager
 def always_closed(span: LoomSpan) -> Iterator[None]:
     """Close *span* whatever ends the body, including a client disconnect.
@@ -218,7 +277,12 @@ def failure_event(exc: BaseException) -> ErrorEvent:
         event = failure_event(AgentRunError(AgentRunErrorCode.RUN_TIMEOUT, "late"))
     """
     if isinstance(exc, AgentRunError):
-        return ErrorEvent(code=exc.code, message=str(exc), interaction_id=exc.interaction_id)
+        return ErrorEvent(
+            code=exc.code,
+            message=str(exc),
+            interaction_id=exc.interaction_id,
+            usage=exc.usage,
+        )
     return ErrorEvent(code=AgentRunErrorCode.PROVIDER_UNAVAILABLE, message=_UNEXPECTED_FAILURE)
 
 

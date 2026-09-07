@@ -21,7 +21,13 @@ from uuid import uuid4
 
 from starlette.responses import Response, StreamingResponse
 
-from loom.ai._transport import HEARTBEAT_MS, always_closed, failure_event, with_heartbeats
+from loom.ai._transport import (
+    HEARTBEAT_MS,
+    always_closed,
+    annotate_usage,
+    failure_event,
+    with_heartbeats,
+)
 from loom.ai.a2a._binding import PublishedAgent
 from loom.ai.a2a._rpc import (
     RpcFault,
@@ -32,6 +38,7 @@ from loom.ai.a2a._rpc import (
     unsupported_error,
 )
 from loom.ai.a2a.events import A2AEventProjector
+from loom.ai.abc import AgentResult
 from loom.ai.config import AiConfig
 from loom.ai.errors import AgentRunError
 from loom.ai.fastapi.response import ENCODER, AgentJSONResponse
@@ -39,6 +46,7 @@ from loom.ai.runtime import AgentRuntime
 from loom.core.identity import Identity
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.observability.span import LoomSpan
 from loom.core.tracing import get_trace_id
 
 _logger = logging.getLogger(__name__)
@@ -128,6 +136,40 @@ def _sse_frame(request_id: int | str | None, event: Mapping[str, object]) -> byt
     return _DATA_PREFIX + ENCODER.encode(rpc_response(request_id, event)) + _FRAME_SUFFIX
 
 
+async def _annotated_run(
+    runtime: AgentRuntime,
+    span: LoomSpan,
+    name: str,
+    prompt: str,
+    identity: Identity,
+) -> AgentResult:
+    """Run one agent, publishing what it spent however it ends.
+
+    Mirrors the HTTP surface: an operator querying ``gen_ai.usage.cost`` over
+    agent spans must get the same answer whichever surface the caller used.
+
+    Args:
+        runtime: Runtime serving the agent.
+        span: Open span of this run.
+        name: Agent to run.
+        prompt: Caller prompt.
+        identity: Verified caller.
+
+    Returns:
+        The completed run's result.
+
+    Raises:
+        AgentRunError: Whatever the run failed with, unchanged.
+    """
+    try:
+        result = await runtime.run(name, prompt, identity=identity)
+    except AgentRunError as exc:
+        annotate_usage(span, exc.usage)
+        raise
+    annotate_usage(span, result.usage)
+    return result
+
+
 def _make_send_handler(
     runtime: AgentRuntime,
     config: AiConfig,
@@ -140,19 +182,23 @@ def _make_send_handler(
     async def send_message(call: Call) -> Response:
         name = call.agent.name
         prompt = _extract_prompt(call.params, max_prompt_bytes=config.max_prompt_bytes)
+        span = observability_runtime.open_span(
+            Scope.AGENT,
+            "agent_run",
+            trace_id=get_trace_id(),
+            route=f"{prefix}/{name}",
+            method="POST",
+            status_code=200,
+            agent=name,
+            subject=call.identity.subject,
+            mechanism=call.identity.mechanism,
+        )
         try:
-            with observability_runtime.span(
-                Scope.AGENT,
-                "agent_run",
-                trace_id=get_trace_id(),
-                route=f"{prefix}/{name}",
-                method="POST",
-                status_code=200,
-                agent=name,
-                subject=call.identity.subject,
-                mechanism=call.identity.mechanism,
-            ):
-                result = await runtime.run(name, prompt, identity=call.identity)
+            # Opened rather than entered lexically for the reason the HTTP
+            # surface does it: what the run spent is only known once it ends,
+            # and both surfaces must answer the same query about the same span.
+            with always_closed(span), span.as_current():
+                result = await _annotated_run(runtime, span, name, prompt, call.identity)
         except AgentRunError as exc:
             # The failure text stays server-side: only the code and its fixed
             # catalogue detail travel outward.

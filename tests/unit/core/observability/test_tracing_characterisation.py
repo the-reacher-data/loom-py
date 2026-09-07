@@ -444,6 +444,61 @@ class TestSpanAcrossAsendBoundaries:
         assert _parent_span_id(agent) is None
 
 
+class TestClosingAnnotations:
+    """Values only known when the work ends still reach the span that covers it.
+
+    A run's token usage does not exist when its span opens, so a surface that
+    could only supply attributes at open time had to publish none at all.
+    """
+
+    def test_an_annotation_reaches_the_exported_span(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        runtime, exporter = exporting_runtime
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        handle.annotate({"gen_ai.usage.input_tokens": 1840})
+        handle.end()
+
+        span = _span_by_name(exporter.get_finished_spans(), "agent:agent_run")
+        assert _attribute(span, "gen_ai.usage.input_tokens") == 1840
+
+    def test_an_annotation_reaches_the_closing_event_and_not_the_start(self) -> None:
+        observer = RecordingObserver()
+        runtime, _exporter = _exporting_runtime(observer)
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        handle.annotate({"gen_ai.usage.input_tokens": 1840})
+        handle.end()
+
+        start, end = observer.events
+        assert "gen_ai.usage.input_tokens" not in start.meta
+        assert end.meta["gen_ai.usage.input_tokens"] == 1840
+        assert end.meta["agent"] == "analyst"
+
+    def test_a_failing_span_still_carries_what_the_run_spent(self) -> None:
+        observer = RecordingObserver()
+        runtime, _exporter = _exporting_runtime(observer)
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        handle.annotate({"gen_ai.usage.input_tokens": 1840})
+        handle.fail(RuntimeError("provider died"))
+
+        assert observer.events[-1].meta["gen_ai.usage.input_tokens"] == 1840
+
+    def test_annotating_a_closed_span_changes_nothing(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        runtime, exporter = exporting_runtime
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        handle.end()
+        handle.annotate({"gen_ai.usage.input_tokens": 1840})
+
+        span = _span_by_name(exporter.get_finished_spans(), "agent:agent_run")
+        assert _attribute(span, "gen_ai.usage.input_tokens") is None
+
+
 class TestHostProviderCoexistence:
     """Loom's own provider next to a host SDK's, sharing only the context.
 
