@@ -23,6 +23,7 @@ from loom.core.repository.abc.query import FilterOp, PaginationMode, QuerySpec
 from loom.core.repository.mutation import MutationEvent
 
 from ._doubles import (
+    CodeWidget,
     CountingCacheBackend,
     CountingRepository,
     DateWidget,
@@ -85,6 +86,10 @@ def _date_widgets(count: int) -> list[DateWidget]:
         DateWidget(id=date(2020, 1, 1) + timedelta(days=index), name=f"w{index}")
         for index in range(1, count + 1)
     ]
+
+
+def _code_widgets(count: int) -> list[CodeWidget]:
+    return [CodeWidget(code=index, name=f"w{index}") for index in range(1, count + 1)]
 
 
 @pytest.fixture
@@ -306,6 +311,74 @@ class TestRestrictedFilterFields:
         assert env.repository.get_by_id_calls == len(MISSING_IDS)
         assert env.repository.list_with_query_calls == 0
         assert [item.id for item in page.items] == [1, 2, 3, 4, 5]
+
+
+class TestDeclaredPrimaryKeyName:
+    """A model keyed by ``code`` is refilled and matched through ``code``."""
+
+    @pytest.mark.asyncio
+    async def test_refills_with_a_filter_on_the_declared_key(
+        self, cache_config: CacheConfig
+    ) -> None:
+        rows = _code_widgets(ROW_COUNT)
+        env = _make_env(rows, CodeWidget, cache_config)
+        await _warm_index(env)
+        await _evict_entities(env, MISSING_IDS)
+
+        page = await _list_all(env)
+
+        (query,) = env.repository.queries
+        assert query.filters is not None
+        (spec,) = query.filters.filters
+        assert (spec.field, spec.op, set(spec.value)) == ("code", FilterOp.IN, set(MISSING_IDS))
+        assert env.repository.get_by_id_calls == 0
+        assert [item.code for item in page.items] == [1, 2, 3, 4, 5]
+
+    @pytest.mark.asyncio
+    async def test_allowlist_without_the_declared_key_is_served_per_id(
+        self, cache_config: CacheConfig
+    ) -> None:
+        rows = _code_widgets(ROW_COUNT)
+        env = _make_env(
+            rows,
+            CodeWidget,
+            cache_config,
+            repository=RestrictedFilterRepository(rows, CodeWidget),
+        )
+        await _warm_index(env)
+        await _evict_entities(env, MISSING_IDS)
+
+        page = await _list_all(env)
+
+        assert env.repository.get_by_id_calls == len(MISSING_IDS)
+        assert env.repository.list_with_query_calls == 0
+        assert [item.code for item in page.items] == [1, 2, 3, 4, 5]
+
+    @pytest.mark.asyncio
+    async def test_allowlist_with_the_declared_key_is_refilled_in_one_query(
+        self, cache_config: CacheConfig
+    ) -> None:
+        rows = _code_widgets(ROW_COUNT)
+        env = _make_env(
+            rows,
+            CodeWidget,
+            cache_config,
+            repository=RestrictedFilterRepository(
+                rows, CodeWidget, allowed_filter_fields=frozenset({"name", "code"})
+            ),
+        )
+        await _warm_index(env)
+        await _evict_entities(env, MISSING_IDS)
+
+        page = await _list_all(env)
+
+        assert env.repository.list_with_query_calls == 1
+        assert env.repository.get_by_id_calls == 0
+        (query,) = env.repository.queries
+        assert query.filters is not None
+        (spec,) = query.filters.filters
+        assert spec.field == "code"
+        assert [item.code for item in page.items] == [1, 2, 3, 4, 5]
 
 
 class TestStaleIndex:

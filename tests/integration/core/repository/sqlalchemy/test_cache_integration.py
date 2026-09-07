@@ -23,6 +23,8 @@ from loom.core.repository import Repository
 from loom.core.repository.abc import PageParams
 from loom.core.repository.mutation import MutationEvent
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+from loom.core.repository.sqlalchemy.session_manager import SessionManager
+from loom.core.repository.sqlalchemy.transactional import transactional
 from loom.testing import RepositoryIntegrationHarness, ScenarioDict
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.review.schemas import CreateProductReview
@@ -170,6 +172,44 @@ async def cached_dated_repo(
         cache=cache_gateways.data,
         dependency_resolver=GenerationalDependencyResolver(cache_gateways.counters),
     )
+
+
+class ProductService:
+    """``@transactional`` owner whose writes go through the cached wrapper.
+
+    The wrapper is an instance attribute because ``@transactional`` finds the
+    post-commit hooks in ``vars(owner)``; the owner is not a repository, and
+    it shares the session manager of the product repository so the writes
+    join the transaction it opens.
+    """
+
+    def __init__(
+        self,
+        session_manager: SessionManager,
+        products: CachedRepository[Product, CreateProduct, UpdateProduct, int],
+    ) -> None:
+        self.session_manager = session_manager
+        self.products = products
+
+    @transactional
+    async def create(self, data: CreateProduct) -> Product:
+        return await self.products.create(data)
+
+    @transactional
+    async def rename(self, product_id: int, name: str) -> Product | None:
+        return await self.products.update(product_id, UpdateProduct(name=name))
+
+    @transactional
+    async def remove(self, product_id: int) -> bool:
+        return await self.products.delete(product_id)
+
+
+@pytest.fixture
+def product_service(
+    integration_context: RepositoryIntegrationHarness,
+    cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
+) -> ProductService:
+    return ProductService(integration_context.session_manager, cached_integration_repo)
 
 
 @pytest.fixture(params=["memory", "redis-fake"])
@@ -372,7 +412,6 @@ class TestRelatedInvalidationIntegration:
                     tags=frozenset(
                         {
                             f"product_reviews:product_id:{product_id}",
-                            "product_reviews",
                             "product_reviews:list",
                         }
                     ),
@@ -384,3 +423,53 @@ class TestRelatedInvalidationIntegration:
         assert second.count_reviews == 1
         assert second.has_reviews is True
         assert {item["comment"] for item in second.review_snippets} == {"awesome"}
+
+
+class TestTransactionalGranularityIntegration:
+    """The mixins' post-commit events evict one row, not the whole entity."""
+
+    @pytest.mark.asyncio
+    async def test_update_inside_a_transaction_evicts_only_its_row(
+        self,
+        product_service: ProductService,
+        cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
+        integration_context: RepositoryIntegrationHarness,
+        scenario_two_products: ScenarioDict,
+    ) -> None:
+        await integration_context.load(scenario_two_products)
+
+        with _spy_base_repo_method(cached_integration_repo, "get_by_id") as get_by_id_spy:
+            _ = await cached_integration_repo.get_by_id(1)
+            _ = await cached_integration_repo.get_by_id(2)
+            assert get_by_id_spy.await_count == 2
+
+            await product_service.rename(1, "one-renamed")
+
+            other = await cached_integration_repo.get_by_id(2)
+            assert other is not None
+            assert other.name == "two"
+            assert get_by_id_spy.await_count == 2
+
+            renamed = await cached_integration_repo.get_by_id(1)
+            assert renamed is not None
+            assert renamed.name == "one-renamed"
+            assert get_by_id_spy.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_full_cycle_never_bumps_the_bare_entity_tag(
+        self,
+        product_service: ProductService,
+        cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
+        cache_gateways: _Gateways,
+    ) -> None:
+        created = await product_service.create(CreateProduct(name="cycle", price=1.0))
+        renamed = await product_service.rename(created.id, "cycle-renamed")
+        removed = await product_service.remove(created.id)
+        assert renamed is not None
+        assert removed is True
+
+        entity = cached_integration_repo.entity_name
+        counters = cache_gateways.counters
+        assert await counters.exists(f"tag:{entity}") is False
+        assert await counters.exists(f"tag:{entity}:list") is True
+        assert await counters.exists(f"tag:{entity}:id:{created.id}") is True

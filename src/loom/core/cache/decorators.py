@@ -45,6 +45,15 @@ def cache_query(
     caller served from the cache gets a freshly decoded one, so mutating a
     result makes the two paths disagree.  Return a struct, or a fresh copy.
 
+    ``scope="entity"`` requires the model's primary key as the first
+    positional argument (a keyword argument does not count); the wrapper
+    raises ``TypeError`` otherwise, before touching the cache backend.  When
+    the primary-key type resolves to a plain class the argument must be of
+    that exact type — a ``datetime`` for a ``date`` key or a ``bool`` for an
+    ``int`` key is rejected — while a key declared ``int | None`` resolves
+    no class and gets no call-time validation.  A read keyed by any other
+    field is a list-scoped read.
+
     Args:
         scope: ``"entity"`` for a single-entity read, ``"list"`` otherwise;
             decides which tags invalidate the entry and which TTL applies.

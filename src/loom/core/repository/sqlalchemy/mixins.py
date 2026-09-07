@@ -224,7 +224,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     def _mutation_tags(self, obj: Any) -> frozenset[str]:
         table_name = get_table_name(self.model)
         obj_id = getattr(obj, self._effective_id_attribute, None)
-        tags: set[str] = {table_name, f"{table_name}:list"}
+        tags: set[str] = {f"{table_name}:list"}
         if obj_id is not None:
             tags.add(f"{table_name}:id:{obj_id}")
 
