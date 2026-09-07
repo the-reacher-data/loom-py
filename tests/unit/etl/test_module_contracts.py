@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import tomllib
 from datetime import UTC, datetime
+from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
 
@@ -422,3 +424,17 @@ def test_public_root_exports_are_importable() -> None:
 
     for name in ("FromTable", "IntoTable", "ETLRunner", "TableRef", "StepSQL"):
         assert hasattr(etl, name)
+
+
+class TestTestingHelpersDeclareTheirPytestDependency:
+    """The public testing helpers define pytest fixtures, so pytest is declared."""
+
+    def test_the_testing_extra_declares_pytest(self) -> None:
+        pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        extra = pyproject["project"]["optional-dependencies"]["testing"]
+        assert any(item.startswith("pytest") for item in extra)
+
+    def test_a_missing_pytest_names_the_extra_to_install(self) -> None:
+        for module in ("src/loom/etl/testing/spark.py", "src/loom/etl/testing/__init__.py"):
+            source = Path(module).read_text(encoding="utf-8")
+            assert "loom-kernel[testing]" in source

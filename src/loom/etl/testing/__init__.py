@@ -29,7 +29,12 @@ dependency.
 
 from __future__ import annotations
 
-import pytest
+try:
+    import pytest
+except ModuleNotFoundError as exc:  # pragma: no cover - packaging guard
+    raise ModuleNotFoundError(
+        "loom.etl.testing defines pytest fixtures: install loom-kernel[testing]"
+    ) from exc
 
 from loom.etl.testing._result import StepResult
 from loom.etl.testing._runners import PolarsStepRunner

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,6 @@ from loom.etl.testing import spark as spark_testing
 class TestResolveIvyDir:
     def test_explicit_dir_has_priority(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LOOM_SPARK_IVY_DIR", "/env/ivy")
-        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
 
         result = spark_testing._resolve_ivy_dir("/explicit/ivy")
 
@@ -19,41 +17,31 @@ class TestResolveIvyDir:
 
     def test_uses_env_dir_when_explicit_is_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LOOM_SPARK_IVY_DIR", "/env/ivy")
-        monkeypatch.delenv("CODEX_SANDBOX", raising=False)
 
         result = spark_testing._resolve_ivy_dir(None)
 
         assert result == Path("/env/ivy")
 
-    def test_uses_tmp_dir_in_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("LOOM_SPARK_IVY_DIR", raising=False)
-        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
-
-        result = spark_testing._resolve_ivy_dir(None)
-
-        assert result == Path(tempfile.gettempdir()) / "loom-spark-ivy"
-
     def test_returns_none_when_no_override_is_available(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("LOOM_SPARK_IVY_DIR", raising=False)
-        monkeypatch.delenv("CODEX_SANDBOX", raising=False)
 
         result = spark_testing._resolve_ivy_dir(None)
 
         assert result is None
 
 
-class TestSandboxNetworkFlag:
-    def test_returns_true_when_network_is_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
-        assert spark_testing._sandbox_network_disabled() is True
-
-    def test_returns_false_when_network_flag_is_missing(
+class TestOfflineJarsFlag:
+    def test_returns_true_when_offline_jars_are_requested(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
-        assert spark_testing._sandbox_network_disabled() is False
+        monkeypatch.setenv("LOOM_SPARK_OFFLINE", "1")
+        assert spark_testing._offline_jars_requested() is True
+
+    def test_returns_false_when_the_flag_is_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LOOM_SPARK_OFFLINE", raising=False)
+        assert spark_testing._offline_jars_requested() is False
 
 
 class TestPickJar:
