@@ -78,7 +78,14 @@ class TestThePublishStaysHere:
             for s in cast(list[dict[str, Any]], job["steps"])
             if "pypi-publish" in str(s.get("uses"))
         )
-        assert "with" not in upload
+        assert "password" not in str(upload.get("with", {}))
+
+    def test_a_partial_upload_can_be_finished_by_a_rerun(self) -> None:
+        """A version on PyPI cannot be replaced, so a re-run must be able to
+        upload the files that are missing rather than fail on the ones that landed."""
+        steps = cast(list[dict[str, Any]], self._publish_job()["steps"])
+        upload = next(s for s in steps if "pypi-publish" in str(s.get("uses")))
+        assert cast(dict[str, Any], upload["with"])["skip-existing"] is True
 
     def test_it_does_not_publish_a_failed_release(self) -> None:
         job = self._publish_job()
@@ -152,3 +159,37 @@ class TestTheCalculatorLeavesNoStaticVersionBehind:
         script = cast(str, restore["run"])
         assert "pyproject.toml|uv.lock|CHANGELOG.md" in script
         assert "exit 1" in script
+
+
+class TestThePrereleaseVersionComesFromTheTag:
+    """The calculator reads project.version, which no longer exists: it answered
+    0.1.1.dev194 on a repository whose last tag was v1.11.0."""
+
+    def _validate_steps(self) -> list[dict[str, Any]]:
+        ci_pr = cast(
+            dict[str, Any],
+            yaml.safe_load((WORKFLOW_PATH.parent / "ci-pr.yml").read_text(encoding="utf-8")),
+        )
+        jobs = cast(dict[str, Any], ci_pr["jobs"])
+        return cast(list[dict[str, Any]], cast(dict[str, Any], jobs["validate"])["steps"])
+
+    def test_the_version_is_read_from_the_installed_metadata(self) -> None:
+        resolver = next(step for step in self._validate_steps() if step.get("id") == "prerelease")
+        assert "importlib.metadata" in cast(str, resolver["run"])
+
+    def test_no_step_reports_the_calculator_version(self) -> None:
+        for step in self._validate_steps():
+            rendered = str(step.get("with", {})) + cast(str, step.get("run", ""))
+            assert "steps.version.outputs.version" not in rendered, step.get("name")
+
+
+class TestTheFloatingTagCannotBecomeTheVersion:
+    """`v1` moves onto the commit each release tags. Read as a version it yields
+    "2.devN" — a release that never existed, taken from the tag that points at one
+    that did. Observed on TestPyPI: 2.dev1, 2.dev3, 2.dev9, 2.dev11, 2.dev12."""
+
+    def test_the_describe_pattern_matches_only_full_versions(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        raw = pyproject["tool"]["hatch"]["version"]["raw-options"]
+        command = raw["git_describe_command"]
+        assert "--match v[0-9]*.[0-9]*.[0-9]*" in command
