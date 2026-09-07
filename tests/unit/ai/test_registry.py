@@ -70,7 +70,7 @@ class _ProviderDeclaringOnTheInstance:
     """Engine class declaring the handshake only once it is constructed."""
 
     def __init__(self) -> None:
-        self.LOOM_AI_ENGINE_API = 1
+        self.LOOM_AI_ENGINE_API = 2
 
     def supported_capability_kinds(self) -> frozenset[str]:
         return frozenset({"mcp"})

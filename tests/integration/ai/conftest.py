@@ -28,6 +28,7 @@ from loom.ai.abc import (
     AgentEvent,
     AgentResult,
     AgentUsage,
+    Conversation,
     ErrorEvent,
     FinalEvent,
     HealthStatus,
@@ -298,6 +299,7 @@ class ScriptedEngine:
         self.cancelled = False
         self.started = asyncio.Event()
         self.stream_count = 0
+        self.conversations: list[Conversation | None] = []
 
     def _delay_for(self, position: int) -> float:
         if position < len(self.delays_ms):
@@ -318,11 +320,16 @@ class ScriptedEngine:
             raise
 
     def run_stream(
-        self, prompt: str, *, identity: Identity
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
     ) -> Any:  # AbstractAsyncContextManager[AsyncIterator[AgentEvent]]
-        """Replay the script as an event stream."""
+        """Replay the script as an event stream, recording the conversation."""
         del prompt, identity
         self.stream_count += 1
+        self.conversations.append(conversation)
 
         @asynccontextmanager
         async def _stream() -> AsyncIterator[AsyncIterator[AgentEvent]]:
@@ -334,9 +341,15 @@ class ScriptedEngine:
 
         return _stream()
 
-    async def run(self, prompt: str, *, identity: Identity) -> AgentResult:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+    ) -> AgentResult:
         """Replay the script to completion and return its terminal outcome."""
-        async with self.run_stream(prompt, identity=identity) as stream:
+        async with self.run_stream(prompt, identity=identity, conversation=conversation) as stream:
             last: AgentEvent | None = None
             async for event in stream:
                 last = event
@@ -359,7 +372,7 @@ class CountingEngineProvider:
             fresh default-script :class:`ScriptedEngine`.
     """
 
-    LOOM_AI_ENGINE_API = 1
+    LOOM_AI_ENGINE_API = 2
 
     def __init__(self, engines: Mapping[str, ScriptedEngine] | None = None) -> None:
         self.engines: dict[str, ScriptedEngine] = dict(engines or {})

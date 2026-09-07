@@ -9,6 +9,7 @@ already began recording, so its class is pinned here (U1, AC7).
 from __future__ import annotations
 
 from loom.ai.errors import (
+    CONVERSATION_LOAD_FAILED_MESSAGE,
     AgentRunError,
     AgentRunErrorClass,
     AgentRunErrorCode,
@@ -47,3 +48,25 @@ def test_el_status_http_de_hook_failed_esta_mapeado_explicitamente() -> None:
     from loom.ai.fastapi.endpoints import _STATUS_BY_CODE
 
     assert _STATUS_BY_CODE[AgentRunErrorCode.HOOK_FAILED] == 500
+
+
+def test_conversation_load_failed_es_de_aplicacion_y_no_reintentable() -> None:
+    """The loader is the application's own use case: never retried (U1, AC7)."""
+    code = AgentRunErrorCode.CONVERSATION_LOAD_FAILED
+
+    assert run_error_class(code) is AgentRunErrorClass.APPLICATION
+    assert is_retriable(code) is False
+
+
+def test_el_status_http_de_conversation_load_failed_esta_mapeado_explicitamente() -> None:
+    from loom.ai.fastapi.endpoints import _STATUS_BY_CODE
+
+    assert _STATUS_BY_CODE[AgentRunErrorCode.CONVERSATION_LOAD_FAILED] == 500
+
+
+def test_el_mensaje_de_conversation_load_failed_es_el_texto_fijo() -> None:
+    """The client text is fixed (D8): it never carries the loader's detail."""
+    assert (
+        CONVERSATION_LOAD_FAILED_MESSAGE
+        == "the conversation could not be loaded; the detail is recorded server-side"
+    )

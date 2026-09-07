@@ -89,3 +89,19 @@ class CountTriages(UseCase[Any, int]):
 
     async def execute(self, caller: Identity = Caller()) -> int:
         return 0
+
+
+class RecordTurnCommand(Command, frozen=True, kw_only=True):
+    """Command additionally requiring the run's serialised ``messages``."""
+
+    output: TriageReport
+    interaction_id: str
+    messages: bytes
+
+
+@use_case_key("incidents.record_turn")
+class RecordTurn(UseCase[Any, TriageRecorded]):
+    """Hook use case whose Input also demands the run's new messages."""
+
+    async def execute(self, cmd: RecordTurnCommand = Input()) -> TriageRecorded:
+        return TriageRecorded(triage_id=cmd.interaction_id)

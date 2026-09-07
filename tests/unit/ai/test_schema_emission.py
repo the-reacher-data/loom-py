@@ -121,6 +121,11 @@ def test_el_hook_de_salida_emitido_exige_el_usecase_cuando_se_construye() -> Non
     assert _emitted()["$defs"]["on_output"]["required"] == ["usecase"]
 
 
+def test_el_cargador_de_conversacion_emitido_exige_el_usecase_cuando_se_construye() -> None:
+    """``conversation`` names one use case and naming it is the whole declaration (006/AC1)."""
+    assert _emitted()["$defs"]["conversation"]["required"] == ["usecase"]
+
+
 @pytest.mark.parametrize(
     ("kind", "reference"),
     [("mcp", "server"), ("a2a", "agent"), ("skills", "library")],

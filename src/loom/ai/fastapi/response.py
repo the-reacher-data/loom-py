@@ -11,12 +11,14 @@ paid run is the failure mode this module removes, exactly as
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping
 from ipaddress import IPv4Address, IPv6Address
 from typing import Any
 
 import msgspec
 from starlette.responses import Response
 
+from loom.ai.abc import AgentResult, FinalEvent
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
 
@@ -44,20 +46,43 @@ ENCODER = msgspec.json.Encoder(enc_hook=encode_exotic)
 """Module-level encoder shared by the JSON and the SSE surfaces: built once."""
 
 
+def result_payload(result: AgentResult | FinalEvent) -> Mapping[str, object]:
+    """Project a completed run onto the published ``/run`` body or ``final`` frame.
+
+    Both surfaces publish the same four keys, always present (``null`` when
+    absent: a fixed shape). The result is projected rather than encoded
+    wholesale so a field added to :class:`~loom.ai.abc.AgentResult` or
+    :class:`~loom.ai.abc.FinalEvent` for the runtime's own use — the run's new
+    ``messages`` — can never reach the wire by accident.
+
+    Args:
+        result: The completed run, or its terminal stream event.
+
+    Returns:
+        ``{"output", "usage", "interaction_id", "hook_result"}``.
+    """
+    return {
+        "output": result.output,
+        "usage": result.usage,
+        "interaction_id": result.interaction_id,
+        "hook_result": result.hook_result,
+    }
+
+
 class AgentJSONResponse(MsgspecJSONResponse):
     """Agent response encoded once by the module-level agent encoder.
 
     Example::
 
-        return AgentJSONResponse(content=result)
+        return AgentJSONResponse(content=result_payload(result))
     """
 
     def render(self, content: object) -> bytes:
         """Encode *content* to JSON bytes in a single pass.
 
         Args:
-            content: Value to serialise, typically an
-                :class:`~loom.ai.abc.AgentResult`.
+            content: Value to serialise, typically the mapping
+                :func:`result_payload` or :func:`error_response` built.
 
         Returns:
             The UTF-8 encoded JSON body.

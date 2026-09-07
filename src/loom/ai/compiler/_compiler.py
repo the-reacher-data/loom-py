@@ -16,10 +16,12 @@ from loom.ai.abc import NativeToolSupport
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledCapability,
+    CompiledConversation,
     CompiledOutput,
     CompiledOutputHook,
 )
 from loom.ai.compiler.phases._capabilities import compile_capabilities
+from loom.ai.compiler.phases._conversation import compile_conversation
 from loom.ai.compiler.phases._hook import compile_output_hook
 from loom.ai.compiler.phases._limits import validate_policies
 from loom.ai.compiler.phases._model_role import resolve_model_role
@@ -137,6 +139,10 @@ class AgentCompiler:
             spec, component=component, registry=self._registry
         )
         issues.extend(hook_issues)
+        conversation, conversation_issues = compile_conversation(
+            spec, component=component, registry=self._registry
+        )
+        issues.extend(conversation_issues)
         issues.extend(validate_policies(spec.policies, component))
         inference, role_issues = resolve_model_role(spec.model_role, self._config.models, component)
         issues.extend(role_issues)
@@ -154,7 +160,9 @@ class AgentCompiler:
         issues.extend(capability_issues)
         if issues or output is None or inference is None:
             return None, issues
-        plan = self._build_plan(spec, inference, output, capabilities, on_output, source_path)
+        plan = self._build_plan(
+            spec, inference, output, capabilities, on_output, conversation, source_path
+        )
         return plan, []
 
     @staticmethod
@@ -164,6 +172,7 @@ class AgentCompiler:
         output: CompiledOutput,
         capabilities: tuple[CompiledCapability, ...],
         on_output: CompiledOutputHook | None,
+        conversation: CompiledConversation | None,
         source_path: str | None,
     ) -> AgentPlan:
         return AgentPlan(
@@ -176,6 +185,7 @@ class AgentCompiler:
             capabilities=capabilities,
             policies=spec.policies,
             on_output=on_output,
+            conversation=conversation,
             metadata=MappingProxyType(dict(spec.metadata)),
             source_path=source_path,
         )

@@ -63,6 +63,12 @@ class AgentErrorCode(StrEnum):
     ON_OUTPUT_USECASE_ALSO_GRANTED = "ON_OUTPUT_USECASE_ALSO_GRANTED"
     ON_OUTPUT_INVOKER_MISSING = "ON_OUTPUT_INVOKER_MISSING"
 
+    # Conversation
+    CONVERSATION_USECASE_UNKNOWN = "CONVERSATION_USECASE_UNKNOWN"
+    CONVERSATION_INPUT_UNSATISFIED = "CONVERSATION_INPUT_UNSATISFIED"
+    CONVERSATION_USECASE_ALSO_GRANTED = "CONVERSATION_USECASE_ALSO_GRANTED"
+    CONVERSATION_INVOKER_MISSING = "CONVERSATION_INVOKER_MISSING"
+
     # Capabilities
     CAPABILITY_KIND_UNSUPPORTED = "CAPABILITY_KIND_UNSUPPORTED"
     NATIVE_TOOL_UNSUPPORTED = "NATIVE_TOOL_UNSUPPORTED"
@@ -322,8 +328,12 @@ def on_output_usecase_also_granted(component: str, key: str) -> AgentCompilation
     )
 
 
+INVOKER_MISSING_REASON: Final[str] = "no use-case invoker is configured"
+"""Default ``reason`` of the invoker-missing issues: the deps bundle carries no invoker."""
+
+
 def on_output_invoker_missing(
-    agents: Sequence[str], *, reason: str = "no use-case invoker is configured"
+    agents: Sequence[str], *, reason: str = INVOKER_MISSING_REASON
 ) -> AgentCompilationIssue:
     """Agents declare an output hook but the deployment has no usable use-case invoker.
 
@@ -336,6 +346,62 @@ def on_output_invoker_missing(
         message=f"agents declare an output hook but {reason}: {', '.join(agents)}",
         component="ai",
         field="on_output",
+    )
+
+
+_CONVERSATION_USECASE_FIELD: Final[str] = "conversation.usecase"
+"""Spec field every ``conversation`` compilation issue points at."""
+
+
+def conversation_usecase_unknown(component: str, key: str) -> AgentCompilationIssue:
+    """The conversation loader names a use-case key absent from the registry."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.CONVERSATION_USECASE_UNKNOWN,
+        message=f"{component}: conversation use case '{key}' is not registered",
+        component=component,
+        field=_CONVERSATION_USECASE_FIELD,
+    )
+
+
+def conversation_input_unsatisfied(component: str, key: str, reason: str) -> AgentCompilationIssue:
+    """The loader cannot build the use case's Input from the run context."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.CONVERSATION_INPUT_UNSATISFIED,
+        message=(
+            f"{component}: conversation use case '{key}' cannot be fed from the run: {reason}"
+        ),
+        component=component,
+        field=_CONVERSATION_USECASE_FIELD,
+    )
+
+
+def conversation_usecase_also_granted(component: str, key: str) -> AgentCompilationIssue:
+    """The loader's use case is also granted to the model as a capability."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.CONVERSATION_USECASE_ALSO_GRANTED,
+        message=(
+            f"{component}: conversation use case '{key}' is also granted as a capability; "
+            "a loader use case must not be callable by the model"
+        ),
+        component=component,
+        field=_CONVERSATION_USECASE_FIELD,
+    )
+
+
+def conversation_invoker_missing(
+    agents: Sequence[str], *, reason: str = INVOKER_MISSING_REASON
+) -> AgentCompilationIssue:
+    """Agents declare a conversation loader but the deployment has no usable use-case invoker.
+
+    Args:
+        agents: Names of the agents declaring a loader.
+        reason: What is wrong with the invoker, when it is not simply absent.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.CONVERSATION_INVOKER_MISSING,
+        message=f"agents declare a conversation loader but {reason}: {', '.join(agents)}",
+        component="ai",
+        field="conversation",
     )
 
 
@@ -1023,6 +1089,7 @@ class AgentRunErrorCode(StrEnum):
     UNAUTHORIZED = "UNAUTHORIZED"
     CANCELLED = "CANCELLED"
     HOOK_FAILED = "HOOK_FAILED"
+    CONVERSATION_LOAD_FAILED = "CONVERSATION_LOAD_FAILED"
 
 
 class AgentRunError(Exception):
@@ -1079,8 +1146,18 @@ _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProx
         AgentRunErrorCode.UNAUTHORIZED: AgentRunErrorClass.AUTHORIZATION,
         AgentRunErrorCode.CANCELLED: AgentRunErrorClass.CLIENT,
         AgentRunErrorCode.HOOK_FAILED: AgentRunErrorClass.APPLICATION,
+        AgentRunErrorCode.CONVERSATION_LOAD_FAILED: AgentRunErrorClass.APPLICATION,
     }
 )
+
+CONVERSATION_LOAD_FAILED_MESSAGE: Final[str] = (
+    "the conversation could not be loaded; the detail is recorded server-side"
+)
+"""Client text of every ``CONVERSATION_LOAD_FAILED`` error (D8).
+
+Defined once here because both the runtime loader and an engine's history
+decoder raise the code; the loader's own detail is logged, never returned.
+"""
 
 
 def run_error_class(code: AgentRunErrorCode) -> AgentRunErrorClass:

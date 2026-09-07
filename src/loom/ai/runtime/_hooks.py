@@ -7,6 +7,10 @@ so the executor binds ``Caller()`` to the run's identity — and re-creates the
 terminal event with the run's ``interaction_id`` and the hook's result.  An
 engine never sees the hook, so its own retry loop cannot replay it.
 
+The bounded, shielded execution of a use case (``bounded``, ``failure_error``)
+and the admitted-run context (``HookRun``) live here and are shared with the
+conversation loader in ``_conversation.py``.
+
 Nothing here imports an engine or an optional extra.
 """
 
@@ -14,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -23,6 +27,7 @@ import msgspec
 from loom.ai._usecase import invoke_as, require_invoker
 from loom.ai.abc import AgentEvent, DepsFactory, ErrorEvent, FinalEvent
 from loom.ai.compiler._plan import (
+    HOOK_MESSAGES_FIELD,
     HOOK_OUTPUT_FIELD,
     AgentPlan,
     CompiledOutputHook,
@@ -49,8 +54,11 @@ _DENIALS: Final[tuple[type[Exception], ...]] = (
 )
 """Application denials mapped to ``UNAUTHORIZED``, as the tool path maps them."""
 
+_HOOK: Final[str] = "on_output hook"
+"""Name of the hook step in log lines and errors."""
+
 _CANCEL_GRACE_S: Final[float] = 1.0
-"""Time a hook cut at its bound gets to observe its cancellation."""
+"""Time a bounded use case cut at its bound gets to observe its cancellation."""
 
 
 def no_terminal_message(agent: str) -> str:
@@ -82,24 +90,34 @@ class HookRun:
     conversation_id: str | None
 
 
-def hook_command(output: object, run: HookRun, accepted: frozenset[str]) -> dict[str, Any]:
+def hook_command(
+    output: object,
+    run: HookRun,
+    accepted: frozenset[str],
+    *,
+    messages: bytes | None = None,
+) -> dict[str, Any]:
     """Build the command the hook use case receives, filtered to its Input's names.
 
-    The validated output is nested under ``output`` and the run context is
-    offered beside it; nothing from the output can shadow a context name.
-    Filtering to ``accepted`` — the Input's declared names, computed once at
-    compile — lets a ``forbid_unknown_fields`` Command decode the result.
+    The validated output is nested under ``output``, the run's new messages
+    under ``messages``, and the run context is offered beside them; nothing
+    from the output can shadow a context name.  Filtering to ``accepted`` —
+    the Input's declared names, computed once at compile — lets a
+    ``forbid_unknown_fields`` Command decode the result.
 
     Args:
         output: Validated answer of the run.
         run: Context of the admitted run.
         accepted: Internal names the Input declares.
+        messages: The run's new messages in the engine's serialised form;
+            ``None`` on a run without a conversation.
 
     Returns:
         The payload ``from_payload`` will decode.
     """
     offered: dict[str, Any] = {
         HOOK_OUTPUT_FIELD: msgspec.to_builtins(output),
+        HOOK_MESSAGES_FIELD: messages,
         "interaction_id": run.interaction_id,
         "conversation_id": run.conversation_id,
         "subject": run.identity.subject,
@@ -113,55 +131,49 @@ def hook_command(output: object, run: HookRun, accepted: frozenset[str]) -> dict
 
 async def _invoke_hook(
     hook: CompiledOutputHook,
-    output: object,
+    final: FinalEvent,
     run: HookRun,
     deps: DepsFactory,
     container: LoomContainer,
 ) -> object:
     """Run the hook use case as the caller through the bundle's bound invoker."""
     bundle = deps.build(run.identity, container)
-    invoker = require_invoker(bundle, f"on_output hook '{hook.usecase}'")
-    command = hook_command(output, run, hook.accepted)
+    invoker = require_invoker(bundle, f"{_HOOK} '{hook.usecase}'")
+    command = hook_command(final.output, run, hook.accepted, messages=final.messages)
     return await invoke_as(invoker, hook.use_case, run.identity, params=None, payload=command)
 
 
-async def execute_hook(
-    hook: CompiledOutputHook,
-    output: object,
-    run: HookRun,
-    deps: DepsFactory,
-    container: LoomContainer,
-) -> object:
-    """Execute the hook, shielded from the consumer and bounded by ``tool_timeout_ms``.
+async def bounded(coro: Coroutine[Any, Any, object], run: HookRun, *, what: str) -> object:
+    """Await ``coro`` shielded from the consumer and bounded by ``tool_timeout_ms``.
 
-    A started record finishes or fails cleanly even when the consumer leaves:
-    the executor only rolls back on ``Exception``, so an unshielded
-    cancellation would leave a begun unit of work without rollback.  The hook
-    runs as its own task and is only waited on, never cancelled by the
-    consumer's cancellation; its outcome is retrieved on every exit path.
+    The coroutine runs as its own task and is only waited on, never cancelled
+    by the consumer's cancellation, so a started use case finishes or fails
+    cleanly even when the consumer leaves; its outcome is retrieved on every
+    exit path, so nothing ends "never retrieved".  Transaction safety is not
+    the shield's job: the executor exits the unit of work with the exception
+    on any ``BaseException`` and the adapter rolls back.
 
     Args:
-        hook: Compiled hook of the plan.
-        output: Validated answer of the run.
-        run: Context of the admitted run.
-        deps: Per-invocation dependency factory.
-        container: Application container.
+        coro: The use-case invocation to run.
+        run: Context of the admitted run; its policies carry the bound.
+        what: Name of the bounded step for log lines and errors
+            (``"on_output hook"``, ``"conversation loader"``).
 
     Returns:
-        The use case's return value.
+        The coroutine's return value.
 
     Raises:
-        TimeoutError: When the hook does not complete within the bound.
+        TimeoutError: When the task does not complete within the bound.
         asyncio.CancelledError: When the consumer was cancelled; re-raised
-            once the hook settled within the remaining bound.  A second
-            cancellation during that wait cancels the hook as well.
-        RuntimeError: When the hook task ended cancelled on its own, without
-            the consumer being cancelled: a hook failure, not a consumer exit.
-        Exception: Whatever the use case raised.
+            once the task settled within the remaining bound.  A second
+            cancellation during that wait cancels the task as well.
+        RuntimeError: When the task ended cancelled on its own, without the
+            consumer being cancelled: a use-case failure, not a consumer exit.
+        Exception: Whatever the coroutine raised.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + run.plan.policies.tool_timeout_ms / 1000
-    task = asyncio.ensure_future(_invoke_hook(hook, output, run, deps, container))
+    task = asyncio.ensure_future(coro)
     try:
         async with asyncio.timeout_at(deadline):
             # ``wait`` never cancels the task and returns once it is done,
@@ -169,22 +181,22 @@ async def execute_hook(
             await asyncio.wait({task})
     except asyncio.CancelledError:
         try:
-            await _settle(task, max(deadline - loop.time(), 0.0), run)
+            await _settle(task, max(deadline - loop.time(), 0.0), run, what)
         except asyncio.CancelledError:
             task.cancel()
             raise
         raise
     except TimeoutError:
         task.cancel()
-        await _settle(task, _CANCEL_GRACE_S, run)
+        await _settle(task, _CANCEL_GRACE_S, run, what)
         raise
     if task.cancelled():
-        raise RuntimeError("the output hook was cancelled internally")
+        raise RuntimeError(f"the {what} was cancelled internally")
     return task.result()
 
 
-async def _settle(task: asyncio.Future[object], bound: float, run: HookRun) -> None:
-    """Wait up to ``bound`` seconds for the hook task, never cancelling it; record how it ended."""
+async def _settle(task: asyncio.Future[object], bound: float, run: HookRun, what: str) -> None:
+    """Wait up to ``bound`` seconds for the task, never cancelling it; record how it ended."""
     if not task.done():
         try:
             async with asyncio.timeout(bound):
@@ -197,8 +209,9 @@ async def _settle(task: asyncio.Future[object], bound: float, run: HookRun) -> N
         # exception raised after this point is never "never retrieved".
         task.add_done_callback(_retrieve_outcome)
         _logger.warning(
-            "on_output hook of agent %r still running at its bound after the consumer "
+            "%s of agent %r still running at its bound after the consumer "
             "left; cancelled (interaction %s)",
+            what,
             run.plan.name,
             run.interaction_id,
         )
@@ -207,17 +220,57 @@ async def _settle(task: asyncio.Future[object], bound: float, run: HookRun) -> N
         return
     if task.exception() is not None:
         _logger.error(
-            "on_output hook of agent %r failed after the consumer left (interaction %s)",
+            "%s of agent %r failed after the consumer left (interaction %s)",
+            what,
             run.plan.name,
             run.interaction_id,
             exc_info=task.exception(),
         )
         return
     _logger.info(
-        "on_output hook of agent %r completed after the consumer left (interaction %s)",
+        "%s of agent %r completed after the consumer left (interaction %s)",
+        what,
         run.plan.name,
         run.interaction_id,
     )
+
+
+def failure_error(
+    exc: BaseException,
+    run: HookRun,
+    *,
+    code: AgentRunErrorCode,
+    message: str,
+    what: str,
+) -> AgentRunError:
+    """Map a bounded use case's failure to the coded error the caller receives.
+
+    An ``AgentRunError`` keeps its own code and text and only gains the run's
+    ``interaction_id``; an application denial becomes ``UNAUTHORIZED`` with
+    the fixed denial text; anything else is logged server-side and answered
+    with ``code`` and ``message``, never with the exception's detail.  The
+    error's ``usage`` is left ``None``: the caller stamps what the run spent.
+
+    Args:
+        exc: What the bounded step raised.
+        run: Context of the admitted run.
+        code: Code of the generic failure branch.
+        message: Fixed client text of the generic failure branch.
+        what: Name of the failed step for the server-side log line.
+
+    Returns:
+        The error to raise or to turn into an ``ErrorEvent``.
+    """
+    if isinstance(exc, AgentRunError):
+        return AgentRunError(exc.code, str(exc), interaction_id=run.interaction_id)
+    if isinstance(exc, _DENIALS):
+        return AgentRunError(
+            AgentRunErrorCode.UNAUTHORIZED, _DENIED_MESSAGE, interaction_id=run.interaction_id
+        )
+    _logger.exception(
+        "%s of agent %r failed (interaction %s)", what, run.plan.name, run.interaction_id
+    )
+    return AgentRunError(code, message, interaction_id=run.interaction_id)
 
 
 def _retrieve_outcome(task: asyncio.Future[object]) -> None:
@@ -273,30 +326,16 @@ async def _terminal(
     if hook is None:
         return msgspec.structs.replace(final, interaction_id=run.interaction_id)
     try:
-        result = await execute_hook(hook, final.output, run, deps, container)
-    except AgentRunError as exc:
+        result = await bounded(_invoke_hook(hook, final, run, deps, container), run, what=_HOOK)
+    except Exception as exc:  # recovery: the run fails closed with a coded, detail-free error
+        error = failure_error(
+            exc, run, code=AgentRunErrorCode.HOOK_FAILED, message=HOOK_FAILED_MESSAGE, what=_HOOK
+        )
         # The model run itself succeeded, so its usage is known and travels
         # with the failure: a hook that fails does not make the run free.
         return ErrorEvent(
-            code=exc.code,
-            message=str(exc),
-            interaction_id=run.interaction_id,
-            usage=final.usage,
-        )
-    except _DENIALS:
-        return ErrorEvent(
-            code=AgentRunErrorCode.UNAUTHORIZED,
-            message=_DENIED_MESSAGE,
-            interaction_id=run.interaction_id,
-            usage=final.usage,
-        )
-    except Exception:  # recovery: the run fails closed with a coded, detail-free error
-        _logger.exception(
-            "on_output hook of agent %r failed (interaction %s)", run.plan.name, run.interaction_id
-        )
-        return ErrorEvent(
-            code=AgentRunErrorCode.HOOK_FAILED,
-            message=HOOK_FAILED_MESSAGE,
+            code=error.code,
+            message=str(error),
             interaction_id=run.interaction_id,
             usage=final.usage,
         )

@@ -70,6 +70,8 @@ output:
   ref: myapp.domain.incidents:IncidentReport
 on_output:
   usecase: incidents.record_report
+conversation:
+  usecase: incidents.load_conversation
 capabilities:
   - kind: usecase
     keys:
@@ -112,6 +114,7 @@ metadata:
 | `model_role` | no | `default` | `^[a-z][a-z0-9_-]{0,31}$`. A logical role, never a vendor name or a model id. |
 | `output` | yes | — | The declared answer shape. See below. |
 | `on_output` | no | — | Use case executed once per completed run with the validated output; see below. |
+| `conversation` | no | — | Use case executed before a run that carries a `conversation_id`; returns the prior history; see below. |
 | `capabilities` | no | `[]` | Explicit grants. Empty means the agent can only talk. |
 | `policies` | no | see below | Execution limits. |
 | `metadata` | no | `{}` | Free-form `string: string` labels. **Never published**, never read by the runtime. |
@@ -203,6 +206,7 @@ context beside it:
 | Name | Value |
 |---|---|
 | `output` | The validated answer, as **one nested value**, whatever the artifact's `output` block declares. |
+| `messages` | This run's **new** messages in the engine's serialised form, as `bytes`; `None` on a run that carried no conversation. See [`conversation`](#conversation--loading-the-prior-turns). Never return `cmd.messages` or the stored thread from the hook: `hook_result` is encoded as-is. |
 | `interaction_id` | Identifier the runtime mints for every admitted run. |
 | `conversation_id` | The request's `conversation_id`, verbatim; `None` when the request carried none. |
 | `subject`, `mechanism` | The caller's identity. |
@@ -311,8 +315,11 @@ The hook runs after the model has finished, but **inside** the run: the
 `max_concurrent_runs` permit is held until it ends. It is bounded by the same
 `tool_timeout_ms` as a capability call, so the worst-case duration of an
 admitted run is `run_timeout_ms + tool_timeout_ms + 1 s` of grace given to a
-cut hook to observe its cancellation. A hook that ignores that grace runs
-detached afterwards; the permit is released regardless.
+cut hook to observe its cancellation — and
+`tool_timeout_ms + 1 s + run_timeout_ms + tool_timeout_ms + 1 s` when the
+artifact also declares a [`conversation`](#conversation--loading-the-prior-turns)
+loader, bounded the same way before the model starts. A hook that ignores
+that grace runs detached afterwards; the permit is released regardless.
 
 A client that disconnects while the hook is running does not interrupt it:
 the hook is shielded, so a record that has begun finishes or fails cleanly and
@@ -335,9 +342,11 @@ The hook's return value is a client-facing DTO delivered verbatim to the caller
 never a domain entity.
 
 The request body accepts an optional `conversation_id`: a string of 1 to 128
-characters that loom never reads and never keys anything on. It is copied
-verbatim into the hook's command and nowhere else; an out-of-range value is a
-`422`.
+characters that loom never reads and never keys anything on. It selects the
+conversation the loader receives when the artifact declares
+[`conversation`](#conversation--loading-the-prior-turns), and it is copied
+verbatim into the hook's command; loom stores nothing under it. An
+out-of-range value is a `422`.
 
 `POST /agents/incident-triage/run` with
 `{"prompt": "Checkout latency doubled since 09:40…", "conversation_id": "c-42"}`:
@@ -386,6 +395,256 @@ data: {"output":{...},"usage":{...},"interaction_id":"7f3c...","hook_result":{"t
 Had `RecordTriage` raised, the app would instead get
 `500 {"code":"HOOK_FAILED","message":"the output hook failed; the detail is recorded server-side","interaction_id":"7f3c..."}`
 — or an `error` frame with the same three fields — and no answer.
+
+## `conversation` — loading the prior turns
+
+```yaml
+on_output:
+  usecase: incidents.record_turn            # persists the answer and the turn's messages
+conversation:
+  usecase: incidents.load_conversation      # returns the prior messages, or None
+```
+
+For every run that carries a `conversation_id`, the runtime executes that use
+case **exactly once, before the engine starts**, as the caller, through the
+same path as `on_output` — executor, rules, unit of work. The use case returns
+the prior turns of that conversation as opaque `bytes`, or `None` on the first
+turn. The engine replays them to the model before the new prompt and hands
+back the turn's **new** messages, which reach the `on_output` command as
+`messages`; the application persists them under its own `conversation_id`.
+
+Loom stores nothing, caches nothing and never reads a message. The history
+lives in one run's locals and nowhere else, so two runs with the same
+`conversation_id` load twice, each as its own caller. Like `on_output`, the
+loader is **not a tool: the model never sees it**, it never enters the
+instructions or the capabilities, and the model cannot choose which
+conversation to load. An artifact that declares no `conversation` behaves
+exactly as before; a `conversation_id` sent to such an agent reaches no use
+case and the engine runs single-shot.
+
+### The loader contract
+
+The runtime offers the loader's Input five names and, exactly as for the
+hook, filters them down to the ones the Input declares:
+
+| Name | Value |
+|---|---|
+| `conversation_id` | The request's `conversation_id`, verbatim. **The Input must declare it**: a loader that cannot know which conversation it loads is refused at compile time. |
+| `interaction_id` | Identifier the runtime mints for every admitted run, so an auditing loader can correlate with the run's own log line. |
+| `subject`, `mechanism` | The caller's identity. |
+| `agent` | The agent's name. |
+
+`provider` and `model` are not offered: a loader keys on the thread and the
+caller, never on the model.
+
+The return value is `bytes | None`, checked at run time: `None` on a first
+turn, otherwise **one JSON array holding every prior turn** in the format the
+engine produces. For the pydantic-ai engine that is pydantic-ai's
+`ModelMessagesTypeAdapter` JSON — exactly what `new_messages_json()` produced
+on the earlier turns, and exactly what the hook received as `messages`. A
+`str`, a `bytearray`, a list or a dict is a failure, never coerced.
+
+**The merge contract.** `messages` is one JSON array per turn, and the loader
+must return a single JSON array. The application merges the per-turn arrays
+itself — decode each with `json.loads`, extend, re-encode — or stores the
+running array and replaces it on every turn. Byte-concatenating two arrays is
+not JSON and fails the next turn with `CONVERSATION_LOAD_FAILED`.
+
+```python
+class LoadConversationCommand(Command):
+    conversation_id: str                    # required: the loader must know the thread
+    agent: str                              # scope: a thread belongs to one agent
+    # `interaction_id`, `subject`, `mechanism` are offered but not declared: filtered out.
+
+
+@use_case_key("incidents.load_conversation")
+class LoadConversation(UseCase[Thread, bytes | None]):
+    def __init__(self, threads: ThreadRepository) -> None:
+        self._threads = threads
+
+    async def execute(
+        self,
+        cmd: LoadConversationCommand = Input(),
+        caller: Identity = Caller(),        # tenancy: the thread must belong to this caller
+    ) -> bytes | None:
+        thread = await self._threads.get(
+            owner=caller.subject, agent=cmd.agent, id=cmd.conversation_id
+        )
+        return None if thread is None else thread.messages    # one JSON array, stored verbatim
+
+
+class RecordTurnCommand(Command):
+    output: TriageReport
+    interaction_id: str
+    agent: str
+    conversation_id: str | None = None
+    messages: bytes | None = None           # this run's new messages; None on a single-shot run
+
+
+@use_case_key("incidents.record_turn")
+class RecordTurn(UseCase[Thread, TurnRecorded]):
+    def __init__(self, threads: ThreadRepository) -> None:
+        self._threads = threads
+
+    async def execute(
+        self, cmd: RecordTurnCommand = Input(), caller: Identity = Caller()
+    ) -> TurnRecorded:
+        if cmd.conversation_id is not None and cmd.messages is not None:
+            await self._threads.append(
+                owner=caller.subject, agent=cmd.agent, id=cmd.conversation_id, messages=cmd.messages
+            )
+        return TurnRecorded(interaction_id=cmd.interaction_id)
+```
+
+A hook Command may declare `messages: bytes` as required; like
+`conversation_id: str`, that fails the run with `HOOK_FAILED` when it carried
+no conversation.
+
+The engine trusts the bytes only after validating them, and it applies no
+trimming: a long history costs what the model charges for it, and the
+request-size bound of the endpoint does not apply to it. Trimming or
+summarising is the application's decision, in the loader.
+
+### Tenancy is the application's
+
+The loader runs as the caller: `Caller()` is bound to the run's identity, or
+to `ANONYMOUS` under `allow_anonymous`. Whether *this* caller may read *this*
+conversation is decided by the use case's rules — the repository lookup by
+`owner` and `agent` above — not by loom. Three consequences:
+
+- A loader that looks up by `conversation_id` alone makes every thread
+  readable by anyone holding the id. The loader **must** scope by the caller
+  — `Caller()` or `subject` — **and** by `agent`, and raise `Forbidden` on a
+  mismatch: a thread owned by another subject is then a `403 UNAUTHORIZED`,
+  like any other denial.
+- Under `allow_anonymous` every caller shares one subject, so a loader keyed
+  on `subject` gives every anonymous caller every anonymous thread. Ids must
+  then be unguessable, because the id alone is the credential.
+- The history is sent to the model verbatim, system-level parts included, so
+  the thread store is part of the prompt trust boundary. Keying by
+  `(owner, agent, conversation_id)` also prevents replaying agent A's thread
+  into agent B; `instructions` are re-applied on every turn regardless.
+
+### The compile-time rule
+
+The compiler proves the run can feed the loader with the rule `on_output`
+uses — the key resolves against the registry, the use case is compiled, its
+`execute` takes an `Input()` and declares no primitive parameters, every
+required Input field is among the five offered names — plus one rule of its
+own: the Input declares `conversation_id` (FR-057). Nothing about the return
+type is inspected at compile time; the return value is checked on every run.
+Four coded issues:
+
+| Code | When |
+|---|---|
+| `CONVERSATION_USECASE_UNKNOWN` | The key is not registered. |
+| `CONVERSATION_INPUT_UNSATISFIED` | The use case cannot be fed from a run — the same reasons as `ON_OUTPUT_INPUT_UNSATISFIED` — or its Input does not declare `conversation_id`. The reason is named in the message. |
+| `CONVERSATION_USECASE_ALSO_GRANTED` | The same key also appears in a `kind: usecase` grant. The model would then choose the `conversation_id` argument — a tenancy hole. |
+| `CONVERSATION_INVOKER_MISSING` | Start-up: an agent declares a loader but the dependency bundle carries no `invoker` bound to the caller. Probed once with the hook's check; an agent declaring both reports both codes. |
+
+As with `on_output`, the offline validator accepts the field but does not
+resolve the key; the issues surface when the application compiles its agents.
+
+Nothing refuses the *same* key on both `on_output` and `conversation`. The
+feedability rule catches the common case — a hook Input requiring `output`
+cannot be fed by the loader, which offers no `output` — but an Input whose
+fields are all optional compiles as both and runs as both. Write two use
+cases.
+
+### When the loader fails, the run fails
+
+The loader runs before the model, so a failed load costs no tokens and the
+hook never runs. The caller gets a coded error carrying the run's
+`interaction_id` and no `usage`: nothing was spent. The loader is **never
+retried** — the engine's retry loop never sees it — and
+`CONVERSATION_LOAD_FAILED` is an `APPLICATION` error, not a retriable one
+(FR-058).
+
+| The loader… | The caller gets |
+|---|---|
+| raises | `500` `CONVERSATION_LOAD_FAILED` with a fixed message — `the conversation could not be loaded; the detail is recorded server-side`. The exception never reaches the caller; the server log carries it under the `interaction_id`. |
+| raises `Forbidden`, `Unauthenticated`, `RoleNotAllowedError` or `RolesNotBoundError` | `403` `UNAUTHORIZED`, exactly as the hook and a `kind: usecase` tool. |
+| exceeds `tool_timeout_ms` | Cut at the bound and reported as `CONVERSATION_LOAD_FAILED`. |
+| returns anything but `bytes` or `None` — a `str`, a list, a dict | `CONVERSATION_LOAD_FAILED`; the value is never coerced and never logged. |
+| returns bytes the engine cannot decode — not JSON, or not one array of messages | `CONVERSATION_LOAD_FAILED`, raised by the engine before any model call. The data is the application's; the engine's `health()` probe is unaffected. |
+
+On `/run` the body is the usual three fields —
+`{"code": "CONVERSATION_LOAD_FAILED", "message": "…", "interaction_id": "…"}` —
+and on `/stream` a single `error` frame with the same fields and no `final`.
+
+### Timing: the loader holds the permit too
+
+The loader is bounded by the same `tool_timeout_ms` as a capability call and
+shielded like the hook, so a client that disconnects while it runs does not
+interrupt it: the unit of work is committed or rolled back as usual. The
+`max_concurrent_runs` permit is held throughout; the worst-case duration of an
+admitted run is given in
+[`on_output`'s timing paragraph](#on_output--a-use-case-run-once-per-completed-run).
+On `/stream` a slow loader is up to `tool_timeout_ms` of silence on an
+already-committed `200`, exactly as admission is today.
+
+### What the engine receives
+
+The runtime hands the engine one neutral value, `Conversation(conversation_id,
+history)` — exported from `loom.ai` — only when the artifact declares a loader
+and the run carries a `conversation_id`; otherwise it receives `None` and
+follows the single-shot path exactly, serialising nothing. `Conversation`,
+`AgentResult.messages` and `FinalEvent.messages` are the whole neutral
+contract: loom defines no message model, and a second engine defines its own
+byte format without any change to the artifact (FR-059). The bytes are the
+engine's own format, so switching `ai.engine` invalidates stored histories:
+store an engine/format tag beside the bytes, or start new ids.
+
+The pydantic-ai engine passes the decoded history as `message_history=`
+together with loom's `conversation_id=`, so pydantic-ai stamps every new
+message with the application's own id, and returns `new_messages_json()` of
+the run. Retries re-send the same decoded
+history; `messages` holds only the successful attempt's new messages. For an
+agent answering through an output tool, one turn is three messages — the
+request, the response with the output-tool call, and the tool-return request
+that closes it — never the prior turns.
+
+One literal to avoid: pydantic-ai reserves `'new'` as a sentinel, so a
+`conversation_id` of `"new"` gets its messages stamped with a fresh UUID
+instead. Loom does not guard it, because correctness does not depend on the
+stamp — the hook's command carries loom's `conversation_id` beside `messages`
+— and a refusal would leak one engine's vocabulary into the neutral contract.
+
+```{admonition} Breaking for third-party engines
+:class: warning
+`AgentEngine.run` and `run_stream` gained a keyword-only parameter,
+`conversation: Conversation | None = None`, and the runtime passes
+`conversation=` on **every** run. The handshake version is bumped so a
+mismatch is refused at load rather than failing every run: an engine built
+for this release must declare `LOOM_AI_ENGINE_API = 2`. The engine surface is
+experimental (FR-056); the artifact format is unchanged. `FakeAgentEngine`
+accepts the parameter and ignores it, so scripted tests stay byte for byte.
+```
+
+### Nothing conversational on the wire
+
+Clients keep sending `{"prompt", "conversation_id"}`. The `/run` body has
+exactly `output`, `usage`, `interaction_id` and `hook_result`; the `final`
+frame has the same four keys; `messages` appears in neither, nor in any A2A
+frame — the A2A `contextId` is neither read nor written yet (FR-060).
+
+### Two turns
+
+Turn 1 — `POST /agents/incident-triage/run` with
+`{"prompt": "Checkout latency doubled since 09:40", "conversation_id": "c-42"}`:
+the loader receives `conversation_id: "c-42"` and returns `None`; the model
+sees one request; `RecordTurn` receives `messages` — this run's messages,
+stamped `"c-42"` — and stores them. The body is the same four keys as any
+other run:
+
+```json
+{"output": {...}, "usage": {...}, "interaction_id": "7f3c...", "hook_result": {"interaction_id": "7f3c..."}}
+```
+
+Turn 2 — same `conversation_id`, prompt `"and the payments queue?"`: the
+loader returns the stored array; the model sees the prior turn and then the
+new request; `RecordTurn` receives only this turn's messages and appends them.
+No message ever appears in either body.
 
 ## `capabilities` — the seven kinds
 

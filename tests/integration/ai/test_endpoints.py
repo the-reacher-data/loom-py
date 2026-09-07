@@ -31,9 +31,14 @@ from fastapi import FastAPI
 from loom.ai.a2a.card import card_path
 from loom.ai.a2a.server import bind_a2a_endpoints
 from loom.ai.abc import AgentEvent, DepsFactory, ErrorEvent, FinalEvent, TextDeltaEvent
-from loom.ai.compiler._plan import AgentPlan, CompiledOutputHook
+from loom.ai.compiler._plan import AgentPlan, CompiledConversation, CompiledOutputHook
 from loom.ai.config import A2AConfig, AgentEndpointConfig
-from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunErrorCode
+from loom.ai.errors import (
+    CONVERSATION_LOAD_FAILED_MESSAGE,
+    AgentCompilationError,
+    AgentErrorCode,
+    AgentRunErrorCode,
+)
 from loom.ai.fastapi.endpoints import bind_agent_endpoints
 from loom.ai.runtime import AgentRuntime
 from loom.ai.runtime._hooks import HOOK_FAILED_MESSAGE
@@ -41,7 +46,7 @@ from loom.core.command import Command
 from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
 from loom.core.errors import Forbidden
-from loom.core.identity import Identity, reset_identity, set_identity
+from loom.core.identity import ANONYMOUS, Identity, reset_identity, set_identity
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.use_case import Caller, Input, UseCase
@@ -71,6 +76,10 @@ _MCP_SERVER = "tools"
 _SRC = Path(__file__).resolve().parents[3] / "src"
 _INTERACTION_ID_LENGTH = 32
 """Length of the ``uuid4().hex`` the runtime mints per admitted run."""
+_HISTORY = b'[{"kind": "request"}, {"kind": "response"}]'
+_NEW_MESSAGES = b'[{"kind": "request", "conversation_id": "c-42"}]'
+_RESULT_KEYS = {"output", "usage", "interaction_id", "hook_result"}
+"""The only keys a completed run publishes, on ``/run`` and on the ``final`` frame."""
 
 
 class StubAuthenticator:
@@ -303,6 +312,83 @@ def recorder(container: LoomContainer) -> TriageRecorder:
 def hook_deps() -> RecordingDepsFactory:
     """Deps factory serving the triage recorder through a real executor."""
     return RecordingDepsFactory((RecordTriage,))
+
+
+# ---------------------------------------------------------------------------
+# Conversation loader, as the composition root would wire it
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HistoryRecorder:
+    """Shared observer of every loader execution, resolved from the container.
+
+    Attributes:
+        callers: The caller of each execution, in order.
+        failure: Exception an execution raises instead of returning history.
+    """
+
+    callers: list[Identity] = field(default_factory=list)
+    failure: Exception | None = None
+
+    async def load(self, caller: Identity) -> bytes | None:
+        """Record one execution and return the scripted history."""
+        self.callers.append(caller)
+        if self.failure is not None:
+            raise self.failure
+        return _HISTORY
+
+
+class LoadCommand(Command, frozen=True, kw_only=True):
+    """What the loader wants from a run: the thread to continue."""
+
+    conversation_id: str
+
+
+@use_case_key("conversations.load_over_http")
+class LoadConversation(UseCase[Any, bytes | None]):
+    """Returns the prior history of a conversation."""
+
+    def __init__(self, recorder: HistoryRecorder) -> None:
+        self._recorder = recorder
+
+    async def execute(
+        self, cmd: LoadCommand = Input(), caller: Identity = Caller()
+    ) -> bytes | None:
+        del cmd
+        return await self._recorder.load(caller)
+
+
+def _conversational_plan() -> AgentPlan:
+    """Build the plan whose ``conversation`` names the loader, as the compiler would."""
+    loader = CompiledConversation(
+        usecase="conversations.load_over_http",
+        use_case=LoadConversation,
+        accepted=frozenset(info.name for info in msgspec.structs.fields(LoadCommand)),
+    )
+    return msgspec.structs.replace(make_plan(_AGENT), conversation=loader)
+
+
+def _script_with_messages() -> tuple[AgentEvent, ...]:
+    """A success script whose ``final`` carries the run's new messages."""
+    return (
+        TextDeltaEvent(text="ok"),
+        FinalEvent(output=DEFAULT_OUTPUT, usage=DEFAULT_USAGE, messages=_NEW_MESSAGES),
+    )
+
+
+@pytest.fixture
+def history(container: LoomContainer) -> HistoryRecorder:
+    """Recorder the loader use case resolves from the container."""
+    recorder = HistoryRecorder()
+    container.register_instance(HistoryRecorder, recorder)
+    return recorder
+
+
+@pytest.fixture
+def loader_deps() -> RecordingDepsFactory:
+    """Deps factory serving the conversation loader through a real executor."""
+    return RecordingDepsFactory((LoadConversation,))
 
 
 async def _abandon_stream_when(app: FastAPI, path: str, signal: asyncio.Event) -> None:
@@ -777,6 +863,143 @@ class TestHookEnHttp:
             body = response.json()
             assert body["code"] == "UNAUTHORIZED"
             assert len(body["interaction_id"]) == _INTERACTION_ID_LENGTH
+
+
+class TestSinHistorialEnElCable:
+    """A run's new messages never reach the wire (006 AC13)."""
+
+    async def test_responde_solo_las_cuatro_claves_cuando_el_final_lleva_messages(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """``/run`` projects the result explicitly: ``messages`` cannot leak as base64."""
+        engine = ScriptedEngine(script=_script_with_messages())
+        async with _serving(
+            deps=deps, container=container, identity=identity, engines={_AGENT: engine}
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert response.status_code == 200
+            assert set(response.json()) == _RESULT_KEYS
+
+    async def test_emite_final_con_las_cuatro_claves_cuando_el_final_lleva_messages(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """The ``final`` frame keeps its published shape whatever the event carries."""
+        engine = ScriptedEngine(script=_script_with_messages())
+        async with _serving(
+            deps=deps, container=container, identity=identity, engines={_AGENT: engine}
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert _sse_names(response.text) == ["text_delta", "final"]
+            assert set(_final_frame(response.text)) == _RESULT_KEYS
+
+
+class TestLoaderEnHttp:
+    """The conversation loader seen from the wire: failures and the caller (006 AC13)."""
+
+    async def test_responde_500_con_el_texto_fijo_cuando_el_loader_falla(
+        self,
+        loader_deps: RecordingDepsFactory,
+        history: HistoryRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """A failed load is a coded 500 with the fixed text and the run's id, nothing else."""
+        history.failure = ValueError("secret detail")
+        async with _serving(
+            deps=loader_deps,
+            container=container,
+            plans=(_conversational_plan(),),
+            identity=identity,
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert response.status_code == 500
+            body = response.json()
+            assert len(body.pop("interaction_id")) == _INTERACTION_ID_LENGTH
+            assert body == {
+                "code": "CONVERSATION_LOAD_FAILED",
+                "message": CONVERSATION_LOAD_FAILED_MESSAGE,
+            }
+
+    async def test_emite_un_unico_error_cuando_el_loader_falla_en_stream(
+        self,
+        loader_deps: RecordingDepsFactory,
+        history: HistoryRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """On ``/stream`` the same failure is the single frame, with the same fields."""
+        history.failure = ValueError("secret detail")
+        async with _serving(
+            deps=loader_deps,
+            container=container,
+            plans=(_conversational_plan(),),
+            identity=identity,
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert _sse_names(response.text) == ["error"]
+            frame = _frame(response.text, "error")
+            assert len(frame.pop("interaction_id")) == _INTERACTION_ID_LENGTH
+            assert frame == {
+                "code": "CONVERSATION_LOAD_FAILED",
+                "message": CONVERSATION_LOAD_FAILED_MESSAGE,
+            }
+
+    async def test_responde_403_cuando_las_reglas_del_loader_rechazan(
+        self,
+        loader_deps: RecordingDepsFactory,
+        history: HistoryRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """A ``Forbidden`` raised by the loader keeps its meaning on the wire."""
+        history.failure = Forbidden("thread c-42 belongs to another subject")
+        async with _serving(
+            deps=loader_deps,
+            container=container,
+            plans=(_conversational_plan(),),
+            identity=identity,
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert response.status_code == 403
+            body = response.json()
+            assert body["code"] == "UNAUTHORIZED"
+            assert len(body["interaction_id"]) == _INTERACTION_ID_LENGTH
+
+    async def test_carga_como_anonymous_cuando_el_endpoint_permite_anonimos(
+        self,
+        loader_deps: RecordingDepsFactory,
+        history: HistoryRecorder,
+        container: LoomContainer,
+    ) -> None:
+        """An anonymous mount runs the loader as the anonymous identity, by value."""
+        async with _serving(
+            deps=loader_deps,
+            container=container,
+            plans=(_conversational_plan(),),
+            endpoints={_AGENT: make_endpoint(allow_anonymous=True)},
+            identity=None,
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert response.status_code == 200
+            assert history.callers == [ANONYMOUS]
 
 
 class TestTopeDeCuerpo:

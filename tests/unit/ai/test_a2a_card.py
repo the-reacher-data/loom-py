@@ -18,6 +18,7 @@ module's own import, never from ``conftest.py``.
 from __future__ import annotations
 
 import ast
+import base64
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -581,6 +582,15 @@ def test_final_cierra_el_stream_como_completed_cuando_termina_bien() -> None:
     status_event = _project([FinalEvent(output={"answer": 42}, usage=_usage())])[1]
 
     assert (_status_of(status_event)["state"], status_event["final"]) == ("completed", True)
+
+
+def test_final_no_publica_messages_cuando_termina_bien() -> None:
+    """The run's new messages stay inside the process: no key, no base64 of the bytes."""
+    projected = _project([FinalEvent(output={"answer": 42}, usage=_usage(), messages=b"x")])
+
+    encoded = msgspec.json.encode(projected).decode()
+    assert "messages" not in encoded
+    assert base64.b64encode(b"x").decode() not in encoded
 
 
 def test_error_proyecta_un_unico_status_failed_cuando_falla_el_run() -> None:

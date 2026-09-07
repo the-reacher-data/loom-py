@@ -7,14 +7,20 @@ from typing import Any
 import msgspec
 import pytest
 
-from loom.ai.compiler._plan import HOOK_CONTEXT_FIELDS, HOOK_OUTPUT_FIELD, AgentPlan, CompiledOutput
+from loom.ai.compiler._plan import (
+    HOOK_CONTEXT_FIELDS,
+    HOOK_MESSAGES_FIELD,
+    HOOK_OUTPUT_FIELD,
+    AgentPlan,
+    CompiledOutput,
+)
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.ai.runtime._hooks import HookRun, hook_command
 from loom.core.command import Command
 from loom.core.identity import Identity
 
-_ALL_NAMES = frozenset({HOOK_OUTPUT_FIELD, *HOOK_CONTEXT_FIELDS})
+_ALL_NAMES = frozenset({HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS})
 
 
 class _Report(msgspec.Struct, frozen=True, kw_only=True):
@@ -72,6 +78,7 @@ def test_ofrece_el_contexto_del_run_cuando_el_input_lo_acepta(run: HookRun) -> N
 
     assert command == {
         "output": {},
+        "messages": None,
         "interaction_id": "int-1",
         "conversation_id": "c-42",
         "subject": "user-1",
@@ -113,4 +120,25 @@ def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(run: HookRun) 
     """The run-time command and the compile-time offer are one contract, not two lists."""
     command = hook_command({}, run, _ALL_NAMES)
 
-    assert set(command) == {HOOK_OUTPUT_FIELD, *HOOK_CONTEXT_FIELDS}
+    assert set(command) == {HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS}
+
+
+def test_ofrece_los_messages_cuando_el_run_los_lleva(run: HookRun) -> None:
+    """The run's serialised new messages are offered verbatim under ``messages``."""
+    command = hook_command({}, run, _ALL_NAMES, messages=b"[]")
+
+    assert command[HOOK_MESSAGES_FIELD] == b"[]"
+
+
+def test_filtra_los_messages_cuando_el_input_no_los_declara(run: HookRun) -> None:
+    """A Command not declaring ``messages`` never receives them."""
+    command = hook_command({}, run, frozenset({"output"}), messages=b"[]")
+
+    assert command == {"output": {}}
+
+
+def test_ofrece_messages_none_cuando_no_se_indican(run: HookRun) -> None:
+    """A single-shot run offers ``None``, so an optional field keeps its default."""
+    command = hook_command({}, run, _ALL_NAMES)
+
+    assert command[HOOK_MESSAGES_FIELD] is None

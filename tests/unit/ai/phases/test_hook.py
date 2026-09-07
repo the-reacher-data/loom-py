@@ -46,6 +46,7 @@ def triage_registry(triage: ModuleType) -> UseCaseRegistry:
         triage.RecordReviewedTriage,
         triage.RecordTriageById,
         triage.CountTriages,
+        triage.RecordTurn,
     ]
     for use_case in use_cases:
         compiler.compile(use_case)
@@ -191,3 +192,21 @@ def test_no_toca_capabilities_cuando_declara_hook(
     )
     assert hooked.capabilities == plain.capabilities
     assert hooked.capabilities[0].use_cases == (triage.CountTriages,)
+
+
+def test_compila_el_hook_cuando_el_input_tambien_pide_messages(
+    spec_factory: Callable[..., AgentSpecV1],
+    plan_for: Callable[..., Any],
+    triage: ModuleType,
+    triage_registry: UseCaseRegistry,
+) -> None:
+    granted = UsecaseCapability(keys=("incidents.count_triages",))
+    plain = plan_for(spec_factory(capabilities=(granted,)), registry=triage_registry)
+    hooked = plan_for(
+        _hooked(spec_factory, "incidents.record_turn", capabilities=(granted,)),
+        registry=triage_registry,
+    )
+    assert hooked.on_output is not None
+    assert hooked.on_output.use_case is triage.RecordTurn
+    assert hooked.on_output.accepted == frozenset({"output", "interaction_id", "messages"})
+    assert hooked.capabilities == plain.capabilities

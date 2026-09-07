@@ -283,6 +283,18 @@ HOOK_CONTEXT_FIELDS: Final[tuple[str, ...]] = (
 HOOK_OUTPUT_FIELD: Final[str] = "output"
 """Input name under which the hook nests the validated output."""
 
+HOOK_MESSAGES_FIELD: Final[str] = "messages"
+"""Input name under which the hook offers the run's serialised new messages."""
+
+CONVERSATION_CONTEXT_FIELDS: Final[tuple[str, ...]] = (
+    "conversation_id",
+    "interaction_id",
+    "subject",
+    "mechanism",
+    "agent",
+)
+"""Run-context names the conversation loader offers to its use case's Input."""
+
 
 class CompiledOutputHook(LoomFrozenStruct, frozen=True, kw_only=True):
     """Use case executed once per completed run, resolved and proven feedable.
@@ -307,6 +319,26 @@ class CompiledOutputHook(LoomFrozenStruct, frozen=True, kw_only=True):
     accepted: frozenset[str]
 
 
+class CompiledConversation(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Use case executed before a run that carries a ``conversation_id``.
+
+    The compiler proves that every required, user-supplied name of the use
+    case's Input is one of :data:`CONVERSATION_CONTEXT_FIELDS` and that the
+    Input declares ``conversation_id``, so the loader always knows which
+    conversation to load.  ``accepted`` is the run-time filter, computed once
+    as :attr:`CompiledOutputHook.accepted` is.
+
+    Attributes:
+        usecase: Use-case key as written in the artifact, for messages.
+        use_case: Registered use-case type.
+        accepted: Internal names the Input declares; the run-time filter.
+    """
+
+    usecase: str
+    use_case: type[Compilable]
+    accepted: frozenset[str]
+
+
 class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
     """Immutable compiled agent, the only input to every downstream stage.
 
@@ -320,6 +352,7 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
         capabilities: Compiled capabilities with resolved handles.
         policies: Validated execution limits.
         on_output: Output hook, when the artifact declares one.
+        conversation: Conversation loader, when the artifact declares one.
         metadata: Free-form string labels carried alongside the agent.
         source_path: Artifact provenance for error messages, when known.
     """
@@ -333,5 +366,6 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
     capabilities: tuple[CompiledCapability, ...] = ()
     policies: PolicySpec
     on_output: CompiledOutputHook | None = None
+    conversation: CompiledConversation | None = None
     metadata: Mapping[str, str]
     source_path: str | None = None

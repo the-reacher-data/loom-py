@@ -39,6 +39,7 @@ from loom.ai.abc import (
     AgentEvent,
     AgentResult,
     AgentUsage,
+    Conversation,
     DepsFactory,
     ErrorEvent,
     FinalEvent,
@@ -47,6 +48,12 @@ from loom.ai.abc import (
 from loom.ai.compiler import AgentPlan
 from loom.ai.engines.pydantic_ai._errors import as_run_error
 from loom.ai.engines.pydantic_ai._events import translate
+from loom.ai.engines.pydantic_ai._history import (
+    RunConversation,
+    decode_conversation,
+    new_messages,
+    run_kwargs,
+)
 from loom.ai.engines.pydantic_ai._output import decode_output
 from loom.ai.errors import AgentRunError, AgentRunErrorCode, is_retriable
 from loom.core.di import LoomContainer
@@ -118,44 +125,65 @@ class PydanticAIEngine:
         self._attempts = max(plan.policies.retries, 0) + 1
         self._last_failure: AgentRunErrorCode | None = None
 
-    async def run(self, prompt: str, *, identity: Identity) -> AgentResult:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+    ) -> AgentResult:
         """Run the agent to completion.
 
         Args:
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
+            conversation: The conversation this run continues, or ``None``
+                for a single shot.
 
         Returns:
-            The validated output and the run's usage.
+            The validated output, the run's usage and — when the run carried a
+            conversation — the messages it added.
 
         Raises:
             AgentRunError: Carrying the coded, classified failure and what the
-                run had already spent before it failed.
+                run had already spent before it failed. A history that does
+                not decode fails here before any provider call, with no usage.
         """
+        decoded = decode_conversation(conversation)
         started = perf_counter()
         spend = RunUsage()
         try:
-            result = await self._run_with_retries(prompt, identity, spend)
+            result = await self._run_with_retries(prompt, identity, spend, decoded)
             output = decode_output(self._plan.output, result)
         except AgentRunError as error:
             error.usage = self._usage(spend, started)
             raise
-        return AgentResult(output=output, usage=self._usage(spend, started))
+        return AgentResult(
+            output=output,
+            usage=self._usage(spend, started),
+            messages=new_messages(result, decoded),
+        )
 
     def run_stream(
-        self, prompt: str, *, identity: Identity
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Run the agent, streaming events.
 
         Args:
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
+            conversation: The conversation this run continues, or ``None``
+                for a single shot.
 
         Returns:
             An async context manager yielding the event stream and closing it
             — and the provider connection behind it — on exit.
         """
-        return self._stream(prompt, identity)
+        return self._stream(prompt, identity, conversation)
 
     async def health(self) -> HealthStatus:
         """Report health from the last observed outcome, with no network I/O.
@@ -171,18 +199,25 @@ class PydanticAIEngine:
     # -- internals ---------------------------------------------------------
 
     async def _run_with_retries(
-        self, prompt: str, identity: Identity, spend: RunUsage
+        self,
+        prompt: str,
+        identity: Identity,
+        spend: RunUsage,
+        conversation: RunConversation | None,
     ) -> AgentRunResult[Any]:
         """Call the provider, retrying only infrastructure failures.
 
         *spend* is handed to the engine and mutated by it, so it holds what the
         run cost even when the call raises — and it accumulates across retried
-        attempts, because a retry spends the provider's tokens again.
+        attempts, because a retry spends the provider's tokens again. The
+        decoded history, by contrast, is the same list on every attempt.
         """
         deps = self._deps.build(identity, self._container)
         for attempt in range(self._attempts):
             try:
-                result = await self._agent.run(prompt, deps=deps, usage=spend)
+                result = await self._agent.run(
+                    prompt, deps=deps, usage=spend, **run_kwargs(conversation)
+                )
             except Exception as exc:
                 error = as_run_error(exc)
                 self._record(error.code)
@@ -227,23 +262,34 @@ class PydanticAIEngine:
 
     @asynccontextmanager
     async def _stream(
-        self, prompt: str, identity: Identity
+        self, prompt: str, identity: Identity, conversation: Conversation | None
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
-        events = self._events(prompt, identity)
+        events = self._events(prompt, identity, conversation)
         try:
             yield events
         finally:
             await events.aclose()
 
-    async def _events(self, prompt: str, identity: Identity) -> AsyncGenerator[AgentEvent]:
-        """Replay one run as loom events, ending in exactly one terminal."""
+    async def _events(
+        self, prompt: str, identity: Identity, conversation: Conversation | None
+    ) -> AsyncGenerator[AgentEvent]:
+        """Replay one run as loom events, ending in exactly one terminal.
+
+        A history that does not decode is not a provider outcome: it ends the
+        stream with its coded error, no usage and no health record.
+        """
+        try:
+            decoded = decode_conversation(conversation)
+        except AgentRunError as rejected:
+            yield ErrorEvent(code=rejected.code, message=str(rejected))
+            return
         deps = self._deps.build(identity, self._container)
         spend = RunUsage()
         started = perf_counter()
         for attempt in range(self._attempts):
             emitted = False
             try:
-                async for event in self._one_run(prompt, deps, spend, started):
+                async for event in self._one_run(prompt, deps, spend, started, decoded):
                     emitted = True
                     yield event
                 self._record(None)
@@ -260,21 +306,38 @@ class PydanticAIEngine:
                 return
 
     async def _one_run(
-        self, prompt: str, deps: object, spend: RunUsage, started: float
+        self,
+        prompt: str,
+        deps: object,
+        spend: RunUsage,
+        started: float,
+        conversation: RunConversation | None,
     ) -> AsyncIterator[AgentEvent]:
         """One attempt: engine events in, loom events out, ending in ``final``."""
-        async with self._agent.run_stream_events(prompt, deps=deps, usage=spend) as stream:
+        async with self._agent.run_stream_events(
+            prompt, deps=deps, usage=spend, **run_kwargs(conversation)
+        ) as stream:
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
-                    yield self._final(event.result, spend, started)
+                    yield self._final(event.result, spend, started, conversation)
                     return
                 mapped = translate(event)
                 if mapped is not None:
                     yield mapped
 
-    def _final(self, result: AgentRunResult[Any], spend: RunUsage, started: float) -> FinalEvent:
+    def _final(
+        self,
+        result: AgentRunResult[Any],
+        spend: RunUsage,
+        started: float,
+        conversation: RunConversation | None,
+    ) -> FinalEvent:
         output = decode_output(self._plan.output, result)
-        return FinalEvent(output=output, usage=self._usage(spend, started))
+        return FinalEvent(
+            output=output,
+            usage=self._usage(spend, started),
+            messages=new_messages(result, conversation),
+        )
 
 
 def _extra_counters(usage: RunUsage) -> dict[str, int | float]:

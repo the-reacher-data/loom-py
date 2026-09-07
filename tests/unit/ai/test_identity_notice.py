@@ -33,3 +33,15 @@ def test_advierte_que_no_hay_identidad_cuando_el_mount_es_anonimo() -> None:
     )
 
     assert "callers are NOT authenticated" in notice
+
+
+def test_avisa_de_que_el_id_es_la_credencial_cuando_el_mount_anonimo_conversa() -> None:
+    """Anonymous callers share one subject, so only ``conversation_id`` separates threads."""
+    endpoint = AgentEndpointConfig(enabled=True, auth="jwt", allow_anonymous=True)
+
+    conversational = _identity_notice(endpoint, ("sql",), conversational=True)
+    single_shot = _identity_notice(endpoint, ("sql",))
+
+    assert "callers are NOT authenticated" in conversational
+    assert "separated by 'conversation_id' alone" in conversational
+    assert "conversation_id" not in single_shot
