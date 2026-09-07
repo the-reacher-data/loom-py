@@ -7,14 +7,15 @@ from typing import Any
 
 import pytest
 
+from loom.core.engine.events import EventKind
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.engine.post_commit import active_channel
+from loom.core.engine.post_commit import PostCommitError, active_channel
 from loom.core.job.context import add_pending_dispatch
 from loom.core.repository.mutation import MutationEvent
 from loom.core.repository.sqlalchemy.transactional import get_active_session, transactional
 from loom.core.use_case.use_case import UseCase
 
-from .._lifecycle_doubles import Broker, Dispatching, Log, Ok, context_is_clean
+from .._lifecycle_doubles import Broker, Dispatching, Log, Metrics, Ok, context_is_clean
 from .conftest import CountingSessionManager, LifecycleCase, sqlite_session_manager
 
 
@@ -72,6 +73,36 @@ async def test_inner_with_its_own_unit_of_work_drains_after_its_close_despite_ou
         "broker.send(inner) uow=False",
         "outer.after_inner",
         "event.EXEC_ERROR",
+    ]
+    assert context_is_clean()
+
+
+async def test_an_inner_post_commit_failure_is_reported_as_post_commit_by_the_outer(
+    case: LifecycleCase, executor: RuntimeExecutor, broker: Broker, metrics: Metrics, log: Log
+) -> None:
+    """A3: the outer must not report a committed inner's drain failure as business."""
+    broker.failing.add("inner")
+
+    class _ReadOnlyOuter(UseCase[Any, str]):
+        read_only = True
+
+        async def execute(self, value: str) -> str:
+            await executor.execute(Dispatching(broker), params={"value": "inner"})
+            return value
+
+    with pytest.raises(PostCommitError) as info:
+        await executor.execute(_ReadOnlyOuter(), params={"value": "x"})
+
+    assert info.value.committed is True
+    assert [type(failure) for failure in info.value.failures] == [ConnectionError]
+    outer_error = metrics.events[-1]
+    assert outer_error.kind is EventKind.EXEC_ERROR
+    assert outer_error.error_kind == "post_commit"
+    assert [event.kind for event in metrics.events] == [
+        EventKind.EXEC_START,
+        EventKind.EXEC_START,
+        EventKind.EXEC_DONE,
+        EventKind.EXEC_ERROR,
     ]
     assert context_is_clean()
 

@@ -3,7 +3,8 @@
 The executor binds one :class:`PostCommitChannel` per execution that owns a
 unit of work (or when no channel is bound) and drains it after the commit.
 Actions enqueued while a channel is bound belong to that channel; a
-failed transaction discards them.
+failed transaction discards them.  The owner unbinds the channel before
+draining, so an execution started from an action opens its own lifecycle.
 """
 
 from __future__ import annotations
@@ -51,18 +52,13 @@ class PostCommitChannel:
 
         channel = PostCommitChannel()
         channel.enqueue(lambda: broker.send(message))
-        await channel.drain()
+        await channel.drain(committed=True)
     """
 
     __slots__ = ("_actions",)
 
     def __init__(self) -> None:
         self._actions: list[PostCommitAction] = []
-
-    @property
-    def is_empty(self) -> bool:
-        """Whether no action is waiting to run."""
-        return not self._actions
 
     def enqueue(self, action: PostCommitAction) -> None:
         """Append an action; it runs in enqueue order on :meth:`drain`.
@@ -77,30 +73,32 @@ class PostCommitChannel:
         """Drop every queued action without running it."""
         self._actions.clear()
 
-    async def drain(self) -> None:
+    async def drain(self, *, committed: bool) -> None:
         """Run every queued action in order and leave the channel empty.
 
-        The channel is unbound while the actions run, so an execution
+        The owner unbinds the channel before draining, so an execution
         started from an action opens its own lifecycle.  A failing action
         does not stop the others.  A cancellation stops the drain at once;
         the actions not yet run stay queued so a later drain can run them.
+
+        Args:
+            committed: Whether a transaction of this owner's had committed
+                when the actions ran.  ``False`` when the owner held no unit
+                of work, so a caller may safely retry the whole operation.
 
         Raises:
             PostCommitError: If any action raised; carries every failure.
         """
         pending = collections.deque(self._actions)
         self._actions = []
-        token = _channel.set(None)
         failures: list[Exception] = []
         try:
             await _run_all(pending, failures)
         except BaseException:
             self._actions = [*pending, *self._actions]
             raise
-        finally:
-            _channel.reset(token)
         if failures:
-            raise PostCommitError(committed=True, failures=tuple(failures))
+            raise PostCommitError(committed=committed, failures=tuple(failures))
 
 
 async def _run_all(pending: collections.deque[PostCommitAction], failures: list[Exception]) -> None:
@@ -143,8 +141,3 @@ def reset_channel(token: Token[PostCommitChannel | None]) -> None:
 def active_channel() -> PostCommitChannel | None:
     """Return the channel bound to the current context, if any."""
     return _channel.get()
-
-
-def channel_bound() -> bool:
-    """Whether a channel is bound to the current context."""
-    return _channel.get() is not None

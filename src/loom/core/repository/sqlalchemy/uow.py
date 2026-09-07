@@ -89,10 +89,21 @@ class SQLAlchemyUnitOfWork:
 
         self._session_cm = self._session_manager.session()
         session: AsyncSession = await self._session_cm.__aenter__()
+        try:
+            self._bind(session)
+        except BaseException:
+            # The session context manager is already open: close it before
+            # the failure leaves, or the connection leaks for good.
+            await self._exit_session()
+            self._reset_context()
+            raise
+        _log.debug("UoWBegin")
+
+    def _bind(self, session: AsyncSession) -> None:
+        """Publish ``session`` and a fresh mutation list to the current context."""
         self._session = session
         self._session_token = set_active_session(session)
         _, self._mutations_token = set_active_mutations()
-        _log.debug("UoWBegin")
 
     async def commit(self) -> None:
         """Flush and commit all pending changes to the database.
@@ -191,13 +202,6 @@ class SQLAlchemyUnitOfWork:
         if self._mutations_token is not None:
             reset_active_mutations(self._mutations_token)
             self._mutations_token = None
-
-    async def _close(self) -> None:
-        """Close the session and reset ContextVars without commit or rollback."""
-        try:
-            await asyncio.shield(self._exit_session())
-        finally:
-            self._reset_context()
 
 
 class SQLAlchemyUnitOfWorkFactory:

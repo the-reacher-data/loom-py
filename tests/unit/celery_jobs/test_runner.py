@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+import asyncio
+from collections.abc import Coroutine, Generator
 from contextlib import contextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,7 +23,6 @@ from loom.celery.runner import (
     _make_callback_task,
     _make_job_task,
     _resolve_error_info,
-    _run_job,
     _uninstall_trace,
 )
 from loom.core.engine.events import EventKind, RuntimeEvent
@@ -141,40 +142,6 @@ class TestTraceLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# _run_job
-# ---------------------------------------------------------------------------
-
-
-class TestRunJob:
-    async def test_returns_executor_result(self) -> None:
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(return_value="done")
-        result = await _run_job(instance, payload={}, params=None, executor=executor)
-        assert result == "done"
-
-    async def test_leaves_the_lifecycle_to_the_executor(self) -> None:
-        """FR-003: the executor drains the dispatches; the runner adds no flush."""
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(return_value=None)
-
-        await _run_job(instance, payload={"k": 1}, params={"p": 2}, executor=executor)
-
-        executor.execute.assert_awaited_once_with(
-            instance, params={"p": 2}, payload={"k": 1}, identity=None
-        )
-
-    async def test_propagates_the_executor_failure(self) -> None:
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(side_effect=RuntimeError("fail"))
-
-        with pytest.raises(RuntimeError, match="fail"):
-            await _run_job(instance, payload={}, params=None, executor=executor)
-
-
-# ---------------------------------------------------------------------------
 # _make_job_task — task registration
 # ---------------------------------------------------------------------------
 
@@ -261,6 +228,24 @@ class TestMakeJobTaskExecution:
         runtime.run.assert_called_once()
         _, kwargs = runtime.run.call_args
         assert kwargs["timeout"] is None
+
+    def test_job_task_hands_the_executor_every_input_of_the_envelope(self) -> None:
+        """A8: the task builds the instance and delegates the lifecycle to the executor."""
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        executor = MagicMock()
+        executor.execute = AsyncMock(return_value=7)
+        submitted: list[Coroutine[Any, Any, Any]] = []
+        runtime = MagicMock()
+        runtime.run = MagicMock(side_effect=lambda coro, **_: submitted.append(coro) or 7)
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, executor, runtime)
+
+        assert task_fn(_mock_self(), payload={"value": 5}, params={"p": 2}) == 7
+
+        assert asyncio.run(submitted[0]) == 7
+        executor.execute.assert_awaited_once_with(
+            instance, params={"p": 2}, payload={"value": 5}, identity=None
+        )
 
     def test_job_task_emits_observability_span(self) -> None:
         instance = _SyncJob()
@@ -363,6 +348,24 @@ class TestMakeJobTaskRetry:
         kinds = [c.args[0].kind for c in metrics.on_event.call_args_list]
         assert EventKind.JOB_RETRYING not in kinds
         assert EventKind.JOB_EXHAUSTED in kinds
+
+    def test_post_commit_error_without_a_commit_is_retried(self) -> None:
+        """A1: nothing committed, so re-running the job cannot duplicate a write."""
+        factory = _mock_factory(MagicMock())
+        mock_self = _mock_self(retries=0, max_retries=2)
+
+        class RetryError(Exception):
+            pass
+
+        mock_self.retry = MagicMock(side_effect=RetryError)
+        error = PostCommitError(committed=False, failures=(ConnectionError("broker down"),))
+
+        runtime = _mock_runtime(error=error)
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), runtime)
+        with pytest.raises(RetryError):
+            task_fn(mock_self, payload={"value": 1})
+
+        mock_self.retry.assert_called_once()
 
     def test_retry_countdown_uses_exponential_backoff(self) -> None:
         instance = MagicMock()

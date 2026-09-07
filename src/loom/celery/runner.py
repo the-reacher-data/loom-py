@@ -186,43 +186,27 @@ def _is_eager_request(task_self: Any) -> bool:
     return bool(getattr(conf, "task_always_eager", False))
 
 
-async def _run_job(
-    instance: Job[Any],
-    *,
-    payload: dict[str, Any],
-    params: dict[str, Any] | None,
-    executor: RuntimeExecutor,
-    identity: Identity | None = None,
-) -> Any:
-    """Execute a Job through the executor.
-
-    The executor owns the lifecycle: it opens the UoW, runs the compiled
-    execution plan (handling both sync and async ``execute()`` methods),
-    commits, and runs the dispatches queued during the execution once the
-    UoW has closed; a failed execution discards them.
-
-    Args:
-        instance: Constructed Job instance.
-        payload: Raw payload dict for command construction.
-        params: Optional primitive params.
-        executor: RuntimeExecutor that drives the ExecutionPlan.
-        identity: Caller decoded from the job envelope, or ``None`` when the
-            envelope carried none.  A job declaring ``Caller()`` then fails
-            closed rather than running as an unknown caller.
-
-    Returns:
-        The value returned by ``execute()``.
-
-    Raises:
-        loom.core.engine.post_commit.PostCommitError: If a dispatch failed
-            after the job's transaction committed.
-    """
-    return await executor.execute(instance, params=params, payload=payload, identity=identity)
-
-
 # ---------------------------------------------------------------------------
 # Job runner factory
 # ---------------------------------------------------------------------------
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Whether re-running the job could still fix ``exc``.
+
+    A post-commit failure of a committed transaction cannot: the write
+    already stands and a retry would apply it twice.  One raised without a
+    commit (a read-only job, or none owning a unit of work) is retryable.
+    """
+    return not (isinstance(exc, PostCommitError) and exc.committed)
+
+
+def _log_post_commit_failure(exc: Exception, job: str) -> None:
+    """Record which post-commit actions failed and whether anything committed."""
+    if isinstance(exc, PostCommitError):
+        _log.error(
+            "JobPostCommitFailed", job=job, committed=exc.committed, failures=len(exc.failures)
+        )
 
 
 def _make_job_task(
@@ -244,7 +228,16 @@ def _make_job_task(
     Both sync and async ``execute()`` methods are driven by the
     :class:`~loom.core.engine.executor.RuntimeExecutor` via a shared
     :class:`~loom.core.async_bridge.AsyncBridge`, giving every job access
-    to the full framework (UoW, injection markers, dispatch).
+    to the full framework (UoW, injection markers, dispatch).  The executor
+    owns the lifecycle: it opens the unit of work, commits and drains the
+    dispatches queued during the execution once it has closed.  The identity
+    decoded from the envelope is forwarded, so a job declaring ``Caller()``
+    fails closed rather than running as an unknown caller.
+
+    A :class:`~loom.core.engine.post_commit.PostCommitError` whose
+    transaction committed is terminal: the task is not retried, since the
+    write already stands.  One raised without a commit is retried like any
+    other failure.
 
     Args:
         celery_app: Celery application to register the task on.
@@ -296,12 +289,8 @@ def _make_job_task(
             ):
                 instance = factory.build(job_type)
                 result = async_runtime.run(
-                    _run_job(
-                        instance,
-                        payload=payload or {},
-                        params=params,
-                        executor=executor,
-                        identity=caller,
+                    executor.execute(
+                        instance, params=params, payload=payload or {}, identity=caller
                     ),
                     timeout=run_timeout,
                     eager_fallback=_is_eager_request(self),
@@ -317,18 +306,9 @@ def _make_job_task(
                 ),
             )
             return result
-        except PostCommitError as exc:
-            # The transaction committed: a retry would run the job twice.
-            _log.error(
-                "JobPostCommitFailed",
-                job=name,
-                committed=exc.committed,
-                failures=len(exc.failures),
-            )
-            _emit(metrics, _exhausted_event(name, trace_id, t0, exc))
-            raise
         except Exception as exc:
-            if self.request.retries < self.max_retries:
+            _log_post_commit_failure(exc, name)
+            if _is_retryable(exc) and self.request.retries < self.max_retries:
                 countdown = backoff**self.request.retries
                 _emit(
                     metrics,

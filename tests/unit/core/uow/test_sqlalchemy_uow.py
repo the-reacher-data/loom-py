@@ -39,6 +39,11 @@ def _make_session_manager(session: MagicMock) -> MagicMock:
     return sm
 
 
+async def _close(uow: SQLAlchemyUnitOfWork) -> None:
+    """Close a hand-driven unit of work the documented way: through ``__aexit__``."""
+    await uow.__aexit__(RuntimeError, RuntimeError("test cleanup"), None)
+
+
 class _RecordingSessionManager:
     """Session manager whose context manager counts its exits and may fail to close."""
 
@@ -89,8 +94,7 @@ async def test_begin_opens_session() -> None:
 
     await uow.begin()
     assert uow._session is session
-    # Cleanup
-    await uow._close()
+    await _close(uow)
 
 
 @pytest.mark.asyncio
@@ -102,7 +106,7 @@ async def test_commit_calls_session_commit() -> None:
     await uow.begin()
     await uow.commit()
     session.commit.assert_awaited_once()
-    await uow._close()
+    await _close(uow)
 
 
 @pytest.mark.asyncio
@@ -114,7 +118,7 @@ async def test_rollback_calls_session_rollback() -> None:
     await uow.begin()
     await uow.rollback()
     session.rollback.assert_awaited_once()
-    await uow._close()
+    await _close(uow)
 
 
 @pytest.mark.asyncio
@@ -146,7 +150,28 @@ async def test_begin_twice_raises() -> None:
     await uow.begin()
     with pytest.raises(RuntimeError, match="called twice"):
         await uow.begin()
-    await uow._close()
+    await _close(uow)
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_session_opened_closes_it_before_propagating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A4: ``begin`` owns the open session from ``__aenter__`` onwards."""
+    session = _make_session()
+    sm = _RecordingSessionManager(session)
+    uow = SQLAlchemyUnitOfWork(sm)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        "loom.core.repository.sqlalchemy.uow.set_active_session",
+        MagicMock(side_effect=RuntimeError("context lost")),
+    )
+
+    with pytest.raises(RuntimeError, match="context lost"):
+        await uow.begin()
+
+    assert sm.exits == 1
+    assert get_active_session() is None
+    assert uow._session is None
 
 
 # ---------------------------------------------------------------------------

@@ -1,12 +1,34 @@
+"""Pending-dispatch helpers, inside and outside an execution."""
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 
+import pytest
+
+from loom.core.engine.post_commit import (
+    PostCommitChannel,
+    PostCommitError,
+    bind_channel,
+    reset_channel,
+)
 from loom.core.job.context import (
     add_pending_dispatch,
     clear_pending_dispatches,
     flush_pending_dispatches,
 )
+
+
+@pytest.fixture
+def bound_channel() -> Iterator[PostCommitChannel]:
+    """Stand in for the channel the executor binds for the duration of an execution."""
+    channel = PostCommitChannel()
+    token = bind_channel(channel)
+    try:
+        yield channel
+    finally:
+        reset_channel(token)
 
 
 async def test_add_and_flush_sync_callable() -> None:
@@ -84,3 +106,57 @@ async def test_contextvar_default_not_shared() -> None:
     task = asyncio.ensure_future(fresh_context())
     await task
     assert calls == ["fresh"]
+
+
+# ---------------------------------------------------------------------------
+# A2 — inside an execution the executor owns the channel
+# ---------------------------------------------------------------------------
+
+
+async def test_flush_inside_an_execution_refuses_instead_of_doing_nothing(
+    bound_channel: PostCommitChannel,
+) -> None:
+    calls: list[str] = []
+    add_pending_dispatch(lambda: calls.append("queued"))
+
+    with pytest.raises(RuntimeError, match="RuntimeExecutor owns the post-commit channel"):
+        await flush_pending_dispatches()
+
+    await bound_channel.drain(committed=False)
+    assert calls == ["queued"]
+
+
+async def test_clear_inside_an_execution_discards_the_bound_channel(
+    bound_channel: PostCommitChannel,
+) -> None:
+    calls: list[str] = []
+    add_pending_dispatch(lambda: calls.append("must-not-run"))
+
+    clear_pending_dispatches()
+
+    await bound_channel.drain(committed=False)
+    assert calls == []
+
+
+async def test_clear_outside_an_execution_still_discards_the_fallback() -> None:
+    calls: list[str] = []
+    add_pending_dispatch(lambda: calls.append("must-not-run"))
+
+    clear_pending_dispatches()
+    await flush_pending_dispatches()
+
+    assert calls == []
+
+
+async def test_flush_outside_an_execution_reports_failures_as_not_committed() -> None:
+    """A1: no unit of work was involved, so the caller may retry the whole operation."""
+
+    def _fail() -> None:
+        raise ConnectionError("broker down")
+
+    add_pending_dispatch(_fail)
+
+    with pytest.raises(PostCommitError) as info:
+        await flush_pending_dispatches()
+
+    assert info.value.committed is False

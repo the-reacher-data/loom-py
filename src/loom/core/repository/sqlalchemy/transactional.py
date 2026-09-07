@@ -176,7 +176,7 @@ def transactional(
             raise
         finally:
             reset_channel(channel_token)
-        await channel.drain()
+        await channel.drain(committed=True)
         return result
 
     return cast(Callable[Concatenate[Any, P], Awaitable[T]], wrapper)

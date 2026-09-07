@@ -496,9 +496,19 @@ of work has closed, outside its transaction, in enqueue order:
   sharing the same async context.
 
 A failure during `drain()` does not replace the terminal event already
-emitted: it surfaces as `PostCommitError(committed=True, failures=(...))`
-raised by `execute()` after `EXEC_DONE`. Every action still runs — failures
-are collected, not short-circuited.
+emitted: it surfaces as `PostCommitError(failures=(...))` raised by
+`execute()` after `EXEC_DONE`. Every action still runs — failures are
+collected, not short-circuited.
+
+`PostCommitError.committed` says whether the owner that drained had
+committed a unit of work of its own:
+
+- `committed=True` — the execution owned a unit of work and it committed.
+  A retry would repeat a write that already stands.
+- `committed=False` — the execution owned no unit of work (`read_only=True`,
+  no `uow_factory`), or the drain came from a hand-driven
+  `flush_pending_dispatches()` outside any execution. Nothing was written,
+  so the whole operation is safe to retry.
 
 ### Nesting
 
@@ -532,7 +542,14 @@ carries `error_kind="cancelled"` for a cancelled execution.
 |---|---|---|
 | `EXEC_START` | Before the unit of work opens (or before the pipeline, when none is configured) | `use_case_name`, `trace_id` |
 | `EXEC_DONE` | The only success terminal event — after commit, or after the pipeline when there is no unit of work | `duration_ms`, `pipeline_ms`, `commit_ms` |
-| `EXEC_ERROR` | The only failure terminal event | `error_kind` (`begin`, `business`, `commit`, `cancelled`), `duration_ms`, `pipeline_ms`, `commit_ms` |
+| `EXEC_ERROR` | The only failure terminal event | `error_kind` (`begin`, `business`, `commit`, `cancelled`, `post_commit`), `duration_ms`, `pipeline_ms`, `commit_ms` |
+
+`error_kind` names the step that failed: `begin` for `__aenter__`,
+`business` for the pipeline, `commit` for the unit-of-work exit, `cancelled`
+for a cancellation, and `post_commit` when the propagating exception is a
+`PostCommitError` — an inner execution that owned its own unit of work
+committed and then failed to drain, so the outer failure is not its own
+business logic.
 
 `duration_ms` measures start → terminal event; `pipeline_ms` measures the
 pipeline stage alone; `commit_ms` measures the unit-of-work exit (`None`
@@ -553,14 +570,14 @@ later release; see [Persistence backends](persistence-backends.md).
 
 ### `PostCommitError` in REST and Celery
 
-`PostCommitError(committed=True, failures=(...))` means the transaction is
-already committed — a retry would repeat a side effect, not recover a lost
-write:
+`PostCommitError` carries `committed`, and both transports read it:
 
-- **REST**: `HttpErrorMapper` maps it to `500`, with `committed: true` in
-  the response body's `detail`.
-- **Celery**: the worker treats it as a terminal failure and does **not**
-  retry — see [Post-commit failures](celery.md#post-commit-failures).
+- **REST**: `HttpErrorMapper` maps it to `500` and copies the flag into the
+  response body's `detail` as `committed` — `true` means the write stands
+  even though the request failed, `false` means nothing was written.
+- **Celery**: the worker does **not** retry a `committed=True` failure (a
+  retry would repeat the write) and retries a `committed=False` one like any
+  other failure — see [Post-commit failures](celery.md#post-commit-failures).
 
 ### Hand-driven units of work
 
@@ -580,9 +597,30 @@ methods stay on the protocol. Closing is the context manager's job
   cache-bump failure after a successful commit used to roll back an
   already-committed transaction; it now raises
   `PostCommitError(committed=True)` instead — the write stands, the failure
-  is reported separately.
+  is reported separately. The same failure in an execution that owned no
+  unit of work raises `PostCommitError(committed=False)`, which REST reports
+  as `committed: false` and the Celery worker retries.
 - **`flush_pending_dispatches()` now raises `PostCommitError`** instead of
-  letting an individual dispatch's exception propagate directly.
+  letting an individual dispatch's exception propagate directly, and
+  **raises `RuntimeError` when called inside an execution**: the executor
+  owns the post-commit channel and drains it after the unit of work closes.
+  Call it only outside an execution, as `InlineJobService` documents.
+  `clear_pending_dispatches()` discards the executor's channel when one is
+  bound, so a hand-driven caller cancelling dispatches inside an execution
+  now really cancels them.
+- **`UnitOfWork` is a runtime-checkable protocol with a data member**:
+  `isinstance(x, UnitOfWork)` is `False` for an adapter that does not
+  declare `transactional`, and `issubclass(X, UnitOfWork)` raises
+  `TypeError` — Python cannot check a data member on a class. Third-party
+  adapters must declare `transactional: ClassVar[bool]`; code that used
+  `issubclass` must switch to `isinstance` on an instance.
+- **`error_kind="commit"` means the unit-of-work exit failed**: the commit
+  outcome is undetermined — the driver may have committed before the failure
+  surfaced. Treat it as "unknown", not as "rolled back"; the adapter still
+  rolled back and closed on its side (SQLAlchemy) or ended the session
+  (Mongo).
+- **`error_kind="post_commit"`** is new: an outer execution whose inner one
+  committed and then failed to drain no longer reports `business`.
 - **Hand-driven `begin()`/`commit()` callers must close through the context
   manager** (`async with uow:` or an explicit `__aexit__` call) — calling
   `commit()` alone no longer closes the session.

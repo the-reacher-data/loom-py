@@ -180,9 +180,8 @@ class TestBoundChannel:
 
             assert log == ["body", "commit", "session_closed", "owner", "dep_a", "dep_b"]
             assert active_channel() is outer
-            assert outer.is_empty is False
 
-            await outer.drain()
+            await outer.drain(committed=True)
         finally:
             reset_channel(token)
 

@@ -11,7 +11,6 @@ from loom.core.engine.post_commit import (
     PostCommitError,
     active_channel,
     bind_channel,
-    channel_bound,
     reset_channel,
 )
 from loom.core.errors import LoomError
@@ -24,7 +23,7 @@ async def test_drain_runs_actions_in_enqueue_order() -> None:
     channel.enqueue(lambda: calls.append("b"))
     channel.enqueue(lambda: calls.append("c"))
 
-    await channel.drain()
+    await channel.drain(committed=True)
 
     assert calls == ["a", "b", "c"]
 
@@ -47,7 +46,7 @@ async def test_drain_awaits_sync_returning_awaitable_and_async_callables() -> No
     channel.enqueue(_sync_returning_awaitable)
     channel.enqueue(lambda: calls.append("sync"))
 
-    await channel.drain()
+    await channel.drain(committed=True)
 
     assert calls == ["async", "future", "sync"]
 
@@ -67,52 +66,65 @@ async def test_drain_continues_after_failure_then_raises_with_all_failures() -> 
     channel.enqueue(lambda: calls.append("last"))
 
     with pytest.raises(PostCommitError) as info:
-        await channel.drain()
+        await channel.drain(committed=True)
 
     assert calls == ["middle", "last"]
     assert info.value.committed is True
     assert info.value.failures == (first, second)
     assert isinstance(info.value, LoomError)
     assert info.value.code == "post_commit_failure"
-    assert channel.is_empty
 
 
-async def test_channel_is_empty_after_drain() -> None:
+async def test_drain_empties_the_channel_so_a_second_one_runs_nothing() -> None:
+    calls: list[str] = []
     channel = PostCommitChannel()
-    channel.enqueue(lambda: None)
-    assert not channel.is_empty
+    channel.enqueue(lambda: calls.append("once"))
 
-    await channel.drain()
+    await channel.drain(committed=True)
+    await channel.drain(committed=True)
 
-    assert channel.is_empty
-    await channel.drain()  # a second drain is a no-op
+    assert calls == ["once"]
 
 
-def test_discard_drops_actions_without_running_them() -> None:
+async def test_drain_reports_the_committed_flag_its_owner_passed() -> None:
+    """A1: only the owner knows whether a transaction of its own committed."""
+
+    def _fail() -> None:
+        raise ConnectionError("broker down")
+
+    channel = PostCommitChannel()
+    channel.enqueue(_fail)
+
+    with pytest.raises(PostCommitError) as info:
+        await channel.drain(committed=False)
+
+    assert info.value.committed is False
+
+
+async def test_discard_drops_actions_without_running_them() -> None:
     calls: list[str] = []
     channel = PostCommitChannel()
     channel.enqueue(lambda: calls.append("never"))
 
     channel.discard()
+    await channel.drain(committed=True)
 
-    assert channel.is_empty
     assert calls == []
 
 
-async def test_channel_is_unbound_during_drain_and_restored_after() -> None:
+async def test_the_owner_unbinds_before_draining_so_actions_see_no_channel() -> None:
+    """A6: unbinding is the owner's job, and the only mechanism."""
     seen: list[PostCommitChannel | None] = []
     channel = PostCommitChannel()
-    channel.enqueue(lambda: seen.append(active_channel()))
     token = bind_channel(channel)
-    try:
-        assert channel_bound()
-        await channel.drain()
-        assert active_channel() is channel
-    finally:
-        reset_channel(token)
+    channel.enqueue(lambda: seen.append(active_channel()))
+    assert active_channel() is channel
+
+    reset_channel(token)
+    await channel.drain(committed=True)
 
     assert seen == [None]
-    assert not channel_bound()
+    assert active_channel() is None
 
 
 async def test_nested_drain_from_an_action_does_not_recurse() -> None:
@@ -121,12 +133,12 @@ async def test_nested_drain_from_an_action_does_not_recurse() -> None:
 
     async def _drain_again() -> None:
         calls.append("outer")
-        await channel.drain()
+        await channel.drain(committed=True)
 
     channel.enqueue(_drain_again)
     channel.enqueue(lambda: calls.append("second"))
 
-    await channel.drain()
+    await channel.drain(committed=True)
 
     assert calls == ["outer", "second"]
 
@@ -153,15 +165,10 @@ async def test_cancellation_propagates_and_keeps_the_rest_queued() -> None:
 
     channel.enqueue(_cancel)
     channel.enqueue(lambda: calls.append("after"))
-    token = bind_channel(channel)
-    try:
-        with pytest.raises(asyncio.CancelledError):
-            await channel.drain()
-        assert active_channel() is channel
-    finally:
-        reset_channel(token)
 
+    with pytest.raises(asyncio.CancelledError):
+        await channel.drain(committed=True)
     assert calls == []
-    assert not channel.is_empty
-    await channel.drain()
+
+    await channel.drain(committed=True)
     assert calls == ["after"]

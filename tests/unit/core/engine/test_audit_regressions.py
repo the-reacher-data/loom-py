@@ -1,104 +1,26 @@
-"""Regression tests for the external audit findings F01, F02 and F07.
+"""Regression test for the external audit finding F01, over a session-manager oracle.
 
-The executor owns one lifecycle: ``EXEC_START`` before ``__aenter__``, the
-unit of work driven only through its context-manager protocol, one terminal
-event after the unit of work closed, and post-commit actions drained once
-the transaction is out of the context.
+The executor drives the SQLAlchemy unit of work through its context-manager
+protocol only, so the session context exits exactly once per execution and
+nothing stays bound to the context afterwards.  F02, F07 and the nesting
+rules moved to ``tests/unit/core/engine/contract``, which runs them against
+every real adapter; the map is at the bottom of this file.
 """
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
-
 import pytest
 
 from loom.core.engine.compiler import UseCaseCompiler
-from loom.core.engine.events import EventKind
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.engine.post_commit import PostCommitError, active_channel
-from loom.core.job.context import add_pending_dispatch
 from loom.core.repository.sqlalchemy.transactional import get_active_session
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
-from loom.core.uow.abc import UnitOfWork
-from loom.core.use_case.use_case import UseCase
 
-from ._lifecycle_doubles import (
-    Boom,
-    Broker,
-    Dispatching,
-    DispatchThenFail,
-    Log,
-    Metrics,
-    Ok,
-    cancel_mid_flight,
-    context_is_clean,
-)
+from ._lifecycle_doubles import Boom, Log, Ok, cancel_mid_flight, context_is_clean
 
 # ---------------------------------------------------------------------------
 # Doubles
 # ---------------------------------------------------------------------------
-
-
-class _StubUoW:
-    """Unit of work following the adapter contract: commit failure rolls back."""
-
-    transactional: ClassVar[bool] = True
-
-    def __init__(
-        self,
-        log: Log,
-        *,
-        commit_raises: Exception | None = None,
-        begin_raises: Exception | None = None,
-    ) -> None:
-        self._log = log
-        self._commit_raises = commit_raises
-        self._begin_raises = begin_raises
-
-    async def begin(self) -> None:
-        self._log("uow.begin")
-        if self._begin_raises is not None:
-            raise self._begin_raises
-
-    async def commit(self) -> None:
-        self._log("uow.commit")
-        if self._commit_raises is not None:
-            raise self._commit_raises
-
-    async def rollback(self) -> None:
-        self._log("uow.rollback")
-
-    async def __aenter__(self) -> _StubUoW:
-        await self.begin()
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        try:
-            if exc_type is None:
-                await self._commit_or_rollback()
-            else:
-                await self.rollback()
-        finally:
-            self._log("uow.closed")
-
-    async def _commit_or_rollback(self) -> None:
-        try:
-            await self.commit()
-        except Exception:
-            await self.rollback()
-            raise
-
-
-class _StubUoWFactory:
-    def __init__(self, log: Log, **options: Any) -> None:
-        self._log = log
-        self._options = options
-        self.created: list[_StubUoW] = []
-
-    def create(self) -> UnitOfWork:
-        uow = _StubUoW(self._log, **self._options)
-        self.created.append(uow)
-        return uow
 
 
 class _FakeSession:
@@ -138,11 +60,8 @@ class _FakeSessionManager:
         return cm
 
 
-def _executor(
-    factory: _StubUoWFactory | SQLAlchemyUnitOfWorkFactory | None = None,
-    metrics: Metrics | None = None,
-) -> RuntimeExecutor:
-    return RuntimeExecutor(UseCaseCompiler(), uow_factory=factory, metrics=metrics)
+def _executor(factory: SQLAlchemyUnitOfWorkFactory) -> RuntimeExecutor:
+    return RuntimeExecutor(UseCaseCompiler(), uow_factory=factory)
 
 
 # ---------------------------------------------------------------------------
@@ -202,250 +121,44 @@ class TestF01SessionClosed:
 
 
 # ---------------------------------------------------------------------------
-# F02 — dispatches run after the close, in every execution shape
+# F02, F07 and nesting live in the contract suite
 # ---------------------------------------------------------------------------
-
-
-class TestF02DispatchAfterClose:
-    async def test_without_unit_of_work_the_dispatch_is_sent_at_the_end(self) -> None:
-        log = Log()
-        broker = Broker(log)
-
-        await _executor().execute(Dispatching(broker), params={"value": "job-A"})
-
-        assert broker.sent == ["job-A"]
-        assert log.entries == ["dispatch.queued(job-A)", "broker.send(job-A) uow=False"]
-        assert active_channel() is None
-
-    async def test_read_only_execution_sends_at_the_end_and_leaks_nothing(self) -> None:
-        log = Log()
-        broker = Broker(log)
-        executor = _executor(_StubUoWFactory(log))
-
-        await executor.execute(Dispatching(broker), params={"value": "job-B"}, read_only=True)
-        assert broker.sent == ["job-B"]
-
-        await _executor(_StubUoWFactory(Log())).execute(Ok(), params={"value": "unrelated"})
-        assert broker.sent == ["job-B"]
-
-    async def test_under_a_unit_of_work_the_send_happens_after_the_close(self) -> None:
-        log = Log()
-        broker = Broker(log)
-        executor = _executor(_StubUoWFactory(log))
-
-        await executor.execute(Dispatching(broker), params={"value": "job-C"})
-
-        assert log.entries == [
-            "uow.begin",
-            "dispatch.queued(job-C)",
-            "uow.commit",
-            "uow.closed",
-            "broker.send(job-C) uow=False",
-        ]
-
-    async def test_failed_execution_discards_and_never_leaks_into_a_later_one(self) -> None:
-        log = Log()
-        broker = Broker(log)
-        executor = _executor(_StubUoWFactory(log))
-
-        with pytest.raises(RuntimeError, match="after dispatch"):
-            await executor.execute(DispatchThenFail(broker), params={"value": "job-D"})
-        await executor.execute(Ok(), params={"value": "later"})
-
-        assert broker.sent == []
-        assert "broker.send(job-D) uow=False" not in log.entries
-
-    async def test_broker_failure_after_commit_is_a_post_commit_error(self) -> None:
-        log = Log()
-        broker = Broker(log)
-        broker.failing.add("job-E")
-        factory = _StubUoWFactory(log)
-        metrics = Metrics(log)
-        executor = _executor(factory, metrics)
-
-        with pytest.raises(PostCommitError) as info:
-            await executor.execute(Dispatching(broker), params={"value": "job-E"})
-
-        assert info.value.committed is True
-        assert [type(failure) for failure in info.value.failures] == [ConnectionError]
-        assert "uow.rollback" not in log.entries
-        assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_DONE]
-        assert log.entries.index("event.EXEC_DONE") < log.entries.index(
-            "broker.send(job-E) uow=False"
-        )
-
-
-# ---------------------------------------------------------------------------
-# F07 — the terminal event reflects the transaction outcome
-# ---------------------------------------------------------------------------
-
-
-class TestF07TerminalEvent:
-    async def test_commit_failure_emits_exec_error_and_rolls_back_once(self) -> None:
-        log = Log()
-        metrics = Metrics(log)
-        factory = _StubUoWFactory(log, commit_raises=RuntimeError("commit failed"))
-        executor = _executor(factory, metrics)
-
-        with pytest.raises(RuntimeError, match="commit failed"):
-            await executor.execute(Ok(), params={"value": "x"})
-
-        assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
-        error = metrics.only(EventKind.EXEC_ERROR)
-        assert error.error_kind == "commit"
-        assert error.pipeline_ms is not None
-        assert error.commit_ms is not None
-        assert error.duration_ms is not None
-        assert log.entries.count("uow.rollback") == 1
-        assert log.entries.index("uow.closed") < log.entries.index("event.EXEC_ERROR")
-
-    async def test_begin_failure_emits_exec_start_then_exec_error(self) -> None:
-        log = Log()
-        metrics = Metrics(log)
-        factory = _StubUoWFactory(log, begin_raises=ConnectionError("no database"))
-        executor = _executor(factory, metrics)
-
-        with pytest.raises(ConnectionError, match="no database"):
-            await executor.execute(Ok(), params={"value": "x"})
-
-        assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
-        assert metrics.only(EventKind.EXEC_ERROR).error_kind == "begin"
-        assert log.entries == ["event.EXEC_START", "uow.begin", "event.EXEC_ERROR"]
-        assert context_is_clean()
-
-    async def test_business_failure_emits_exec_error_after_the_rollback(self) -> None:
-        log = Log()
-        metrics = Metrics(log)
-        executor = _executor(_StubUoWFactory(log), metrics)
-
-        with pytest.raises(RuntimeError, match="boom"):
-            await executor.execute(Boom(), params={"value": "x"})
-
-        error = metrics.only(EventKind.EXEC_ERROR)
-        assert error.error_kind == "business"
-        assert error.commit_ms is None
-        assert log.entries == [
-            "event.EXEC_START",
-            "uow.begin",
-            "uow.rollback",
-            "uow.closed",
-            "event.EXEC_ERROR",
-        ]
-
-    async def test_cancellation_emits_exec_error_with_error_kind_cancelled(self) -> None:
-        log = Log()
-        metrics = Metrics(log)
-        executor = _executor(_StubUoWFactory(log), metrics)
-
-        await cancel_mid_flight(executor)
-
-        assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
-        assert metrics.only(EventKind.EXEC_ERROR).error_kind == "cancelled"
-        assert "uow.rollback" in log.entries
-        assert context_is_clean()
-
-    async def test_exec_done_is_emitted_after_the_close_with_timings(self) -> None:
-        log = Log()
-        metrics = Metrics(log)
-        executor = _executor(_StubUoWFactory(log), metrics)
-
-        await executor.execute(Ok(), params={"value": "x"})
-
-        assert log.entries == [
-            "event.EXEC_START",
-            "uow.begin",
-            "uow.commit",
-            "uow.closed",
-            "event.EXEC_DONE",
-        ]
-        done = metrics.only(EventKind.EXEC_DONE)
-        assert done.pipeline_ms is not None
-        assert done.commit_ms is not None
-        assert done.duration_ms is not None
-        assert done.duration_ms >= done.pipeline_ms
-
-    async def test_without_unit_of_work_exec_done_carries_no_commit_time(self) -> None:
-        metrics = Metrics()
-
-        await _executor(metrics=metrics).execute(Ok(), params={"value": "x"})
-
-        done = metrics.only(EventKind.EXEC_DONE)
-        assert done.pipeline_ms is not None
-        assert done.commit_ms is None
-
-
-# ---------------------------------------------------------------------------
-# Nested executions — channel ownership follows unit-of-work ownership
-# ---------------------------------------------------------------------------
-
-
-class TestNestedExecutions:
-    async def test_inner_joins_the_outer_unit_of_work_and_channel(self) -> None:
-        log = Log()
-        broker = Broker(log)
-        factory = _StubUoWFactory(log)
-        executor = _executor(factory)
-
-        class _Outer(UseCase[Any, str]):
-            async def execute(self, value: str) -> str:
-                inner = await executor.execute(Dispatching(broker), params={"value": "inner"})
-                broker.dispatch("outer")
-                return inner
-
-        await executor.execute(_Outer(), params={"value": "x"})
-
-        assert len(factory.created) == 1
-        assert log.entries == [
-            "uow.begin",
-            "dispatch.queued(inner)",
-            "dispatch.queued(outer)",
-            "uow.commit",
-            "uow.closed",
-            "broker.send(inner) uow=False",
-            "broker.send(outer) uow=False",
-        ]
-
-    async def test_inner_with_its_own_unit_of_work_drains_right_after_its_close(self) -> None:
-        log = Log()
-        broker = Broker(log)
-        factory = _StubUoWFactory(log)
-        executor = _executor(factory)
-
-        class _ReadOnlyOuter(UseCase[Any, str]):
-            read_only = True
-
-            async def execute(self, value: str) -> str:
-                await executor.execute(Dispatching(broker), params={"value": "inner"})
-                log("outer.after_inner")
-                raise RuntimeError("outer fails after the inner committed")
-
-        with pytest.raises(RuntimeError, match="outer fails"):
-            await executor.execute(_ReadOnlyOuter(), params={"value": "x"})
-
-        assert broker.sent == ["inner"]
-        assert log.entries == [
-            "uow.begin",
-            "dispatch.queued(inner)",
-            "uow.commit",
-            "uow.closed",
-            "broker.send(inner) uow=False",
-            "outer.after_inner",
-        ]
-
-    async def test_an_action_that_executes_a_use_case_opens_its_own_lifecycle(self) -> None:
-        log = Log()
-        factory = _StubUoWFactory(log)
-        executor = _executor(factory)
-
-        class _FromAction(UseCase[Any, str]):
-            async def execute(self, value: str) -> str:
-                async def run_again() -> None:
-                    await executor.execute(Ok(), params={"value": "again"})
-
-                add_pending_dispatch(run_again)
-                return value
-
-        await executor.execute(_FromAction(), params={"value": "x"})
-
-        assert len(factory.created) == 2
-        assert log.entries == ["uow.begin", "uow.commit", "uow.closed"] * 2
+#
+# They ran here over a stub unit of work.  ``tests/unit/core/engine/contract``
+# runs the same scenarios against the real SQLAlchemy, Mongo (transactional
+# and no-op) and DynamoDB adapters, so the stub versions were dropped:
+#
+# F02  dispatch under a unit of work      → contract/test_dispatch.py::
+#        test_dispatch_is_sent_after_the_close_and_after_exec_done
+#      read-only / no unit of work        → contract/test_dispatch.py::
+#        test_read_only_execution_opens_no_unit_of_work_and_sends_at_the_end
+#        and test_executor_uow.py::test_dispatch_runs_at_the_end_without_uow_factory
+#      failed execution discards          → contract/test_dispatch.py::
+#        test_failed_execution_discards_and_the_next_one_sends_nothing_stale
+#      broker failure after a commit      → contract/test_dispatch.py::
+#        test_broker_failure_is_a_post_commit_error_after_a_committed_transaction
+#
+# F07  commit failure                     → contract/test_lifecycle.py::
+#        TestTerminalEventReflectsTheTransaction::
+#        test_commit_failure_is_exec_error_commit_and_the_adapter_closes_once
+#      begin failure                      → contract/test_lifecycle.py::
+#        TestTerminalEventReflectsTheTransaction::
+#        test_begin_failure_emits_exec_start_then_exec_error_begin
+#      business failure                   → contract/test_lifecycle.py::
+#        TestContextManagerProtocolOnly::
+#        test_failure_exits_once_with_the_error_and_unbinds_everything
+#      cancellation                       → contract/test_lifecycle.py::
+#        TestContextManagerProtocolOnly::
+#        test_cancellation_exits_once_and_the_task_sees_a_clean_context
+#      EXEC_DONE after the close, timings → contract/test_lifecycle.py::
+#        TestContextManagerProtocolOnly::
+#        test_success_enters_and_exits_once_through_the_protocol
+#      no unit of work → no commit_ms     → contract/test_dispatch.py::
+#        test_read_only_execution_opens_no_unit_of_work_and_sends_at_the_end
+#
+# Nesting  inner joins the outer channel  → contract/test_nesting.py::
+#        test_inner_joins_the_outer_unit_of_work_and_channel_one_drain
+#      inner owning its unit of work      → contract/test_nesting.py::
+#        test_inner_with_its_own_unit_of_work_drains_after_its_close_despite_outer_failure
+#      execution from a post-commit action → contract/test_nesting.py::
+#        test_an_execution_started_from_a_post_commit_action_opens_its_own_lifecycle

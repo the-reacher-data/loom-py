@@ -52,7 +52,8 @@ class HttpErrorMapper:
     - :class:`~loom.core.errors.NotFound` → ``entity``, ``id``
     - :class:`~loom.core.errors.RuleViolations` → ``violations``
     - :class:`~loom.core.engine.post_commit.PostCommitError` → ``committed``
-      (``500``: the transaction committed, a retry would repeat it)
+      (``500``; ``true`` when a unit of work committed, so a retry would
+      repeat the write, ``false`` when the execution held none)
 
     Unknown error codes default to ``500 Internal Server Error``.
 

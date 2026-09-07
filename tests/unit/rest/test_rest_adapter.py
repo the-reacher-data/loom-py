@@ -144,6 +144,13 @@ class TestHttpErrorMapper:
         assert _detail(exc)["code"] == ErrorCode.POST_COMMIT_FAILURE
         assert _detail(exc)["committed"] is True
 
+    def test_a_post_commit_error_without_a_commit_is_marked_not_committed(self) -> None:
+        """A1: a read-only execution committed nothing, so the client may retry."""
+        error = PostCommitError(committed=False, failures=(ConnectionError("broker down"),))
+        exc = self._mapper().to_http(error)
+        assert exc.status_code == 500
+        assert _detail(exc)["committed"] is False
+
     def test_an_unsupported_format_maps_to_400(self) -> None:
         """A declaration mistake in an ETL exposed over REST is a caller error."""
         exc = self._mapper().to_http(UnsupportedFormatError(Format.XLSX, (Format.CSV,)))

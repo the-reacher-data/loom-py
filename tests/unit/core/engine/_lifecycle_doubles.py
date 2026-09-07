@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -13,6 +13,7 @@ from loom.core.engine.post_commit import active_channel
 from loom.core.job.context import add_pending_dispatch
 from loom.core.repository.mongo.uow import active_session
 from loom.core.repository.sqlalchemy.transactional import _mutations, get_active_session
+from loom.core.uow.abc import UnitOfWork
 from loom.core.uow.context import get_active_uow
 from loom.core.use_case.use_case import UseCase
 
@@ -68,6 +69,84 @@ class Broker:
 
         add_pending_dispatch(send)
         self._log(f"dispatch.queued({job_name})")
+
+
+class StubUnitOfWork:
+    """Unit of work following the adapter contract: a commit failure rolls back.
+
+    Stands in for a real adapter where the scenario is about the executor,
+    not about driver behaviour; the contract suite covers the adapters.
+
+    Args:
+        log: Shared log every step is appended to.
+        commit_raises: Exception ``commit`` raises, if any.
+        begin_raises: Exception ``begin`` raises, if any.
+    """
+
+    transactional: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        log: Log,
+        *,
+        commit_raises: Exception | None = None,
+        begin_raises: Exception | None = None,
+    ) -> None:
+        self._log = log
+        self._commit_raises = commit_raises
+        self._begin_raises = begin_raises
+
+    async def begin(self) -> None:
+        self._log("uow.begin")
+        if self._begin_raises is not None:
+            raise self._begin_raises
+
+    async def commit(self) -> None:
+        self._log("uow.commit")
+        if self._commit_raises is not None:
+            raise self._commit_raises
+
+    async def rollback(self) -> None:
+        self._log("uow.rollback")
+
+    async def __aenter__(self) -> StubUnitOfWork:
+        await self.begin()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        try:
+            if exc_type is None:
+                await self._commit_or_rollback()
+            else:
+                await self.rollback()
+        finally:
+            self._log("uow.closed")
+
+    async def _commit_or_rollback(self) -> None:
+        try:
+            await self.commit()
+        except Exception:
+            await self.rollback()
+            raise
+
+
+class StubUnitOfWorkFactory:
+    """Factory handing out :class:`StubUnitOfWork` instances and recording them.
+
+    Args:
+        log: Shared log passed to every created unit of work.
+        options: Keyword arguments forwarded to :class:`StubUnitOfWork`.
+    """
+
+    def __init__(self, log: Log, **options: Any) -> None:
+        self._log = log
+        self._options = options
+        self.created: list[StubUnitOfWork] = []
+
+    def create(self) -> UnitOfWork:
+        uow = StubUnitOfWork(self._log, **self._options)
+        self.created.append(uow)
+        return uow
 
 
 class Ok(UseCase[Any, str]):

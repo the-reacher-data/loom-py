@@ -5,6 +5,10 @@ The public names are kept for existing callers; the queue itself is the
 executor.  When no channel is bound, a per-context fallback channel holds
 the dispatches so :func:`flush_pending_dispatches` and
 :func:`clear_pending_dispatches` keep working for hand-driven callers.
+
+Inside an execution the executor owns the drain: :func:`flush_pending_dispatches`
+refuses to run then, and :func:`clear_pending_dispatches` discards the bound
+channel rather than the fallback one.
 """
 
 from __future__ import annotations
@@ -46,26 +50,36 @@ def add_pending_dispatch(fn: Callable[[], Any]) -> None:
 
 
 async def flush_pending_dispatches() -> None:
-    """Execute all pending dispatches of the fallback channel and clear it.
+    """Execute all pending dispatches queued outside an execution and clear them.
 
     Sync callables (Celery ``send_task``) are called directly.
-    Async callables (inline runner) are awaited.
+    Async callables (inline runner) are awaited.  Nothing committed here:
+    the failures are reported as ``committed=False``.
 
     Raises:
+        RuntimeError: If called inside an execution.  The executor owns the
+            drain of its post-commit channel and runs it once the unit of
+            work has closed.
         loom.core.engine.post_commit.PostCommitError: If any dispatch raised;
             the remaining dispatches still run.
     """
+    if active_channel() is not None:
+        raise RuntimeError(
+            "flush_pending_dispatches() cannot run inside an execution: "
+            "RuntimeExecutor owns the post-commit channel and drains it "
+            "after the unit of work closes."
+        )
     channel = _fallback.get()
     if channel is None:
         return
-    await channel.drain()
+    await channel.drain(committed=False)
 
 
 def clear_pending_dispatches() -> None:
-    """Discard all pending dispatches of the fallback channel without executing them.
+    """Discard the pending dispatches of the active channel, or of the fallback one.
 
     Jobs registered during a failed transaction must not be sent to the broker.
     """
-    channel = _fallback.get()
+    channel = active_channel() or _fallback.get()
     if channel is not None:
         channel.discard()

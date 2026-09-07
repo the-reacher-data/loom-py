@@ -15,8 +15,9 @@ from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import ExecutionPlan, ExistsStep, LoadStep
 from loom.core.engine.post_commit import (
     PostCommitChannel,
+    PostCommitError,
+    active_channel,
     bind_channel,
-    channel_bound,
     reset_channel,
 )
 from loom.core.errors import NotFound, Unauthenticated
@@ -45,6 +46,7 @@ _ERROR_KIND_BEGIN = "begin"
 _ERROR_KIND_BUSINESS = "business"
 _ERROR_KIND_COMMIT = "commit"
 _ERROR_KIND_CANCELLED = "cancelled"
+_ERROR_KIND_POST_COMMIT = "post_commit"
 
 
 class ParameterBindingError(ValueError):
@@ -88,6 +90,10 @@ class _ExecutionState:
     def error_kind(self, error: BaseException) -> str:
         if isinstance(error, asyncio.CancelledError):
             return _ERROR_KIND_CANCELLED
+        if isinstance(error, PostCommitError):
+            # Raised by the drain of an inner execution that owned its own
+            # unit of work: the failure is not this execution's business logic.
+            return _ERROR_KIND_POST_COMMIT
         return self.phase
 
 
@@ -338,7 +344,7 @@ class RuntimeExecutor:
     ) -> Any:
         """Run one execution: start event, unit of work, one terminal event, drain."""
         state = self._begin_execution(plan.use_case_type.__qualname__)
-        channel = PostCommitChannel() if owned_factory or not channel_bound() else None
+        channel = PostCommitChannel() if owned_factory or active_channel() is None else None
         channel_token = bind_channel(channel) if channel is not None else None
         try:
             if owned_factory is None:
@@ -357,7 +363,7 @@ class RuntimeExecutor:
             self._unbind(channel_token)
         self._handle_success(state)
         if channel is not None:
-            await channel.drain()
+            await channel.drain(committed=owned_factory is not None)
         return result
 
     async def _run_in_unit_of_work(

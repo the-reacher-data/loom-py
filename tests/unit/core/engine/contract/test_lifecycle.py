@@ -39,6 +39,11 @@ class TestContextManagerProtocolOnly:
         assert case.probe.sessions_opened() == case.probe.sessions_closed()
         assert case.probe.sessions_opened() == case.sessions_expected
         assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_DONE]
+        done = metrics.only(EventKind.EXEC_DONE)
+        assert done.pipeline_ms is not None
+        assert done.commit_ms is not None
+        assert done.duration_ms is not None
+        assert done.duration_ms >= done.pipeline_ms
         assert context_is_clean()
 
     async def test_failure_exits_once_with_the_error_and_unbinds_everything(
