@@ -45,12 +45,15 @@ from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
+from loom.core.observability.event import EventKind, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.rest.auth.abc import RequestCredentials
 from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
     CountingEngineProvider,
+    RecordingObserver,
     ScriptedEngine,
     StubDepsFactory,
     error_script,
@@ -148,6 +151,7 @@ async def _serving(
     declared_exclusions: Sequence[str] = (),
     max_prompt_bytes: int = 65536,
     with_http_endpoints: bool = False,
+    observability_runtime: ObservabilityRuntime | None = None,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
     """Serve an entered runtime behind the real authentication middleware.
 
@@ -192,6 +196,7 @@ async def _serving(
             plans=plans,
             authenticator=authenticator,  # type: ignore[arg-type]
             exclude_paths=tuple(declared_exclusions),
+            observability_runtime=observability_runtime,
             prefix=_PREFIX,
         )
         transport = httpx.ASGITransport(app=app)
@@ -570,6 +575,47 @@ class TestStreaming:
             "artifact-update",
             "status-update",
         ]
+
+
+class TestUsageOnTheAgentSpan:
+    """A2A publishes what a run spent, exactly as the HTTP surface does.
+
+    Both surfaces close a ``Scope.AGENT`` span named ``agent_run``, so an
+    operator querying the cost across agent spans must not get an answer that
+    depends on which surface the caller happened to use.
+    """
+
+    @staticmethod
+    async def _closing_meta(
+        *, deps: StubDepsFactory, container: LoomContainer
+    ) -> Mapping[str, object]:
+        recorder = RecordingObserver()
+        async with _serving(
+            deps=deps,
+            container=container,
+            observability_runtime=ObservabilityRuntime([recorder]),
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}", json=_rpc("message/send"), headers=_auth()
+            )
+            assert response.status_code == 200
+        closing = next(
+            event
+            for event in recorder.events
+            if event.scope is Scope.AGENT and event.kind is not EventKind.START
+        )
+        return closing.meta
+
+    async def test_publishes_the_run_cost_when_it_sends_a_message(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """``message/send`` closes its span with the counters of the run."""
+        meta = await self._closing_meta(deps=deps, container=container)
+
+        assert meta["gen_ai.usage.requests"] == DEFAULT_USAGE.requests
+        assert meta["gen_ai.usage.tool_calls"] == DEFAULT_USAGE.tool_calls
+        assert meta["gen_ai.usage.cost"] == pytest.approx(0.0021)
+        assert meta["gen_ai.usage.cost_known"] is True
 
 
 class TestRedaccionDeFallos:

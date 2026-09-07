@@ -15,7 +15,8 @@ import pytest
 from msgspec import structs
 from pydantic_ai.usage import RequestUsage
 
-from loom.ai.abc import AgentEngine, AgentUsage, FinalEvent
+from loom.ai.abc import AgentEngine, AgentUsage, ErrorEvent, FinalEvent
+from loom.ai.errors import AgentRunError
 from loom.core.identity import Identity
 from tests.helpers.pydantic_ai_engine import (
     STRICT_SCHEMA,
@@ -31,6 +32,10 @@ _ANSWER = {"answer": "42"}
 
 _FUTURE_COUNTER = "counter_added_by_a_newer_release"
 """A counter no release of loom knows about, set the way a provider sets one."""
+
+# ``tool_calls`` is a run-level counter the engine increments itself, so no
+# per-request script can set it: it is asserted against a run that really calls
+# a tool, in ``tests/integration/ai/test_capabilities.py``.
 
 
 def _reported_usage(*, cost: Decimal | None = Decimal("0.0417")) -> RequestUsage:
@@ -55,6 +60,15 @@ def engine() -> AgentEngine:
     """The real adapter over a model reporting every counter it can."""
     return build_engine(
         make_plan(schema=STRICT_SCHEMA), ScriptedUsageModel(encode(_ANSWER), _reported_usage())
+    )
+
+
+@pytest.fixture
+def failing_engine() -> AgentEngine:
+    """The real adapter over a model that spends and then answers off-schema."""
+    return build_engine(
+        make_plan(schema=STRICT_SCHEMA),
+        ScriptedUsageModel(encode({"unexpected": "field"}), _reported_usage()),
     )
 
 
@@ -148,3 +162,35 @@ class TestStreamingParity:
     async def test_final_event_carries_the_cost(self, engine: AgentEngine) -> None:
         """A streamed run is compared on cost like any other."""
         assert (await _final_usage(engine)).cost == Decimal("0.0417")
+
+
+class TestFailedRun:
+    """A run that spends and then fails still reports what it burned.
+
+    Otherwise a model that fails often ranks better on cost than one that
+    answers, which inverts the comparison this accounting exists to serve.
+    """
+
+    async def test_the_error_carries_what_the_run_spent(self, failing_engine: AgentEngine) -> None:
+        """The coded failure carries the partial accounting of the failed run."""
+        with pytest.raises(AgentRunError) as failure:
+            await failing_engine.run(_PROMPT, identity=_IDENTITY)
+
+        usage = failure.value.usage
+        assert usage is not None
+        assert usage.input_tokens >= 1840
+        assert usage.requests >= 1
+        assert usage.cost is not None and usage.cost >= Decimal("0.0417")
+
+    async def test_the_terminal_error_event_carries_it_too(
+        self, failing_engine: AgentEngine
+    ) -> None:
+        """A stream reports the spend of a failed run on its terminal event."""
+        async with failing_engine.run_stream(_PROMPT, identity=_IDENTITY) as stream:
+            events = [event async for event in stream]
+
+        terminal = events[-1]
+        assert isinstance(terminal, ErrorEvent), f"expected a terminal error: {terminal!r}"
+        assert terminal.usage is not None
+        assert terminal.usage.requests >= 1
+        assert terminal.usage.cost is not None

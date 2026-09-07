@@ -170,6 +170,12 @@ class _ScriptedUsageStream(StreamedResponse):
 class ScriptedUsageModel(Model):
     """A model answering the same payload and the same usage in both run modes.
 
+    The pricing path is deliberately not exercised: this model reports a cost
+    where a real provider has one computed by genai-prices, so a test built on
+    it proves that a reported cost is propagated, never that a given model is
+    priced correctly. ``tool_calls`` cannot be scripted here at all — it is a
+    run-level counter the engine increments itself.
+
     Args:
         payload: JSON arguments of the output-tool call, as bytes on the wire.
         usage: Accounting reported for the single request of the run.

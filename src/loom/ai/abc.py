@@ -29,9 +29,9 @@ class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
     """Resource accounting of one agent run.
 
     Nothing the engine reported is dropped. The counters any engine would
-    plausibly report are named fields; everything else it returned — the audio
-    counters, a provider's own extras, a counter a future engine release adds
-    — rides verbatim in ``details``, so a new counter reaches the caller
+    plausibly report are named fields; every other field it returned — the
+    audio counters, a provider's own extras, a field a future engine release
+    adds — rides verbatim in ``details``, so a new counter reaches the caller
     without a change here. The engine's own usage type never crosses this
     boundary: a second engine fills this struct.
 
@@ -51,8 +51,11 @@ class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
         cost: Run cost in the engine's currency, or ``None`` when the engine
             could not price the model. Absent rather than zero: a zero would
             silently win a cost comparison.
-        details: Every other counter the engine reported, under the engine's
-            own names.
+        details: Every field the engine reported that has no named field
+            here, under the engine's own names. Not disjoint from the named
+            counters: a provider that reports its own ``cached_tokens``
+            alongside the normalised ``cache_read_tokens`` has both, so
+            summing ``details`` double-counts.
     """
 
     input_tokens: int
@@ -63,7 +66,7 @@ class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
     cache_write_tokens: int = 0
     tool_calls: int = 0
     cost: Decimal | None = None
-    details: Mapping[str, object] = {}
+    details: Mapping[str, int | float] = {}
 
     @property
     def total_tokens(self) -> int:
@@ -149,11 +152,19 @@ class ErrorEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="error", tag_f
         message: Human-readable description.
         interaction_id: Identifier of the admitted run this failure belongs
             to; ``None`` before admission.
+        usage: What the failed run had already spent, when the engine knew it.
+            A run that made three model round trips and then failed its output
+            schema still cost money, and a model that fails more must not rank
+            better on cost for it. ``None`` when nothing was spent or nothing
+            was measurable — a refusal before admission, a run a declared
+            limit killed from outside the engine. Not on the wire: the stream
+            contract puts ``usage`` on ``final`` only.
     """
 
     code: AgentRunErrorCode
     message: str
     interaction_id: str | None = None
+    usage: AgentUsage | None = None
 
 
 class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_field="type"):

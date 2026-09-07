@@ -129,7 +129,24 @@ under the OpenTelemetry GenAI names:
 They land on the closing event, not the opening one: nothing is spent when a
 run starts. `gen_ai.usage.cost` is missing rather than zero for a model with no
 price entry — a Bedrock inference profile, say — because a zero would win a
-cost comparison the model never entered.
+cost comparison the model never entered. `gen_ai.usage.cost_known` is always
+present, so `SUM(cost) WHERE cost_known` is a complete total and
+`WHERE NOT cost_known` counts what the total is missing; summing the cost
+without checking it gives a lower bound that looks like a total.
+
+**Failed runs are in the number.** A run that made three model round trips and
+then failed its output schema, was refused by a capability, or lost its output
+hook still publishes what it burned: a model that fails often must not rank
+better on cost than one that answers. The same attributes ride the `ERROR`
+closing event.
+
+Two gaps, stated rather than hidden. A run killed by its own
+`run_timeout_ms`, `tool_timeout_ms` or `max_iterations` publishes **no** usage:
+the supervisor terminates the run from outside the engine, and the counters of
+the attempt it cancelled never leave it. And a caller that abandons a stream
+mid-run closes the span without a terminal event, so that run reports nothing
+either. Both cases are absences, never zeros — `gen_ai.usage.requests` is
+simply not there.
 
 Attributes are chosen so a trace can be shared without leaking a deployment:
 an MCP span carries the server **host**, never the full URL and never the

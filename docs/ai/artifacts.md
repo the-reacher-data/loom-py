@@ -356,12 +356,25 @@ verbatim into the hook's command and nowhere else; an out-of-range value is a
 ```
 
 `usage` is the whole accounting the engine reported, not a selection of it:
-the counters any engine would report are named fields, and everything else it
+the counters any engine would report are named fields, and every other field it
 returned — the audio counters, a provider's extras, a counter a newer engine
-release adds — rides under its own name in `details`. `cost` is `null`, never
-`0`, when the engine could not price the model: an unknown cost must not win a
-cost comparison. `cache_read_tokens` is already included in `input_tokens`, so
-a model with a warm prompt cache is compared on the split, not on the total.
+release adds — rides under its own name in `details`. `cache_read_tokens` is
+already included in `input_tokens`, so a model with a warm prompt cache is
+compared on the split, not on the total.
+
+Three properties to code against:
+
+- **`cost` is a decimal *string*, or `null` — never a JSON number.** A JSON
+  float would round money, so it travels as `"0.0413"`. `usage.cost * runs` is
+  `NaN` in JavaScript; parse it with a decimal type. `null` means the engine
+  could not price the model, and must not be read as free.
+- **`details` is not disjoint from the named counters.** Providers report their
+  own entry beside the normalised one — OpenAI's `cached_tokens` next to
+  `cache_read_tokens` — and loom does not decide which of the two is
+  redundant, so summing `details.*` double-counts.
+- **`usage` is open for extension.** A future engine release adds keys to it
+  without a major version of loom; decode it into a struct that tolerates
+  unknown fields.
 
 Over `/stream`, the last frame is:
 

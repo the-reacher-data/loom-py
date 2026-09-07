@@ -272,7 +272,7 @@ class LoomSpan:
 
         Example::
 
-            handle.annotate({"gen_ai.usage.input_tokens": 1840})
+            handle.annotate({"rows": 142})
         """
         if self._closed:
             return
@@ -342,7 +342,13 @@ class LoomSpan:
         if not self._closing:
             return
         attributes = event.otel_attributes()
-        self._span.set_attributes({key: attributes[key] for key in self._closing})
+        # Filtered from what the event produced rather than looked up key by
+        # key: the day ``otel_attributes`` drops a meta entry — a ``None``, an
+        # empty mapping — a lookup would raise inside ``_close``, before the
+        # span is ended, and the failure would escape into the caller.
+        self._span.set_attributes(
+            {key: value for key, value in attributes.items() if key in self._closing}
+        )
 
     def _close(self, event: LifecycleEvent, *, end_time_ns: int | None = None) -> None:
         if self._closed:

@@ -739,7 +739,8 @@ def _granted_native_tools(engine: AgentEngine) -> list[Any]:
     """Return the provider tools the built agent carries, in the agent's order."""
     from pydantic_ai.capabilities import NativeTool
 
-    agent = engine._agent  # noqa: SLF001 — the built agent is what this asserts about
+    # Pre-existing: the AI test tree is not under pyright (task A7).
+    agent = engine._agent  # noqa: SLF001 # pyright: ignore[reportAttributeAccessIssue]
     granted = getattr(agent.root_capability, "capabilities", ())
     return [capability for capability in granted if isinstance(capability, NativeTool)]
 
@@ -1269,6 +1270,49 @@ class TestForeignToolsetsCannotDictateTheirSummary:
         event = translate(FunctionToolResultEvent(part))
         assert isinstance(event, ToolResultEvent)
         assert event.summary == "ok"
+
+
+class TestToolCallsAreCounted:
+    """The run's tool-call counter is the model's round-trip story, measured.
+
+    A deployment comparing two models on "seven tool calls versus thirteen"
+    reads this counter; deriving it from provider logs is what this accounting
+    exists to replace.
+    """
+
+    async def test_the_run_reports_the_tool_calls_it_made(
+        self, app_container: LoomContainer, invoker: RecordingInvoker
+    ) -> None:
+        """Two granted operations invoked once each are two tool calls."""
+        model = ScriptedToolModel(
+            calls=((GRANTED_TOOLS[1], {"sku": "A-1"}), (GRANTED_TOOLS[1], {"sku": "A-2"}))
+        )
+        engine = build_engine(
+            capabilities=(usecase_capability(),),
+            model=model,
+            container=app_container,
+            deps=CapabilityDepsFactory(),
+        )
+
+        result = await engine.run("hello", identity=ANALYST)
+
+        assert len(invoker.calls) == 2
+        assert result.usage.tool_calls == 2
+
+    async def test_a_run_that_calls_nothing_reports_no_tool_calls(
+        self, app_container: LoomContainer
+    ) -> None:
+        """A pure-language answer spends no tool call, and says so."""
+        engine = build_engine(
+            capabilities=(usecase_capability(),),
+            model=ScriptedToolModel(),
+            container=app_container,
+            deps=CapabilityDepsFactory(),
+        )
+
+        result = await engine.run("hello", identity=ANALYST)
+
+        assert result.usage.tool_calls == 0
 
 
 class TestForeignToolsetsAreGuarded:

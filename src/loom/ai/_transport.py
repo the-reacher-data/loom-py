@@ -173,8 +173,11 @@ def usage_attributes(usage: AgentUsage) -> dict[str, object]:
     prefix where they do not — cost, requests and tool calls, which the
     conventions leave out and an operator comparing models needs most.
 
-    An unpriced model contributes no cost key at all: a zero would read as a
-    free run and win a cost comparison it never entered.
+    An unpriced model contributes no cost key at all — a zero would read as a
+    free run and win a cost comparison it never entered — but it always
+    contributes ``cost_known``, so a dashboard summing the cost can tell a
+    complete total from a lower bound instead of silently reporting one as the
+    other.
 
     Args:
         usage: Accounting of the run that is about to close its span.
@@ -190,12 +193,29 @@ def usage_attributes(usage: AgentUsage) -> dict[str, object]:
         f"{_USAGE_PREFIX}cache_creation.input_tokens": usage.cache_write_tokens,
         f"{_USAGE_PREFIX}requests": usage.requests,
         f"{_USAGE_PREFIX}tool_calls": usage.tool_calls,
+        f"{_USAGE_PREFIX}cost_known": usage.cost is not None,
     }
     if usage.cost is not None:
         attributes[f"{_USAGE_PREFIX}cost"] = float(usage.cost)
     for name, value in usage.details.items():
         attributes[f"{_USAGE_PREFIX}details.{name}"] = value
     return attributes
+
+
+def annotate_usage(span: LoomSpan, usage: AgentUsage | None) -> None:
+    """Publish *usage* on the closing attributes of *span*, when there is any.
+
+    A run that fails before the engine measured anything — a refusal, a limit
+    that killed it from outside the engine — has no usage to publish, and an
+    invented zero would be read as a free run.
+
+    Args:
+        span: Open span of the run.
+        usage: What the run spent, or ``None`` when nothing was measurable.
+    """
+    if usage is None:
+        return
+    span.annotate(usage_attributes(usage))
 
 
 @contextmanager
@@ -257,7 +277,12 @@ def failure_event(exc: BaseException) -> ErrorEvent:
         event = failure_event(AgentRunError(AgentRunErrorCode.RUN_TIMEOUT, "late"))
     """
     if isinstance(exc, AgentRunError):
-        return ErrorEvent(code=exc.code, message=str(exc), interaction_id=exc.interaction_id)
+        return ErrorEvent(
+            code=exc.code,
+            message=str(exc),
+            interaction_id=exc.interaction_id,
+            usage=exc.usage,
+        )
     return ErrorEvent(code=AgentRunErrorCode.PROVIDER_UNAVAILABLE, message=_UNEXPECTED_FAILURE)
 
 

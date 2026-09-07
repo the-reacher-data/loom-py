@@ -53,6 +53,7 @@ from tests.integration.ai.conftest import (
     CountingEngineProvider,
     RecordingDepsFactory,
     RecordingMcpSession,
+    RecordingObserver,
     ScriptedEngine,
     StubDepsFactory,
     StubMcpClient,
@@ -82,17 +83,6 @@ class StubAuthenticator:
         """Authenticate every caller as the same fixed subject."""
         del credentials
         return Identity(subject="stub-user", mechanism=self.name)
-
-
-class _RecordingObserver:
-    """Lifecycle observer keeping every event a span emitted, in order."""
-
-    def __init__(self) -> None:
-        self.events: list[LifecycleEvent] = []
-
-    def on_event(self, event: LifecycleEvent) -> None:
-        """Record one lifecycle event."""
-        self.events.append(event)
 
 
 class _IdentityMiddleware:
@@ -951,7 +941,7 @@ class TestTrazaDelStream:
         identity: Identity,
     ) -> list[LifecycleEvent]:
         """Drive one full ``/stream`` request and return the events it emitted."""
-        recorder = _RecordingObserver()
+        recorder = RecordingObserver()
         engine = ScriptedEngine(script=TestTrazaDelStream._script())
         async with _serving(
             deps=deps,
@@ -1037,7 +1027,7 @@ class TestTrazaDelStream:
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A disconnect terminates the span: an abandoned stream leaks no open span."""
-        recorder = _RecordingObserver()
+        recorder = RecordingObserver()
         # The second delta never arrives, so the run is still in flight — and
         # its span still open — when the client disconnects after the first.
         engine = ScriptedEngine(
@@ -1097,7 +1087,7 @@ class TestUsageOnTheAgentSpan:
         engine: ScriptedEngine | None = None,
     ) -> list[LifecycleEvent]:
         """Drive one successful request and return the agent-scope events."""
-        recorder = _RecordingObserver()
+        recorder = RecordingObserver()
         async with _serving(
             deps=deps,
             container=container,
@@ -1129,6 +1119,7 @@ class TestUsageOnTheAgentSpan:
             "gen_ai.usage.requests": DEFAULT_USAGE.requests,
             "gen_ai.usage.tool_calls": DEFAULT_USAGE.tool_calls,
             "gen_ai.usage.cost": pytest.approx(0.0021),
+            "gen_ai.usage.cost_known": True,
             "gen_ai.usage.details.reasoning_tokens": 5,
         }
 
@@ -1156,7 +1147,43 @@ class TestUsageOnTheAgentSpan:
             "run", deps=deps, container=container, identity=identity, engine=engine
         )
 
-        assert "gen_ai.usage.cost" not in self._closing_usage(events)
+        usage = self._closing_usage(events)
+        assert "gen_ai.usage.cost" not in usage
+        # Published as unknown rather than omitted in silence: a dashboard
+        # summing the cost must be able to tell a total from a lower bound.
+        assert usage["gen_ai.usage.cost_known"] is False
+
+    async def test_publishes_what_a_failed_run_burned(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """A run that spends and then fails reports the spend: it was not free."""
+        recorder = RecordingObserver()
+        engine = ScriptedEngine(
+            script=(
+                ErrorEvent(
+                    code=AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION,
+                    message="the model answered outside the declared schema",
+                    usage=DEFAULT_USAGE,
+                ),
+            )
+        )
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            engines={_AGENT: engine},
+            observability_runtime=ObservabilityRuntime([recorder]),
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+            assert response.status_code == 422
+
+        closing = next(
+            event
+            for event in recorder.events
+            if event.scope is Scope.AGENT and event.kind is not EventKind.START
+        )
+        assert closing.meta["gen_ai.usage.requests"] == DEFAULT_USAGE.requests
+        assert closing.meta["gen_ai.usage.cost"] == pytest.approx(0.0021)
 
     async def test_publishes_the_same_counters_when_it_streams(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity

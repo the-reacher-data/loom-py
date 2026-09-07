@@ -275,12 +275,20 @@ async def _terminal(
     try:
         result = await execute_hook(hook, final.output, run, deps, container)
     except AgentRunError as exc:
-        return ErrorEvent(code=exc.code, message=str(exc), interaction_id=run.interaction_id)
+        # The model run itself succeeded, so its usage is known and travels
+        # with the failure: a hook that fails does not make the run free.
+        return ErrorEvent(
+            code=exc.code,
+            message=str(exc),
+            interaction_id=run.interaction_id,
+            usage=final.usage,
+        )
     except _DENIALS:
         return ErrorEvent(
             code=AgentRunErrorCode.UNAUTHORIZED,
             message=_DENIED_MESSAGE,
             interaction_id=run.interaction_id,
+            usage=final.usage,
         )
     except Exception:  # recovery: the run fails closed with a coded, detail-free error
         _logger.exception(
@@ -290,5 +298,6 @@ async def _terminal(
             code=AgentRunErrorCode.HOOK_FAILED,
             message=HOOK_FAILED_MESSAGE,
             interaction_id=run.interaction_id,
+            usage=final.usage,
         )
     return msgspec.structs.replace(final, interaction_id=run.interaction_id, hook_result=result)
