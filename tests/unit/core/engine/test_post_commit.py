@@ -156,6 +156,48 @@ def test_bind_and_reset_restore_previous_channel() -> None:
     assert active_channel() is None
 
 
+class TestEnqueuePriority:
+    """F2: a cache invalidation must precede the job dispatches it might invalidate."""
+
+    async def test_a_priority_action_runs_before_a_plain_one_queued_earlier(self) -> None:
+        """The F2 regression: dispatch queued during the pipeline, write follows it.
+
+        A use case body dispatches a job, then writes: the dispatch is
+        queued first, the bump second — exactly the interleaving F2 named.
+        The bump still runs first.
+        """
+        calls: list[str] = []
+        channel = PostCommitChannel()
+        channel.enqueue(lambda: calls.append("dispatch"))
+        channel.enqueue_priority(lambda: calls.append("bump"))
+
+        await channel.drain(committed=True)
+
+        assert calls == ["bump", "dispatch"]
+
+    async def test_two_priority_actions_keep_their_relative_order(self) -> None:
+        calls: list[str] = []
+        channel = PostCommitChannel()
+        channel.enqueue_priority(lambda: calls.append("first_bump"))
+        channel.enqueue_priority(lambda: calls.append("second_bump"))
+        channel.enqueue(lambda: calls.append("dispatch"))
+
+        await channel.drain(committed=True)
+
+        assert calls == ["first_bump", "second_bump", "dispatch"]
+
+    async def test_discard_drops_priority_actions_too(self) -> None:
+        calls: list[str] = []
+        channel = PostCommitChannel()
+        channel.enqueue_priority(lambda: calls.append("bump"))
+        channel.enqueue(lambda: calls.append("dispatch"))
+
+        channel.discard()
+        await channel.drain(committed=True)
+
+        assert calls == []
+
+
 async def test_cancellation_propagates_and_keeps_the_rest_queued() -> None:
     calls: list[str] = []
     channel = PostCommitChannel()

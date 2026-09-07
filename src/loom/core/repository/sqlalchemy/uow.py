@@ -39,6 +39,7 @@ from loom.core.repository.sqlalchemy.transactional import (
     set_active_mutations,
     set_active_session,
 )
+from loom.core.transaction import close_atomic_transaction, open_atomic_transaction
 from loom.core.uow.abc import UnitOfWork
 
 _log = get_logger(__name__).bind(component="uow")
@@ -72,6 +73,7 @@ class SQLAlchemyUnitOfWork:
         self._session: AsyncSession | None = None
         self._session_token: contextvars.Token[Any] | None = None
         self._mutations_token: contextvars.Token[Any] | None = None
+        self._transaction_token: contextvars.Token[bool] | None = None
         self._session_cm: Any = None  # context manager from session_manager.session()
 
     async def begin(self) -> None:
@@ -104,6 +106,7 @@ class SQLAlchemyUnitOfWork:
         self._session = session
         self._session_token = set_active_session(session)
         _, self._mutations_token = set_active_mutations()
+        self._transaction_token = open_atomic_transaction()
 
     async def commit(self) -> None:
         """Flush and commit all pending changes to the database.
@@ -196,6 +199,11 @@ class SQLAlchemyUnitOfWork:
             await session_cm.__aexit__(None, None, None)
 
     def _reset_context(self) -> None:
+        # Closed first: see loom.core.transaction for why this is the token
+        # that must be the one to leak if a reset here raises.
+        if self._transaction_token is not None:
+            close_atomic_transaction(self._transaction_token)
+            self._transaction_token = None
         if self._session_token is not None:
             reset_active_session(self._session_token)
             self._session_token = None

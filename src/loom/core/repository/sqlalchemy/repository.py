@@ -95,8 +95,12 @@ class RepositorySQLAlchemy(  # type: ignore[misc]  # mypy/pyright can't resolve 
 
         Implements
         :class:`~loom.core.repository.abc.session_scope.SupportsCallerScopedSession`.
-        The capability is provisional and expected to be superseded by a
-        neutral transaction marker; do not build on it.
+        :func:`loom.core.transaction.in_atomic_transaction` is the neutral
+        marker this capability used to be a placeholder for, but it answers a
+        different question — whether *any* atomic transaction is open — not
+        whether *this session* is scoped to the caller, which is what governs
+        coalescing safely detaching a read into its own task.  Keep using this
+        method for that; it is not superseded.
 
         Returns:
             ``True`` when a caller-scoped session is bound to the context.

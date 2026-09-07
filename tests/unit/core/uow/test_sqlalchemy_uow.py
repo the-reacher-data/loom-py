@@ -10,6 +10,7 @@ import pytest
 
 from loom.core.repository.sqlalchemy.transactional import get_active_session
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWork, SQLAlchemyUnitOfWorkFactory
+from loom.core.transaction import in_atomic_transaction
 from loom.core.uow.abc import UnitOfWork, UnitOfWorkFactory
 
 from ..conftest import RecordingSessionManager, make_session
@@ -170,6 +171,37 @@ async def test_active_session_reset_after_exception() -> None:
             raise ValueError("test error")
 
     assert get_active_session() is None
+
+
+# ---------------------------------------------------------------------------
+# Context manager — the atomic-transaction signal (F03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_in_atomic_transaction_true_inside_the_unit_of_work() -> None:
+    session = make_session()
+    sm = make_session_manager(session)
+    uow = SQLAlchemyUnitOfWork(sm)
+
+    assert in_atomic_transaction() is False
+    async with uow:
+        assert in_atomic_transaction() is True
+
+    assert in_atomic_transaction() is False
+
+
+@pytest.mark.asyncio
+async def test_in_atomic_transaction_reset_after_exception() -> None:
+    session = make_session()
+    sm = make_session_manager(session)
+    uow = SQLAlchemyUnitOfWork(sm)
+
+    with pytest.raises(ValueError):
+        async with uow:
+            raise ValueError("test error")
+
+    assert in_atomic_transaction() is False
 
 
 # ---------------------------------------------------------------------------

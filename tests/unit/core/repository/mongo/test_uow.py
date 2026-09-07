@@ -12,6 +12,7 @@ from pymongo import AsyncMongoClient
 import loom.core.repository.mongo.uow as uow_module
 from loom.core.repository.mongo.repository import RepositoryMongo
 from loom.core.repository.mongo.uow import MongoUnitOfWorkFactory, active_session
+from loom.core.transaction import in_atomic_transaction
 
 from ._fake import FakeMongoClient
 from .conftest import Article
@@ -43,6 +44,15 @@ class TestWithoutTransactions:
 
         assert client.sessions == []
         assert client.committed == 0
+
+    async def test_leaves_the_atomic_transaction_signal_closed(self) -> None:
+        """F03: writes autocommit here, so the cache bump must stay inline."""
+        factory = MongoUnitOfWorkFactory.without_transactions()
+
+        async with factory.create():
+            assert in_atomic_transaction() is False
+
+        assert in_atomic_transaction() is False
 
     async def test_repository_writes_without_a_session(self) -> None:
         client = FakeMongoClient()
@@ -90,6 +100,16 @@ class TestTransactional:
         assert client.aborted == 0
         assert session.ended is True
         assert active_session() is None
+
+    async def test_opens_the_atomic_transaction_signal_and_closes_it_after(self) -> None:
+        """F03: a write here is not durable until commit, so the bump must defer."""
+        client = FakeMongoClient()
+
+        assert in_atomic_transaction() is False
+        async with _transactional(client).create():
+            assert in_atomic_transaction() is True
+
+        assert in_atomic_transaction() is False
 
     async def test_aborts_on_exception_and_ends_the_session(self) -> None:
         client = FakeMongoClient()
