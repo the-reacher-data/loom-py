@@ -3,10 +3,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlalchemy import DateTime  # noqa: F401
 
 from loom.core.repository.mutation import MutationEvent
 from loom.core.repository.sqlalchemy.transactional import record_mutation, transactional
+
+from .conftest import RepositoryWithTransactionalMethod, ServiceWithoutSessionManager
 
 
 class _ServiceWithTransaction:
@@ -59,3 +62,28 @@ class TestTransactionalDecorator:
 
         assert result == "inner"
         mock_session.commit.assert_awaited_once()
+
+
+class TestTransactionalOwnerContract:
+    """The decorator refuses owners it cannot honour, before any session opens."""
+
+    async def test_repository_owner_is_rejected(
+        self, repository_owner: RepositoryWithTransactionalMethod, mock_session: AsyncMock
+    ) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            await repository_owner.execute()
+
+        message = str(excinfo.value)
+        assert "@transactional" in message
+        assert "not repository methods" in message
+        mock_session.commit.assert_not_awaited()
+
+    async def test_owner_without_session_manager_is_rejected(
+        self, owner_without_session_manager: ServiceWithoutSessionManager
+    ) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            await owner_without_session_manager.execute()
+
+        message = str(excinfo.value)
+        assert "ServiceWithoutSessionManager" in message
+        assert "session_manager" in message
