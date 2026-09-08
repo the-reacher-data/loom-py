@@ -218,6 +218,9 @@ continues a thread by sending back what it received.
 | `taskId` that is not a string | `-32602`, naming the field. No run, no span. |
 | `referenceTaskIds`, `metadata` | Accepted and ignored. |
 
+`taskId` and `contextId` are checked before the message parts, so a message
+that continues a task answers `-32001` even without a text part.
+
 Two consequences follow from the id being the same value on both surfaces.
 For the same caller, the HTTP `conversation_id` and the A2A `contextId` of the
 same agent select the **same** loader conversation: a thread started over one

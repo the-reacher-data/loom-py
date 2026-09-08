@@ -98,9 +98,28 @@ def _text_of(part: object) -> str | None:
 
 
 def _message_of(params: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    """Return ``params.message``, or an empty mapping when it is not an object."""
+    """Return ``params.message``, or an empty mapping when it is not an object.
+
+    An empty mapping rather than a fault: every reader then refuses on the
+    field it reads (``-32602`` on the parts), so a missing message and a
+    malformed one answer with one refusal shape.
+    """
     message = params.get("message") if params is not None else None
     return message if isinstance(message, Mapping) else {}
+
+
+def _optional_string(message: Mapping[str, Any], key: str) -> str | None:
+    """Return ``message[key]`` when it is a non-empty string, ``None`` when absent or empty.
+
+    Raises:
+        RpcFault: ``-32602`` when the value is present and not a string.
+    """
+    value = message.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise RpcFault(invalid_params_error(f"'params.message.{key}' must be a string"))
+    return value
 
 
 def _extract_prompt(message: Mapping[str, Any], *, max_prompt_bytes: int) -> str:
@@ -127,28 +146,23 @@ def _refuse_task_id(message: Mapping[str, Any]) -> None:
     """Refuse a message that continues a task: loom retains none.
 
     Raises:
-        RpcFault: ``-32602`` when ``taskId`` is not a string; ``-32001`` when it
-            is a non-empty one.
+        RpcFault: ``-32001`` when ``taskId`` is a non-empty string.
     """
-    value = message.get("taskId")
-    if value is None or value == "":
-        return
-    if not isinstance(value, str):
-        raise RpcFault(invalid_params_error("'params.message.taskId' must be a string"))
-    raise RpcFault(task_not_found_error("no task is retained; omit 'params.message.taskId'"))
+    if _optional_string(message, "taskId") is not None:
+        raise RpcFault(task_not_found_error("no task is retained; omit 'params.message.taskId'"))
 
 
 def _thread_of(message: Mapping[str, Any]) -> str:
     """Return the message's ``contextId``, minting one when absent or empty.
 
     Raises:
-        RpcFault: ``-32602`` when ``contextId`` is not a string or exceeds
+        RpcFault: ``-32602`` when ``contextId`` exceeds
             ``CONVERSATION_ID_MAX_LENGTH``; the value itself is never echoed.
     """
-    value = message.get("contextId")
-    if value is None or value == "":
+    value = _optional_string(message, "contextId")
+    if value is None:
         return uuid4().hex
-    if not isinstance(value, str) or len(value) > CONVERSATION_ID_MAX_LENGTH:
+    if len(value) > CONVERSATION_ID_MAX_LENGTH:
         raise RpcFault(
             invalid_params_error(
                 "'params.message.contextId' must be a string of at most "
@@ -161,13 +175,15 @@ def _thread_of(message: Mapping[str, Any]) -> str:
 def _read_message(params: Mapping[str, Any] | None, *, max_prompt_bytes: int) -> tuple[str, str]:
     """Return the prompt and the thread id of one message, refusing what cannot run.
 
-    Runs before any span opens: a refused message admits no run and leaves no
-    trace of one.
+    What cannot run is refused before the prompt is read: a message that
+    continues a task, or names a malformed thread, answers on that ground even
+    when it carries no text part. Runs before any span opens: a refused
+    message admits no run and leaves no trace of one.
     """
     message = _message_of(params)
-    prompt = _extract_prompt(message, max_prompt_bytes=max_prompt_bytes)
     _refuse_task_id(message)
-    return prompt, _thread_of(message)
+    context_id = _thread_of(message)
+    return _extract_prompt(message, max_prompt_bytes=max_prompt_bytes), context_id
 
 
 def _task(task_id: str, context_id: str, status: Mapping[str, object]) -> Mapping[str, object]:

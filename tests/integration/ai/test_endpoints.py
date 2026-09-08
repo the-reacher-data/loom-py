@@ -18,7 +18,6 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +30,7 @@ from fastapi import FastAPI
 from loom.ai.a2a.card import card_path
 from loom.ai.a2a.server import bind_a2a_endpoints
 from loom.ai.abc import AgentEvent, DepsFactory, ErrorEvent, FinalEvent, TextDeltaEvent
-from loom.ai.compiler._plan import AgentPlan, CompiledConversation, CompiledOutputHook
+from loom.ai.compiler._plan import AgentPlan
 from loom.ai.config import A2AConfig, AgentEndpointConfig
 from loom.ai.errors import (
     CONVERSATION_LOAD_FAILED_MESSAGE,
@@ -43,19 +42,17 @@ from loom.ai.errors import (
 from loom.ai.fastapi.endpoints import bind_agent_endpoints
 from loom.ai.runtime import AgentRuntime
 from loom.ai.runtime._hooks import HOOK_FAILED_MESSAGE
-from loom.core.command import Command
 from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
 from loom.core.errors import Forbidden
 from loom.core.identity import ANONYMOUS, Identity, reset_identity, set_identity
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.use_case import Caller, Input, UseCase
-from loom.core.use_case.keys import use_case_key
 from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
+    ConversationRecorder,
     CountingEngineProvider,
     RecordingDepsFactory,
     RecordingMcpSession,
@@ -63,6 +60,7 @@ from tests.integration.ai.conftest import (
     ScriptedEngine,
     StubDepsFactory,
     StubMcpClient,
+    conversational_plan,
     make_ai_config,
     make_endpoint,
     make_mcp_capability,
@@ -77,7 +75,6 @@ _MCP_SERVER = "tools"
 _SRC = Path(__file__).resolve().parents[3] / "src"
 _INTERACTION_ID_LENGTH = 32
 """Length of the ``uuid4().hex`` the runtime mints per admitted run."""
-_HISTORY = b'[{"kind": "request"}, {"kind": "response"}]'
 _NEW_MESSAGES = b'[{"kind": "request", "conversation_id": "c-42"}]'
 _RESULT_KEYS = {"output", "usage", "interaction_id", "hook_result"}
 """The only keys a completed run publishes, on ``/run`` and on the ``final`` frame."""
@@ -228,168 +225,12 @@ async def _asgi_post(
     return int(next(m["status"] for m in sent if m["type"] == "http.response.start"))
 
 
-# ---------------------------------------------------------------------------
-# Incident-triage output hook, as the composition root would wire it
-# ---------------------------------------------------------------------------
-
-
-class TriageRecorded(msgspec.Struct, frozen=True):
-    """Result of recording one triage: what ``hook_result`` carries to the client."""
-
-    triage_id: str
-
-
-class TriageCommand(Command, frozen=True):
-    """What the triage recorder wants from a run: the output, the id, the thread."""
-
-    output: dict[str, Any]
-    interaction_id: str
-    conversation_id: str | None = None
-
-
-@dataclass
-class TriageRecorder:
-    """Shared observer of every hook execution, resolved from the container.
-
-    Attributes:
-        commands: One entry per execution, in order.
-        timeline: ``"hook"`` appended when a hook runs; tests append frames.
-        entered: Set when the first execution starts.
-        gate: When set, an execution waits on it before completing.
-        failure: Exception an execution raises instead of completing.
-    """
-
-    commands: list[TriageCommand] = field(default_factory=list)
-    timeline: list[str] = field(default_factory=list)
-    entered: asyncio.Event = field(default_factory=asyncio.Event)
-    gate: asyncio.Event | None = None
-    failure: Exception | None = None
-
-    async def record(self, command: TriageCommand) -> None:
-        """Record one execution, honouring the gate and raising the failure if any."""
-        self.commands.append(command)
-        self.timeline.append("hook")
-        self.entered.set()
-        if self.gate is not None:
-            await self.gate.wait()
-        if self.failure is not None:
-            raise self.failure
-
-
-@use_case_key("incidents.record_triage_over_http")
-class RecordTriage(UseCase[Any, TriageRecorded]):
-    """Records a triage report once the agent has produced it."""
-
-    def __init__(self, recorder: TriageRecorder) -> None:
-        self._recorder = recorder
-
-    async def execute(
-        self, cmd: TriageCommand = Input(), caller: Identity = Caller()
-    ) -> TriageRecorded:
-        del caller
-        await self._recorder.record(cmd)
-        return TriageRecorded(triage_id=cmd.interaction_id)
-
-
-def _hooked_plan() -> AgentPlan:
-    """Build the plan whose ``on_output`` names the triage recorder, as the compiler would."""
-    hook = CompiledOutputHook(
-        usecase="incidents.record_triage_over_http",
-        use_case=RecordTriage,
-        accepted=frozenset(info.name for info in msgspec.structs.fields(TriageCommand)),
-    )
-    return msgspec.structs.replace(make_plan(_AGENT), on_output=hook)
-
-
-@pytest.fixture
-def recorder(container: LoomContainer) -> TriageRecorder:
-    """Recorder the hook use case resolves from the container."""
-    recorder = TriageRecorder()
-    container.register_instance(TriageRecorder, recorder)
-    return recorder
-
-
-@pytest.fixture
-def hook_deps() -> RecordingDepsFactory:
-    """Deps factory serving the triage recorder through a real executor."""
-    return RecordingDepsFactory((RecordTriage,))
-
-
-# ---------------------------------------------------------------------------
-# Conversation loader, as the composition root would wire it
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class HistoryRecorder:
-    """Shared observer of every loader execution, resolved from the container.
-
-    Attributes:
-        callers: The caller of each execution, in order.
-        failure: Exception an execution raises instead of returning history.
-    """
-
-    callers: list[Identity] = field(default_factory=list)
-    failure: Exception | None = None
-
-    async def load(self, caller: Identity) -> bytes | None:
-        """Record one execution and return the scripted history."""
-        self.callers.append(caller)
-        if self.failure is not None:
-            raise self.failure
-        return _HISTORY
-
-
-class LoadCommand(Command, frozen=True, kw_only=True):
-    """What the loader wants from a run: the thread to continue."""
-
-    conversation_id: str
-
-
-@use_case_key("conversations.load_over_http")
-class LoadConversation(UseCase[Any, bytes | None]):
-    """Returns the prior history of a conversation."""
-
-    def __init__(self, recorder: HistoryRecorder) -> None:
-        self._recorder = recorder
-
-    async def execute(
-        self, cmd: LoadCommand = Input(), caller: Identity = Caller()
-    ) -> bytes | None:
-        del cmd
-        return await self._recorder.load(caller)
-
-
-def _conversational_plan() -> AgentPlan:
-    """Build the plan whose ``conversation`` names the loader, as the compiler would."""
-    loader = CompiledConversation(
-        usecase="conversations.load_over_http",
-        use_case=LoadConversation,
-        accepted=frozenset(info.name for info in msgspec.structs.fields(LoadCommand)),
-    )
-    return msgspec.structs.replace(make_plan(_AGENT), conversation=loader)
-
-
 def _script_with_messages() -> tuple[AgentEvent, ...]:
     """A success script whose ``final`` carries the run's new messages."""
     return (
         TextDeltaEvent(text="ok"),
         FinalEvent(output=DEFAULT_OUTPUT, usage=DEFAULT_USAGE, messages=_NEW_MESSAGES),
     )
-
-
-@pytest.fixture
-def history(container: LoomContainer) -> HistoryRecorder:
-    """Recorder the loader use case resolves from the container."""
-    recorder = HistoryRecorder()
-    container.register_instance(HistoryRecorder, recorder)
-    return recorder
-
-
-@pytest.fixture
-def loader_deps() -> RecordingDepsFactory:
-    """Deps factory serving the conversation loader through a real executor."""
-    return RecordingDepsFactory((LoadConversation,))
 
 
 async def _abandon_stream_when(app: FastAPI, path: str, signal: asyncio.Event) -> None:
@@ -669,36 +510,44 @@ class TestConversationId:
 
     async def test_entrega_el_conversation_id_al_command_cuando_se_indica(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """The value on the body reaches the command untouched."""
         async with _serving(
-            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            identity=identity,
         ) as (_app, client):
             response = await client.post(
                 f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "conversation_id": "c-42"}
             )
 
             assert response.status_code == 200
-            assert [command.conversation_id for command in recorder.commands] == ["c-42"]
+            assert [command.conversation_id for command in conversation_recorder.commands] == [
+                "c-42"
+            ]
 
     async def test_entrega_none_cuando_no_se_indica_conversation_id(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """A body without the field delivers ``None``."""
         async with _serving(
-            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            identity=identity,
         ) as (_app, client):
             await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
 
-            assert [command.conversation_id for command in recorder.commands] == [None]
+            assert [command.conversation_id for command in conversation_recorder.commands] == [None]
 
     @pytest.mark.parametrize("value", ["x" * 129, ""])
     async def test_responde_422_cuando_el_conversation_id_esta_fuera_de_limites(
@@ -720,41 +569,47 @@ class TestHookEnHttp:
 
     async def test_devuelve_interaction_id_y_hook_result_cuando_el_hook_completa(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """The ``/run`` body carries the id the hook saw and what the hook returned."""
         async with _serving(
-            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            identity=identity,
         ) as (_app, client):
             response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
 
             body = response.json()
             assert len(body["interaction_id"]) == _INTERACTION_ID_LENGTH
             assert body["hook_result"] == {"triage_id": body["interaction_id"]}
-            assert [command.interaction_id for command in recorder.commands] == [
+            assert [command.interaction_id for command in conversation_recorder.commands] == [
                 body["interaction_id"]
             ]
 
     async def test_emite_final_con_el_resultado_del_hook_cuando_se_hace_stream(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """The ``final`` frame carries the id and the hook's result, and the hook ran first."""
         async with _serving(
-            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            identity=identity,
         ) as (app, _client):
             chunks: list[bytes] = []
 
             def _on_body(chunk: bytes) -> None:
                 chunks.append(chunk)
                 if b"event: final" in chunk:
-                    recorder.timeline.append("final")
+                    conversation_recorder.timeline.append("final")
 
             status = await _asgi_post(
                 app,
@@ -765,22 +620,25 @@ class TestHookEnHttp:
             )
 
             assert status == 200
-            assert recorder.timeline == ["hook", "final"]
+            assert conversation_recorder.timeline == ["hook", "final"]
             final = _final_frame(b"".join(chunks).decode("utf-8"))
             assert len(final["interaction_id"]) == _INTERACTION_ID_LENGTH
             assert final["hook_result"] == {"triage_id": final["interaction_id"]}
 
     async def test_responde_500_hook_failed_con_interaction_id_cuando_el_hook_lanza(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """The body is the fixed text plus the id; the exception detail stays server-side."""
-        recorder.failure = ValueError("secret detail")
+        conversation_recorder.failure = ValueError("secret detail")
         async with _serving(
-            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            identity=identity,
         ) as (_app, client):
             response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
 
@@ -792,15 +650,18 @@ class TestHookEnHttp:
 
     async def test_emite_error_con_interaction_id_cuando_el_hook_lanza_en_stream(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """On ``/stream`` the same failure is one ``error`` frame carrying the id."""
-        recorder.failure = ValueError("secret detail")
+        conversation_recorder.failure = ValueError("secret detail")
         async with _serving(
-            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            identity=identity,
         ) as (_app, client):
             response = await client.post(f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p"})
 
@@ -812,51 +673,56 @@ class TestHookEnHttp:
 
     async def test_confirma_una_vez_y_libera_el_permiso_cuando_el_cliente_abandona_durante_el_hook(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A disconnect mid-hook neither cuts the record nor closes a running generator."""
-        recorder.gate = asyncio.Event()
+        conversation_recorder.gate = asyncio.Event()
         async with _serving(
-            deps=hook_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_hooked_plan(),),
+            plans=(conversational_plan(_AGENT),),
             identity=identity,
             max_concurrent_runs=1,
         ) as (app, client):
             with caplog.at_level(logging.WARNING):
                 request = asyncio.ensure_future(
-                    _abandon_stream_when(app, f"{_PREFIX}/{_AGENT}/stream", recorder.entered)
+                    _abandon_stream_when(
+                        app, f"{_PREFIX}/{_AGENT}/stream", conversation_recorder.entered
+                    )
                 )
-                await recorder.entered.wait()
+                await conversation_recorder.entered.wait()
                 await asyncio.sleep(0.05)  # the disconnect reaches the stream
 
                 refused = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
 
-                recorder.gate.set()
+                conversation_recorder.gate.set()
                 await request
                 admitted = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
 
         assert refused.status_code == 429
         assert refused.json()["code"] == AgentRunErrorCode.TOO_MANY_RUNS
         assert admitted.status_code == 200
-        assert hook_deps.uow.log == ["begin", "commit", "begin", "commit"]
+        assert conversation_deps.uow.log == ["begin", "commit", "begin", "commit"]
         assert "aclose" not in caplog.text
 
     async def test_responde_403_cuando_las_reglas_del_hook_rechazan(
         self,
-        hook_deps: RecordingDepsFactory,
-        recorder: TriageRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """A ``Forbidden`` raised by the hook keeps its meaning on the wire."""
-        recorder.failure = Forbidden("triage of INC-1 is restricted")
+        conversation_recorder.failure = Forbidden("triage of INC-1 is restricted")
         async with _serving(
-            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            identity=identity,
         ) as (_app, client):
             response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
 
@@ -905,17 +771,17 @@ class TestLoaderEnHttp:
 
     async def test_responde_500_con_el_texto_fijo_cuando_el_loader_falla(
         self,
-        loader_deps: RecordingDepsFactory,
-        history: HistoryRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """A failed load is a coded 500 with the fixed text and the run's id, nothing else."""
-        history.failure = ValueError("secret detail")
+        conversation_recorder.load_failure = ValueError("secret detail")
         async with _serving(
-            deps=loader_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_conversational_plan(),),
+            plans=(conversational_plan(_AGENT, hook=False, loader=True),),
             identity=identity,
         ) as (_app, client):
             response = await client.post(
@@ -932,17 +798,17 @@ class TestLoaderEnHttp:
 
     async def test_emite_un_unico_error_cuando_el_loader_falla_en_stream(
         self,
-        loader_deps: RecordingDepsFactory,
-        history: HistoryRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """On ``/stream`` the same failure is the single frame, with the same fields."""
-        history.failure = ValueError("secret detail")
+        conversation_recorder.load_failure = ValueError("secret detail")
         async with _serving(
-            deps=loader_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_conversational_plan(),),
+            plans=(conversational_plan(_AGENT, hook=False, loader=True),),
             identity=identity,
         ) as (_app, client):
             response = await client.post(
@@ -959,17 +825,17 @@ class TestLoaderEnHttp:
 
     async def test_emite_un_unico_error_cuando_el_loader_agota_su_tiempo_en_stream(
         self,
-        loader_deps: RecordingDepsFactory,
-        history: HistoryRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """A loader timeout is the single ``error`` frame with its own code and no ``final``."""
-        history.failure = TimeoutError()
+        conversation_recorder.load_failure = TimeoutError()
         async with _serving(
-            deps=loader_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_conversational_plan(),),
+            plans=(conversational_plan(_AGENT, hook=False, loader=True),),
             identity=identity,
         ) as (_app, client):
             response = await client.post(
@@ -986,17 +852,17 @@ class TestLoaderEnHttp:
 
     async def test_responde_403_cuando_las_reglas_del_loader_rechazan(
         self,
-        loader_deps: RecordingDepsFactory,
-        history: HistoryRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         identity: Identity,
     ) -> None:
         """A ``Forbidden`` raised by the loader keeps its meaning on the wire."""
-        history.failure = Forbidden("thread c-42 belongs to another subject")
+        conversation_recorder.load_failure = Forbidden("thread c-42 belongs to another subject")
         async with _serving(
-            deps=loader_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_conversational_plan(),),
+            plans=(conversational_plan(_AGENT, hook=False, loader=True),),
             identity=identity,
         ) as (_app, client):
             response = await client.post(
@@ -1010,15 +876,15 @@ class TestLoaderEnHttp:
 
     async def test_carga_como_anonymous_cuando_el_endpoint_permite_anonimos(
         self,
-        loader_deps: RecordingDepsFactory,
-        history: HistoryRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
     ) -> None:
         """An anonymous mount runs the loader as the anonymous identity, by value."""
         async with _serving(
-            deps=loader_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_conversational_plan(),),
+            plans=(conversational_plan(_AGENT, hook=False, loader=True),),
             endpoints={_AGENT: make_endpoint(allow_anonymous=True)},
             identity=None,
         ) as (_app, client):
@@ -1027,7 +893,7 @@ class TestLoaderEnHttp:
             )
 
             assert response.status_code == 200
-            assert history.callers == [ANONYMOUS]
+            assert conversation_recorder.load_callers == [ANONYMOUS]
 
 
 class TestTopeDeCuerpo:

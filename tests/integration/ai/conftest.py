@@ -37,8 +37,10 @@ from loom.ai.abc import (
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledCapability,
+    CompiledConversation,
     CompiledMcpCapability,
     CompiledOutput,
+    CompiledOutputHook,
     CompiledSqlCapability,
 )
 from loom.ai.config import (
@@ -52,6 +54,7 @@ from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai import create_a2a_client, create_mcp_client
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
+from loom.core.command import Command
 from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
@@ -59,8 +62,10 @@ from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
 from loom.core.observability.event import LifecycleEvent
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
+from loom.core.use_case import Caller, Input, UseCase
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.invoker import AppInvoker
+from loom.core.use_case.keys import use_case_key
 from loom.core.use_case.registry import UseCaseRegistry
 
 DEFAULT_USAGE = AgentUsage(
@@ -802,3 +807,142 @@ async def _until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None
             return
         await asyncio.sleep(0.005)
     raise AssertionError("the runtime never reached the expected state")
+
+
+# ---------------------------------------------------------------------------
+# Conversational agent doubles: the output hook and the loader, as the
+# composition root would wire them, shared by the HTTP and A2A surface tests
+# ---------------------------------------------------------------------------
+
+
+class TurnRecorded(msgspec.Struct, frozen=True):
+    """Result of recording one turn: what ``hook_result`` carries to the client."""
+
+    triage_id: str
+
+
+class TurnCommand(Command, frozen=True, kw_only=True):
+    """What the hook wants from a run: the output, the id, the thread."""
+
+    output: dict[str, Any]
+    interaction_id: str
+    conversation_id: str | None = None
+
+
+class HistoryCommand(Command, frozen=True, kw_only=True):
+    """What the loader wants from a run: the thread to continue."""
+
+    conversation_id: str
+
+
+@dataclass
+class ConversationRecorder:
+    """Shared observer of the hook and loader executions, resolved from the container.
+
+    Attributes:
+        commands: One entry per hook execution, in order.
+        timeline: ``"hook"`` appended when a hook runs; tests append frames.
+        entered: Set when the first hook execution starts.
+        gate: When set, a hook execution waits on it before completing.
+        failure: Exception a hook execution raises instead of completing.
+        load_commands: One entry per loader execution, in order.
+        load_callers: The caller of each loader execution, in order.
+        load_failure: Exception a loader execution raises instead of returning.
+        history: What the loader returns; ``None`` makes every turn a first one.
+    """
+
+    commands: list[TurnCommand] = field(default_factory=list)
+    timeline: list[str] = field(default_factory=list)
+    entered: asyncio.Event = field(default_factory=asyncio.Event)
+    gate: asyncio.Event | None = None
+    failure: Exception | None = None
+    load_commands: list[HistoryCommand] = field(default_factory=list)
+    load_callers: list[Identity] = field(default_factory=list)
+    load_failure: Exception | None = None
+    history: bytes | None = None
+
+    async def record(self, command: TurnCommand) -> None:
+        """Record one hook execution, honouring the gate and raising the failure if any."""
+        self.commands.append(command)
+        self.timeline.append("hook")
+        self.entered.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.failure is not None:
+            raise self.failure
+
+    async def load(self, command: HistoryCommand, caller: Identity) -> bytes | None:
+        """Record one loader execution and return the scripted history."""
+        self.load_commands.append(command)
+        self.load_callers.append(caller)
+        if self.load_failure is not None:
+            raise self.load_failure
+        return self.history
+
+
+@use_case_key("conversations.record_turn_over_the_wire")
+class RecordTurn(UseCase[Any, TurnRecorded]):
+    """Records a turn once the agent has produced it."""
+
+    def __init__(self, recorder: ConversationRecorder) -> None:
+        self._recorder = recorder
+
+    async def execute(
+        self, cmd: TurnCommand = Input(), caller: Identity = Caller()
+    ) -> TurnRecorded:
+        del caller
+        await self._recorder.record(cmd)
+        return TurnRecorded(triage_id=cmd.interaction_id)
+
+
+@use_case_key("conversations.load_over_the_wire")
+class LoadHistory(UseCase[Any, bytes | None]):
+    """Returns the prior history of a conversation."""
+
+    def __init__(self, recorder: ConversationRecorder) -> None:
+        self._recorder = recorder
+
+    async def execute(
+        self, cmd: HistoryCommand = Input(), caller: Identity = Caller()
+    ) -> bytes | None:
+        return await self._recorder.load(cmd, caller)
+
+
+def conversational_plan(name: str, *, hook: bool = True, loader: bool = False) -> AgentPlan:
+    """Build a plan whose ``on_output`` and ``conversation`` name the shared doubles.
+
+    Args:
+        name: Agent name of the plan.
+        hook: Whether ``on_output`` names :class:`RecordTurn`.
+        loader: Whether ``conversation`` names :class:`LoadHistory`.
+    """
+    plan = make_plan(name)
+    if hook:
+        on_output = CompiledOutputHook(
+            usecase="conversations.record_turn_over_the_wire",
+            use_case=RecordTurn,
+            accepted=frozenset(info.name for info in msgspec.structs.fields(TurnCommand)),
+        )
+        plan = msgspec.structs.replace(plan, on_output=on_output)
+    if loader:
+        conversation = CompiledConversation(
+            usecase="conversations.load_over_the_wire",
+            use_case=LoadHistory,
+            accepted=frozenset(info.name for info in msgspec.structs.fields(HistoryCommand)),
+        )
+        plan = msgspec.structs.replace(plan, conversation=conversation)
+    return plan
+
+
+@pytest.fixture
+def conversation_recorder(container: LoomContainer) -> ConversationRecorder:
+    """Recorder the hook and loader use cases resolve from the container."""
+    recorder = ConversationRecorder()
+    container.register_instance(ConversationRecorder, recorder)
+    return recorder
+
+
+@pytest.fixture
+def conversation_deps() -> RecordingDepsFactory:
+    """Deps factory serving the hook and the loader through a real executor."""
+    return RecordingDepsFactory((RecordTurn, LoadHistory))

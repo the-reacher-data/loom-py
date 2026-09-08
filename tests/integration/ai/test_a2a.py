@@ -18,13 +18,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from typing import Any, cast
 
 import httpx
-import msgspec
 import pytest
 from a2a.compat.v0_3.types import AgentCard
 from fastapi import FastAPI
@@ -41,29 +40,28 @@ from loom.ai.abc import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from loom.ai.compiler._plan import AgentPlan, CompiledConversation, CompiledOutputHook
+from loom.ai.compiler._plan import AgentPlan
 from loom.ai.config import A2AConfig, AgentEndpointConfig
 from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunErrorCode
 from loom.ai.fastapi.endpoints import bind_agent_endpoints
 from loom.ai.runtime import AgentRuntime
-from loom.core.command import Command
 from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.observability.event import EventKind, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.use_case import Caller, Input, UseCase
-from loom.core.use_case.keys import use_case_key
 from loom.rest.auth.abc import RequestCredentials
 from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
+    ConversationRecorder,
     CountingEngineProvider,
     RecordingDepsFactory,
     RecordingObserver,
     ScriptedEngine,
     StubDepsFactory,
+    conversational_plan,
     error_script,
     make_ai_config,
     make_endpoint,
@@ -148,95 +146,6 @@ def tool_script() -> tuple[AgentEvent, ...]:
         ToolResultEvent(call_id="call-1", ok=True, summary=_SECRET_SUMMARY),
         FinalEvent(output=DEFAULT_OUTPUT, usage=DEFAULT_USAGE),
     )
-
-
-class ThreadCommand(Command, frozen=True, kw_only=True):
-    """What the thread recorder wants from a run: the output, the id, the thread."""
-
-    output: dict[str, Any]
-    interaction_id: str
-    conversation_id: str | None = None
-
-
-class LoadCommand(Command, frozen=True, kw_only=True):
-    """What the loader wants: the thread it loads."""
-
-    conversation_id: str
-
-
-@dataclass
-class ThreadRecorder:
-    """Shared observer of the hook and loader executions, resolved from the container.
-
-    Attributes:
-        hook_commands: One entry per hook execution, in order.
-        load_commands: One entry per loader execution, in order.
-    """
-
-    hook_commands: list[ThreadCommand] = field(default_factory=list)
-    load_commands: list[LoadCommand] = field(default_factory=list)
-
-
-@use_case_key("threads.record_turn")
-class RecordThread(UseCase[Any, dict[str, str]]):
-    """Records a turn once the agent has produced it."""
-
-    def __init__(self, recorder: ThreadRecorder) -> None:
-        self._recorder = recorder
-
-    async def execute(
-        self, cmd: ThreadCommand = Input(), caller: Identity = Caller()
-    ) -> dict[str, str]:
-        del caller
-        self._recorder.hook_commands.append(cmd)
-        return {"turn_id": cmd.interaction_id}
-
-
-@use_case_key("threads.load")
-class LoadThread(UseCase[Any, bytes | None]):
-    """Returns the prior history of a thread: none, this is always a first turn."""
-
-    def __init__(self, recorder: ThreadRecorder) -> None:
-        self._recorder = recorder
-
-    async def execute(
-        self, cmd: LoadCommand = Input(), caller: Identity = Caller()
-    ) -> bytes | None:
-        del caller
-        self._recorder.load_commands.append(cmd)
-        return None
-
-
-def _threaded_plan(*, with_loader: bool = False) -> AgentPlan:
-    """Build the plan whose ``on_output`` records the turn, optionally with a loader."""
-    hook = CompiledOutputHook(
-        usecase="threads.record_turn",
-        use_case=RecordThread,
-        accepted=frozenset(info.name for info in msgspec.structs.fields(ThreadCommand)),
-    )
-    plan = msgspec.structs.replace(make_plan(_AGENT), on_output=hook)
-    if not with_loader:
-        return plan
-    loader = CompiledConversation(
-        usecase="threads.load",
-        use_case=LoadThread,
-        accepted=frozenset(info.name for info in msgspec.structs.fields(LoadCommand)),
-    )
-    return msgspec.structs.replace(plan, conversation=loader)
-
-
-@pytest.fixture
-def thread_recorder(container: LoomContainer) -> ThreadRecorder:
-    """Recorder the hook and loader use cases resolve from the container."""
-    recorder = ThreadRecorder()
-    container.register_instance(ThreadRecorder, recorder)
-    return recorder
-
-
-@pytest.fixture
-def thread_deps() -> RecordingDepsFactory:
-    """Deps factory serving the thread use cases through a real executor."""
-    return RecordingDepsFactory((RecordThread, LoadThread))
 
 
 @asynccontextmanager
@@ -793,12 +702,14 @@ class TestConversaciones:
 
     async def test_entrega_el_context_id_al_hook_cuando_el_cliente_lo_envia(
         self,
-        thread_deps: RecordingDepsFactory,
-        thread_recorder: ThreadRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
     ) -> None:
         """AC1: the sent ``contextId`` is echoed on the task and reaches the hook."""
-        async with _serving(deps=thread_deps, container=container, plans=(_threaded_plan(),)) as (
+        async with _serving(
+            deps=conversation_deps, container=container, plans=(conversational_plan(_AGENT),)
+        ) as (
             _app,
             client,
         ):
@@ -809,18 +720,20 @@ class TestConversaciones:
             )
 
         assert response.json()["result"]["contextId"] == "c-42"
-        assert [cmd.conversation_id for cmd in thread_recorder.hook_commands] == ["c-42"]
+        assert [cmd.conversation_id for cmd in conversation_recorder.commands] == ["c-42"]
 
     @pytest.mark.parametrize("context_id", [None, ""])
     async def test_acuna_un_context_id_cuando_el_cliente_no_lo_envia(
         self,
-        thread_deps: RecordingDepsFactory,
-        thread_recorder: ThreadRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         context_id: str | None,
     ) -> None:
         """AC2: absent or empty, loom mints one and the hook gets the same id, never ``None``."""
-        async with _serving(deps=thread_deps, container=container, plans=(_threaded_plan(),)) as (
+        async with _serving(
+            deps=conversation_deps, container=container, plans=(conversational_plan(_AGENT),)
+        ) as (
             _app,
             client,
         ):
@@ -831,18 +744,19 @@ class TestConversaciones:
             )
 
         minted = response.json()["result"]["contextId"]
-        assert len(minted) == 32
-        int(minted, 16)
-        assert [cmd.conversation_id for cmd in thread_recorder.hook_commands] == [minted]
+        assert re.fullmatch(r"[0-9a-f]{32}", minted)
+        assert [cmd.conversation_id for cmd in conversation_recorder.commands] == [minted]
 
     async def test_estampa_el_context_id_en_cada_frame_cuando_hace_stream(
         self,
-        thread_deps: RecordingDepsFactory,
-        thread_recorder: ThreadRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
     ) -> None:
         """AC3: every frame, the initial ``submitted`` task included, carries the sent id."""
-        async with _serving(deps=thread_deps, container=container, plans=(_threaded_plan(),)) as (
+        async with _serving(
+            deps=conversation_deps, container=container, plans=(conversational_plan(_AGENT),)
+        ) as (
             _app,
             client,
         ):
@@ -856,20 +770,20 @@ class TestConversaciones:
         assert results[0]["kind"] == "task"
         assert results[0]["status"]["state"] == "submitted"
         assert [result["contextId"] for result in results] == ["c-42"] * len(results)
-        assert [cmd.conversation_id for cmd in thread_recorder.hook_commands] == ["c-42"]
+        assert [cmd.conversation_id for cmd in conversation_recorder.commands] == ["c-42"]
 
     async def test_entrega_el_context_id_al_loader_y_al_engine_cuando_el_plan_declara_conversation(
         self,
-        thread_deps: RecordingDepsFactory,
-        thread_recorder: ThreadRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
     ) -> None:
         """AC3: over a conversational plan, the loader and the engine see the sent id."""
         engine = ScriptedEngine()
         async with _serving(
-            deps=thread_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_threaded_plan(with_loader=True),),
+            plans=(conversational_plan(_AGENT, loader=True),),
             engines={_AGENT: engine},
         ) as (_app, client):
             response = await client.post(
@@ -879,15 +793,15 @@ class TestConversaciones:
             )
 
         assert {result["contextId"] for result in _stream_results(response.text)} == {"c-42"}
-        assert [cmd.conversation_id for cmd in thread_recorder.load_commands] == ["c-42"]
+        assert [cmd.conversation_id for cmd in conversation_recorder.load_commands] == ["c-42"]
         assert engine.conversations == [Conversation(conversation_id="c-42")]
 
     @pytest.mark.parametrize("method", ["message/send", "message/stream"])
     @pytest.mark.parametrize("context_id", ["x" * 129, 7])
     async def test_rechaza_con_32602_cuando_el_context_id_no_tiene_forma(
         self,
-        thread_deps: RecordingDepsFactory,
-        thread_recorder: ThreadRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         method: str,
         context_id: str | int,
@@ -896,9 +810,9 @@ class TestConversaciones:
         engine = ScriptedEngine()
         observer = RecordingObserver()
         async with _serving(
-            deps=thread_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_threaded_plan(),),
+            plans=(conversational_plan(_AGENT),),
             engines={_AGENT: engine},
             observability_runtime=ObservabilityRuntime([observer]),
         ) as (_app, client):
@@ -910,15 +824,15 @@ class TestConversaciones:
         assert error["code"] == -32602
         assert "contextId" in error["data"]["reason"]
         assert "x" * 129 not in response.text
-        assert thread_recorder.hook_commands == []
+        assert conversation_recorder.commands == []
         assert engine.stream_count == 0
         assert self._agent_spans(observer) == []
 
     @pytest.mark.parametrize("method", ["message/send", "message/stream"])
     async def test_rechaza_con_32001_cuando_el_mensaje_continua_un_task(
         self,
-        thread_deps: RecordingDepsFactory,
-        thread_recorder: ThreadRecorder,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
         container: LoomContainer,
         method: str,
     ) -> None:
@@ -926,9 +840,9 @@ class TestConversaciones:
         engine = ScriptedEngine()
         observer = RecordingObserver()
         async with _serving(
-            deps=thread_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_threaded_plan(),),
+            plans=(conversational_plan(_AGENT),),
             engines={_AGENT: engine},
             observability_runtime=ObservabilityRuntime([observer]),
         ) as (_app, client):
@@ -939,19 +853,19 @@ class TestConversaciones:
         error = response.json()["error"]
         assert error["code"] == -32001
         assert "taskId" in error["data"]["reason"]
-        assert thread_recorder.hook_commands == []
+        assert conversation_recorder.commands == []
         assert engine.stream_count == 0
         assert self._agent_spans(observer) == []
 
     async def test_rechaza_con_32602_cuando_el_task_id_no_es_un_string(
-        self, thread_deps: RecordingDepsFactory, container: LoomContainer
+        self, conversation_deps: RecordingDepsFactory, container: LoomContainer
     ) -> None:
         """A malformed ``taskId`` is a shape error, like a malformed ``contextId``."""
         engine = ScriptedEngine()
         async with _serving(
-            deps=thread_deps,
+            deps=conversation_deps,
             container=container,
-            plans=(_threaded_plan(),),
+            plans=(conversational_plan(_AGENT),),
             engines={_AGENT: engine},
         ) as (_app, client):
             response = await client.post(
@@ -960,6 +874,26 @@ class TestConversaciones:
 
         error = response.json()["error"]
         assert error["code"] == -32602
+        assert "taskId" in error["data"]["reason"]
+        assert engine.stream_count == 0
+
+    async def test_rechaza_con_32001_antes_de_leer_las_partes_cuando_continua_un_task(
+        self, conversation_deps: RecordingDepsFactory, container: LoomContainer
+    ) -> None:
+        """A message continuing a task is refused on that ground even without a text part."""
+        engine = ScriptedEngine()
+        async with _serving(
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            body = _rpc("message/send", task_id="t-1")
+            body["params"]["message"]["parts"] = []
+            response = await client.post(f"{_PREFIX}/{_AGENT}", json=body, headers=_auth())
+
+        error = response.json()["error"]
+        assert error["code"] == -32001
         assert "taskId" in error["data"]["reason"]
         assert engine.stream_count == 0
 
@@ -1118,18 +1052,18 @@ class TestAnuncioDePublicacion:
 
     async def test_avisa_de_que_el_context_id_es_la_credencial_cuando_el_mount_anonimo_conversa(
         self,
-        thread_deps: RecordingDepsFactory,
+        conversation_deps: RecordingDepsFactory,
         container: LoomContainer,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """AC6: an anonymous mount of a conversational agent says the id is the credential."""
         endpoints = {_AGENT: make_endpoint(allow_anonymous=True)}
         text = await self._publication_warning(
-            deps=thread_deps,
+            deps=conversation_deps,
             container=container,
             caplog=caplog,
             endpoints=endpoints,
-            plans=(_threaded_plan(with_loader=True),),
+            plans=(conversational_plan(_AGENT, loader=True),),
         )
 
         assert "allow_anonymous=True" in text
