@@ -204,6 +204,10 @@ mcp-tests = [
 dev = [
     "aiocache>=0.12,<1.0",
     "aiosqlite>=0.20.0",
+    # Declared, not merely transitive: one cache test pins what the key renderer
+    # cannot separate inside an object msgspec expands itself, and an attrs class
+    # is the only such object the stdlib can build.
+    "attrs>=23.1",
     "commitizen>=3.30.0",
     "celery>=5.3,<6.0",
     "fakeredis>=2.23.0",

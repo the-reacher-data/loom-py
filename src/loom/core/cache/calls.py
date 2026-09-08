@@ -17,6 +17,7 @@ identity never reaches the key, and the load runs detached in its own task.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import inspect
 import math
@@ -78,41 +79,118 @@ def cached_calls(container: LoomContainer) -> CachedCalls:
     return _UnconfiguredCalls()
 
 
-def _render(value: Any) -> Any:
+def _discriminated(value: Any, rendered: Any) -> list[Any]:
+    """Label *rendered* with the qualified type name of *value*.
+
+    Every value the walk visits is labelled, native or not: deciding "native"
+    by ``isinstance`` leaves an ``IntEnum``, a ``StrEnum`` and a ``str``
+    subclass indistinguishable from the scalar they subclass, and deciding it
+    by exact type is one more rule to keep right. A uniform label removes the
+    question; the cost is a longer buffer behind a SHA-256, which nothing reads
+    back.
+
+    Args:
+        value: The object being rendered, whose type is the label.
+        rendered: Its rendering, already canonical.
+
+    Returns:
+        The two-element list ``[type_name, rendered]``.
+    """
+    cls = type(value)
+    return [f"{cls.__module__}.{cls.__qualname__}", rendered]
+
+
+def _render(value: Any) -> list[Any]:
     """Render *value* canonically, so equal arguments give one key.
 
-    Mappings are emitted with their keys sorted, sets and frozensets as sorted
-    lists, and everything else through :func:`msgspec.to_builtins`, whose
-    output is walked in turn: a struct's fields, a list's items and a mapping's
-    values all get the same treatment.
+    The walk descends structurally and hands :func:`msgspec.to_builtins` only a
+    true leaf, so a ``datetime``, an ``Enum`` or a ``set`` nested inside a
+    struct is reached before anything can flatten it. Every value the walk
+    visits carries its qualified type name, which is what separates a
+    ``datetime`` from its ISO string and a ``list`` from a ``tuple``.
 
     Args:
         value: One bound argument, or a part of one.
 
     Returns:
-        The canonical rendering of *value*.
+        The canonical rendering of *value*, discriminated by its type.
 
     Raises:
         _Unrenderable: The value, or something nested inside it, has no
             canonical rendering.
     """
     if isinstance(value, Mapping):
-        return _render_mapping(value)
+        return _discriminated(value, _render_mapping(value))
     if isinstance(value, set | frozenset):
-        return _render_set(value)
+        return _discriminated(value, _render_set(value))
     if isinstance(value, list | tuple):
-        return [_render(item) for item in value]
+        return _discriminated(value, [_render(item) for item in value])
+    if isinstance(value, msgspec.Struct):
+        return _discriminated(value, _render_mapping(msgspec.structs.asdict(value)))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return _discriminated(value, _render_dataclass(value))
     return _render_leaf(value)
 
 
-def _render_mapping(value: Mapping[Any, Any]) -> dict[Any, Any]:
-    """Render a mapping with its keys sorted, recursively."""
-    pairs = [(_render(key), _render(item)) for key, item in value.items()]
-    pairs.sort(key=lambda pair: _encoded(pair[0]))
+def _render_dataclass(value: Any) -> list[list[Any]]:
+    """Render a dataclass instance's fields, shallowly.
+
+    A field declared ``init=False`` and never assigned has no value to read, so
+    :func:`getattr` raises for it. That is an argument shape, not a failure of
+    the body, so it costs the key and never the call.
+
+    Args:
+        value: The dataclass instance being rendered.
+
+    Returns:
+        Its fields, rendered as a mapping of name to value.
+
+    Raises:
+        _Unrenderable: A declared field holds no value.
+    """
     try:
-        return dict(pairs)
-    except TypeError as error:
-        raise _Unrenderable(f"unhashable mapping key: {error}") from error
+        fields = {field.name: getattr(value, field.name) for field in dataclasses.fields(value)}
+    except AttributeError as error:
+        raise _Unrenderable(f"unreadable dataclass field: {error}") from error
+    return _render_mapping(fields)
+
+
+def _reject_non_finite(value: Any) -> None:
+    """Refuse a float no digest can tell from the other two.
+
+    ``nan``, ``inf`` and ``-inf`` all encode as ``null``, so they would share
+    one entry with each other. The check runs on what the walk is handed *and*
+    on what :func:`msgspec.to_builtins` gives back, because a leaf can render
+    to a raw float the walk never saw: an ``Enum`` valued ``nan`` is one.
+
+    Args:
+        value: A value about to be rendered, or a rendering.
+
+    Raises:
+        _Unrenderable: The value is a non-finite float.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        raise _Unrenderable(f"non-finite float: {value!r}")
+
+
+def _render_mapping(value: Mapping[Any, Any]) -> list[list[Any]]:
+    """Render a mapping as pairs sorted by their whole encoding.
+
+    A list of pairs, not a dict: two keys whose renderings coincide must stay
+    two entries. Building a dict here dropped one of them and made the digest
+    describe an argument that was never passed. Sorting by the encoded *pair*
+    rather than the encoded key means ties are byte-identical pairs, so
+    :meth:`list.sort`'s stability can no longer leak insertion order.
+
+    Args:
+        value: The mapping being rendered.
+
+    Returns:
+        Its key/value pairs, each rendered, in a total order.
+    """
+    pairs = [[_render(key), _render(item)] for key, item in value.items()]
+    pairs.sort(key=_encoded)
+    return pairs
 
 
 def _render_set(value: set[Any] | frozenset[Any]) -> list[Any]:
@@ -120,24 +198,39 @@ def _render_set(value: set[Any] | frozenset[Any]) -> list[Any]:
     return sorted((_render(item) for item in value), key=_encoded)
 
 
-def _render_leaf(value: Any) -> Any:
-    """Render one non-container argument, descending into what msgspec builds.
+def _render_leaf(value: Any) -> list[Any]:
+    """Render one value the walk found no structure in.
 
-    A non-finite float is refused: msgspec renders ``nan`` and the infinities
-    as ``null``, which would collide with ``None`` and serve one call's answer
-    to another.
+    An object :func:`msgspec.to_builtins` expands into a container — an
+    ``attrs`` class, say — is walked once more, on msgspec's own output. What
+    that expansion erased stays erased, exactly as it is today.
+
+    The rendering is checked for a non-finite float as well as the value: what
+    arrives here may be a scalar the walk never saw, and an ``Enum`` valued
+    ``nan`` renders to one.
+
+    Args:
+        value: A value the walk found no structure in.
+
+    Returns:
+        Its rendering, discriminated by its type.
+
+    Raises:
+        _Unrenderable: msgspec has no rendering for it, or renders it to a
+            non-finite float.
     """
     try:
         rendered = msgspec.to_builtins(value)
     except (TypeError, ValueError) as error:
         raise _Unrenderable(f"no canonical rendering: {error}") from error
-    if isinstance(rendered, float):
-        if not math.isfinite(rendered):
-            raise _Unrenderable(f"non-finite float: {rendered!r}")
-        return rendered
+    # The only place the check is needed: a float reaches the leaf whether it
+    # arrived as one or msgspec produced it (an ``Enum`` valued ``nan``), and
+    # ``nan``, ``inf`` and ``-inf`` all encode as ``null``, so they would share
+    # one entry with each other.
+    _reject_non_finite(rendered)
     if isinstance(rendered, Mapping | list | tuple | set | frozenset):
-        return _render(rendered)
-    return rendered
+        return _discriminated(value, _render(rendered))
+    return _discriminated(value, rendered)
 
 
 def _encoded(value: Any) -> bytes:
@@ -181,15 +274,18 @@ class _CallSpec:
 
         Raises:
             _Unrenderable: An argument has no canonical rendering, or its
-                rendering is not encodable — a mapping keyed by ``None`` renders
-                fine and only the final encoding refuses it, and no argument
-                shape may raise to the caller.
+                rendering is not encodable — no argument shape may raise to the
+                caller, so the walk and the final encoding reach the same
+                guard, an argument that refers to itself included.
             TypeError: The arguments do not fit the signature; the body would
                 raise the same error.
         """
         bound = self.signature.bind(*args, **kwargs)
         bound.apply_defaults()
-        arguments = _render(dict(bound.arguments))
+        try:
+            arguments = _render(dict(bound.arguments))
+        except RecursionError as error:
+            raise _Unrenderable(f"refers to itself, or nests too deeply: {error}") from error
         try:
             return call_key(
                 module=self.func.__module__,
@@ -197,7 +293,7 @@ class _CallSpec:
                 version=self.policy.version,
                 arguments=arguments,
             )
-        except (TypeError, ValueError, msgspec.MsgspecError) as error:
+        except (RecursionError, TypeError, ValueError, msgspec.MsgspecError) as error:
             raise _Unrenderable(f"cannot encode the rendered arguments: {error}") from error
 
 
