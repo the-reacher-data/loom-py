@@ -218,9 +218,11 @@ call:<module>.<qualname>:v<version>:<sha256 of the bound arguments>
 
 Arguments are bound to the signature and defaults are applied before they are
 rendered, so `fetch("q")` and `fetch("q", limit=10)` share an entry, as do
-`fetch("q")` and `fetch(query="q")`. Mappings render with their keys sorted —
-including a `**kwargs` mapping — and a `set` or `frozenset` renders as a sorted
-list, so argument order never splits an entry.
+`fetch("q")` and `fetch(query="q")`. A mapping — including a `**kwargs` mapping —
+renders as a list of key/value pairs sorted by the whole pair, and a `set` or
+`frozenset` renders as a sorted list, so argument order never splits an entry.
+The digest is the only thing that leaves the renderer: the key is **opaque**, and
+nothing outside `loom.core.cache` should build one or parse one.
 
 Instance identity is not in the key, and neither is the class of the instance:
 the qualified name is the one of the class that **defines** the method. Two
@@ -231,27 +233,32 @@ inherit from `BaseTools`: different classes, different credentials, the same
 key. Subclassing does not separate entries. The only separators are the
 arguments and `version`, so a per-tenant answer takes `tenant` as a parameter.
 
-The rendering is **content-based and type-erasing**: it describes what a value
-contains, never what class it was. A `datetime`, a `date`, an `Enum` member and
-the plain string they render to share one key, so `w(datetime(2020, 1, 1))` and
-`w("2020-01-01T00:00:00")` are one entry and the second call gets the first
-call's answer. A `list`, a `tuple` and a `set` with equal contents share one key
-— the set rendering requires it — as do a struct and a mapping with the same
-fields. Two keys of a mapping argument that render equal collapse into a single
-entry: `{Color.RED: 1, "red": 2}` renders as `{"red": 2}`, one pair short.
+Entries are separated by the arguments' **values and their types**, at every
+depth. Every value the renderer visits carries its qualified type name, so
+`w(datetime(2020, 1, 1))` and `w("2020-01-01T00:00:00")` are two entries, as are
+a `list`, a `tuple`, a `set` and a `frozenset` with equal members, an `Enum`
+member and its value, a struct and a mapping with the same fields. The walk
+descends into a struct and a dataclass field by field, so a `datetime`, an
+`Enum` or a `set` nested inside one is separated exactly like a top-level one.
+A mapping keeps every pair it was given: `{Color.RED: 1, "red": 2}` is two pairs
+and does not share a key with `{"red": 2}`.
 
-The consequence is a rule about parameters, not about values: a parameter whose
-union members render to the same JSON scalar cannot be relied on to separate
-entries. Annotate such a parameter as one type and convert at the boundary, or
-add a discriminating argument. Tagging every leaf with its type would fix it,
-and would also invalidate every entry already written, so it belongs with a
-`version` bump rather than with a patch release.
+One case is outside that claim. The walk descends a mapping, a sequence, a set,
+a `msgspec.Struct` and a stdlib dataclass itself, so it reaches their members
+untouched; an object it has no branch for — an `attrs` class — is expanded by
+`msgspec` in a single step, and its fields arrive already flattened. A
+`datetime` field inside one is a string before the renderer sees it, so
+`Reading(when=datetime(2020, 1, 1))` and `Reading(when="2020-01-01T00:00:00")`
+are one entry. The mitigation is a rule about the parameter, not about the
+value: annotate a parameter — or a field of such an object — as one type and
+convert at the boundary, or add a discriminating argument.
 
 An argument the renderer cannot describe — an open socket, a `nan` or an
 infinity, at the top level or nested inside a struct, a list or a mapping —
 makes the call run **uncached** and logs one `CacheCallKeyUnrenderable` for that
-function. It is not an error: a non-finite float would render as `null` and
-collide with `None`, so refusing to key it is safer than keying it wrong.
+function. It is not an error: `nan`, `inf` and `-inf` all render as `null` and
+would share one entry with each other, so refusing to key them is safer than
+keying them wrong.
 
 ### TTL, `version`, and what is never invalidated
 

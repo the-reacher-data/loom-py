@@ -464,11 +464,13 @@ class TestCachedCallsBinding:
         answer = await cached_calls(container).wrap(fetch_answer)("q")
 
         assert answer == Answer(text="q")
+        # The rendering the binder passes: every value labelled with its
+        # qualified type, and the bound arguments as a list of pairs.
         key = call_key(
             module=fetch_answer.__module__,
             qualname=fetch_answer.__qualname__,
             version=1,
-            arguments={"query": "q"},
+            arguments=["builtins.dict", [[["builtins.str", "query"], ["builtins.str", "q"]]]],
         )
         assert await _backend("data").exists(key)
         assert not await _backend("counters").exists(key)
@@ -509,7 +511,8 @@ class TestTheBinderReportsAnAbandonedLoad:
         wrapped = cached_calls(container).wrap(fail_later)
 
         with caplog.at_level(logging.WARNING, logger="loom.core.cache.calls"):
-            caller = asyncio.create_task(wrapped("q"))
+            # ensure_future, not create_task: wrap() is typed Awaitable, not Coroutine.
+            caller = asyncio.ensure_future(wrapped("q"))
             await _until(started.is_set)
             caller.cancel()
             gate.set()

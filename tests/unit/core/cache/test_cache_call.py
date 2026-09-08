@@ -15,15 +15,20 @@ over a serialized memory alias, which is what a deployment gets.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import enum
 import hashlib
 import logging
 import random
 import socket
 from collections.abc import Iterator
 from contextvars import ContextVar
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from typing import Any, NamedTuple
+from uuid import UUID
 
+import attrs
 import msgspec
 import pytest
 from pydantic import BaseModel
@@ -130,8 +135,21 @@ def _warnings(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogR
 
 
 def _expected_key(func: Any, **arguments: Any) -> str:
-    """Key a call of *func* with *arguments* is stored under."""
-    digest = hashlib.sha256(msgspec.json.encode(arguments or {"query": "q"})).hexdigest()
+    """Key a call of *func* with its string *arguments* is stored under.
+
+    The rendering is written out here rather than taken from the renderer, so
+    the digest still pins the format: every visited value is the two-element
+    list ``[qualified type name, rendering]``, and a mapping is a list of pairs
+    ordered by the encoding of the whole pair.
+    """
+    pairs = sorted(
+        (
+            [["builtins.str", name], ["builtins.str", value]]
+            for name, value in (arguments or {"query": "q"}).items()
+        ),
+        key=msgspec.json.encode,
+    )
+    digest = hashlib.sha256(msgspec.json.encode(["builtins.dict", pairs])).hexdigest()
     return f"call:{func.__module__}.{func.__qualname__}:v1:{digest}"
 
 
@@ -318,7 +336,311 @@ class TestTheKeyIsTheArguments:
         """
         assert list(frozenset({1, 8})) == [8, 1]
 
-        assert _render({"tags": frozenset({1, 8})}) == {"tags": [1, 8]}
+        assert _render({"tags": frozenset({1, 8})}) == [
+            "builtins.dict",
+            [
+                [
+                    ["builtins.str", "tags"],
+                    ["builtins.frozenset", [["builtins.int", 1], ["builtins.int", 8]]],
+                ]
+            ],
+        ]
+
+
+class Colour(enum.Enum):
+    """Enum member whose value is exactly the string it renders to."""
+
+    RED = "red"
+
+
+class Shade(enum.StrEnum):
+    """``isinstance(Shade.RED, str)`` is ``True``, so no ``isinstance`` rule can tag it."""
+
+    RED = "red"
+
+
+class Rank(enum.IntEnum):
+    """The same trap on the integer side."""
+
+    ONE = 1
+
+
+class Query(msgspec.Struct):
+    """Struct whose one field holds whatever the suite nests inside it."""
+
+    when: Any
+
+
+@dataclasses.dataclass(frozen=True)
+class Window:
+    """Stdlib dataclass, which the walk descends through its fields."""
+
+    start: Any
+
+
+class Endpoints(NamedTuple):
+    """A ``tuple`` subclass, so it renders under its own concrete type."""
+
+    left: str
+    right: str
+
+
+@attrs.define
+class Sensor:
+    """An ``attrs`` class, which neither structural branch of the walk knows.
+
+    :func:`msgspec.to_builtins` expands it into a mapping, so it is the one
+    shape that reaches the recursive branch of ``_render_leaf``.
+    """
+
+    name: str
+    reading: Any
+
+
+class IdentityKey(msgspec.Struct, eq=False):
+    """Mapping key equal only to itself, though it renders like its twin.
+
+    Two of them live side by side in one mapping and render identically, which
+    is the only way to observe that pairs are ordered by the **whole** pair:
+    ordering by the encoded key alone would leave two such pairs to
+    ``list.sort``'s stability, and therefore to insertion order.
+    """
+
+    name: str
+
+
+_ERASED_SCALARS: list[tuple[Any, Any]] = [
+    (datetime(2020, 1, 1), "2020-01-01T00:00:00"),
+    (date(2020, 1, 1), "2020-01-01"),
+    (UUID(int=1), "00000000-0000-0000-0000-000000000001"),
+    (Decimal("1"), "1"),
+    (b"a", "YQ=="),
+    (bytearray(b"a"), b"a"),
+    (memoryview(b"a"), b"a"),
+    (Colour.RED, "red"),
+    (Shade.RED, "red"),
+    (Rank.ONE, 1),
+]
+"""Each shape beside the scalar msgspec renders it to, which used to be one key."""
+
+_ERASED_SCALAR_IDS = [
+    "datetime",
+    "date",
+    "uuid",
+    "decimal",
+    "bytes",
+    "bytearray",
+    "memoryview",
+    "enum",
+    "str-enum",
+    "int-enum",
+]
+
+_NESTED_ARGUMENTS: list[tuple[Any, Any]] = [
+    (Query(when=datetime(2020, 1, 1)), Query(when="2020-01-01T00:00:00")),
+    (Window(start=datetime(2020, 1, 1)), Window(start="2020-01-01T00:00:00")),
+    ([datetime(2020, 1, 1)], ["2020-01-01T00:00:00"]),
+    ({"when": datetime(2020, 1, 1)}, {"when": "2020-01-01T00:00:00"}),
+    ({datetime(2020, 1, 1)}, {"2020-01-01T00:00:00"}),
+    (Query(when=Colour.RED), Query(when="red")),
+    (Query(when={"a"}), Query(when=["a"])),
+]
+"""A typed value and its erased twin, each nested one level down."""
+
+_NESTED_ARGUMENT_IDS = [
+    "datetime-in-a-struct",
+    "datetime-in-a-dataclass",
+    "datetime-in-a-list",
+    "datetime-in-a-mapping-value",
+    "datetime-in-a-set",
+    "enum-in-a-struct",
+    "set-in-a-struct",
+]
+
+
+async def _runs_and_entries(*arguments: Any) -> tuple[int, int]:
+    """Call one wrapped coroutine once per argument, in order.
+
+    Args:
+        *arguments: The single argument of each successive call.
+
+    Returns:
+        How many times the body ran, and how many entries the backend holds.
+    """
+    runs = 0
+
+    @cache_call()
+    async def fetch(argument: Any) -> Doc:
+        nonlocal runs
+        runs += 1
+        return Doc(title="fetched")
+
+    backend = CountingCacheBackend()
+    wrapped = _calls(backend).wrap(fetch)
+    for argument in arguments:
+        await wrapped(argument)
+    return runs, len(backend.data)
+
+
+async def _assert_separate_entries(first: Any, second: Any) -> None:
+    """Assert the two arguments are two entries, and that each one is cached.
+
+    The second half is the positive control, and it is what makes the first
+    half evidence: a renderer that refused every argument would run the body
+    twice for any pair at all, with nothing cached anywhere.
+    """
+    assert await _runs_and_entries(first, second) == (2, 2)
+    assert await _runs_and_entries(first, first) == (1, 1)
+    assert await _runs_and_entries(second, second) == (1, 1)
+
+
+class TestAValueDoesNotShareTheKeyOfWhatItRendersTo:
+    """AC1: the type of an argument separates entries, not only its content."""
+
+    def test_every_shape_renders_to_a_different_value(self) -> None:
+        """Ten types whose renderings used to collapse onto four scalars."""
+        encodings = {msgspec.json.encode(_render(typed)) for typed, _ in _ERASED_SCALARS}
+
+        assert len(encodings) == len(_ERASED_SCALARS)
+
+    @pytest.mark.parametrize(("typed", "erased"), _ERASED_SCALARS, ids=_ERASED_SCALAR_IDS)
+    def test_the_rendering_differs_from_the_scalar_it_used_to_erase_to(
+        self, typed: Any, erased: Any
+    ) -> None:
+        assert _render(typed) != _render(erased)
+
+    @pytest.mark.parametrize(("typed", "erased"), _ERASED_SCALARS, ids=_ERASED_SCALAR_IDS)
+    async def test_the_two_are_two_entries_and_each_one_is_still_cached(
+        self, typed: Any, erased: Any
+    ) -> None:
+        await _assert_separate_entries(typed, erased)
+
+
+class TestANestedValueKeepsItsType:
+    """AC2: the walk reaches a value before msgspec can flatten it.
+
+    This is the case a leaf-only fix would have left broken, and the one
+    ``builtin_types=`` cannot reach: a struct handed whole to
+    :func:`msgspec.to_builtins` comes back with its ``datetime`` already a
+    string, and its ``Enum`` and ``set`` already erased.
+    """
+
+    @pytest.mark.parametrize(("typed", "erased"), _NESTED_ARGUMENTS, ids=_NESTED_ARGUMENT_IDS)
+    def test_the_renderings_differ(self, typed: Any, erased: Any) -> None:
+        assert _render(typed) != _render(erased)
+
+    @pytest.mark.parametrize(("typed", "erased"), _NESTED_ARGUMENTS, ids=_NESTED_ARGUMENT_IDS)
+    async def test_the_two_are_two_entries_and_each_one_is_still_cached(
+        self, typed: Any, erased: Any
+    ) -> None:
+        await _assert_separate_entries(typed, erased)
+
+
+class TestTheShapeOfAContainerIsPartOfTheKey:
+    """AC3: a list, a tuple, a set and a frozenset are four arguments."""
+
+    def test_four_containers_with_the_same_members_render_four_ways(self) -> None:
+        containers: list[Any] = [["a", "b"], ("a", "b"), {"a", "b"}, frozenset({"a", "b"})]
+
+        encodings = {msgspec.json.encode(_render(container)) for container in containers}
+
+        assert len(encodings) == len(containers)
+
+    def test_a_named_tuple_renders_under_its_own_concrete_type(self) -> None:
+        """It is a ``tuple``, so the tuple branch catches it and labels it as itself."""
+        assert _render(Endpoints("a", "b")) != _render(("a", "b"))
+
+    def test_a_struct_and_a_mapping_with_the_same_fields_differ(self) -> None:
+        assert _render(Query(when="x")) != _render({"when": "x"})
+
+    async def test_a_list_and_a_tuple_are_two_entries_and_each_one_is_still_cached(self) -> None:
+        await _assert_separate_entries(["a", "b"], ("a", "b"))
+
+
+class TestAMappingKeepsEveryPair:
+    """AC4: two keys that render alike stay two pairs instead of collapsing."""
+
+    def test_two_keys_that_used_to_collapse_stay_two_pairs(self) -> None:
+        """The old rendering was ``{"red": 2}``: one pair short of the argument."""
+        rendered = _render({Colour.RED: 1, "red": 2})
+
+        assert len(rendered[1]) == 2
+
+    def test_the_mapping_differs_from_the_one_it_used_to_render_as(self) -> None:
+        assert _render({Colour.RED: 1, "red": 2}) != _render({"red": 2})
+
+    async def test_the_two_mappings_are_two_entries_and_each_one_is_still_cached(self) -> None:
+        await _assert_separate_entries({Colour.RED: 1, "red": 2}, {"red": 2})
+
+    def test_two_keys_with_identical_renderings_are_still_two_pairs(self) -> None:
+        """A ``dict`` built from the pairs would keep one of them and lose the other.
+
+        The type label separates most keys on its own; two keys of one type
+        that render alike are what the pair list itself is for.
+        """
+        first, second = IdentityKey("a"), IdentityKey("a")
+
+        assert len(_render({first: 1, second: 2})[1]) == 2
+
+
+class TestTheTypeLabelCannotBeForged:
+    """AC5: a caller's own list is labelled too, so it cannot pose as a label."""
+
+    def test_the_literal_pair_the_renderer_emits_is_itself_labelled_a_list(self) -> None:
+        forged = _render(["datetime.datetime", "2020-01-01T00:00:00"])
+
+        assert forged[0] == "builtins.list"
+
+    async def test_the_forged_pair_and_the_datetime_are_two_entries(self) -> None:
+        await _assert_separate_entries(
+            datetime(2020, 1, 1), ["datetime.datetime", "2020-01-01T00:00:00"]
+        )
+
+
+class TestAnObjectMsgspecExpandsIsWalkedOnce:
+    """FR-093: what ``to_builtins`` turns into a container is rendered in turn.
+
+    An ``attrs`` class is the shape that gets here: a mapping, a set, a list, a
+    tuple, a ``msgspec.Struct`` and a stdlib dataclass are all dispatched
+    before the leaf, and a ``NamedTuple`` is a ``tuple``.
+    """
+
+    def test_the_expansion_is_discriminated_like_any_other_mapping(self) -> None:
+        """Without the recursive branch the expansion stays a bare ``dict``."""
+        rendered = _render(Sensor(name="a", reading=1))
+
+        assert rendered[0].endswith(".Sensor")
+        assert rendered[1] == _render({"name": "a", "reading": 1})
+
+    def test_what_the_expansion_erased_stays_erased(self) -> None:
+        """FR-093's stated limitation: msgspec flattens the fields before the walk sees them.
+
+        The walk descends a struct and a dataclass itself, so it reaches their
+        fields untouched; an ``attrs`` class it only sees expanded, with its
+        ``datetime`` already a string. That is one key for two arguments, and
+        it is the documented residual case rather than a defect.
+        """
+        assert _render(Sensor(name="a", reading=datetime(2020, 1, 1))) == _render(
+            Sensor(name="a", reading="2020-01-01T00:00:00")
+        )
+
+    async def test_two_attrs_arguments_are_two_entries_and_each_one_is_cached(self) -> None:
+        await _assert_separate_entries(Sensor(name="a", reading=1), Sensor(name="b", reading=1))
+
+
+class TestThePairOrderOfAMappingIsTotal:
+    """AC6: no part of a mapping's rendering depends on insertion order."""
+
+    def test_two_keys_that_encode_identically_render_the_same_either_way(self) -> None:
+        """Two pairs differing only in the value: only the whole pair orders them.
+
+        That there really are two pairs is pinned by
+        ``TestAMappingKeepsEveryPair``, so this assertion cannot hold for an
+        empty reason.
+        """
+        first, second = IdentityKey("a"), IdentityKey("a")
+
+        assert _render({first: 1, second: 2}) == _render({second: 2, first: 1})
 
 
 class TestTheKeyIsTheDocumentedString:
@@ -329,8 +651,16 @@ class TestTheKeyIsTheDocumentedString:
 
         await _calls(backend).wrap(known_call)("q")
 
-        # The rendered arguments carry the bound default and sorted keys.
-        digest = hashlib.sha256(msgspec.json.encode({"limit": 10, "query": "q"})).hexdigest()
+        # The rendered arguments carry the bound default, one labelled pair per
+        # parameter, ordered by the encoding of the whole pair.
+        rendered = [
+            "builtins.dict",
+            [
+                [["builtins.str", "limit"], ["builtins.int", 10]],
+                [["builtins.str", "query"], ["builtins.str", "q"]],
+            ],
+        ]
+        digest = hashlib.sha256(msgspec.json.encode(rendered)).hexdigest()
         expected = f"call:{known_call.__module__}.{known_call.__qualname__}:v3:{digest}"
         assert list(backend.data) == [expected]
 
@@ -1005,6 +1335,43 @@ class Point(msgspec.Struct):
     value: float
 
 
+class Unbounded(enum.Enum):
+    """Enum whose members are floats, so the walk only sees them as a leaf.
+
+    :func:`msgspec.to_builtins` hands back the raw value, which is why the
+    rendering has to be checked as well as the argument.
+    """
+
+    NAN = float("nan")
+    INFINITY = float("inf")
+    NEGATIVE_INFINITY = float("-inf")
+    FINITE = 1.5
+
+
+@dataclasses.dataclass
+class Pending:
+    """Dataclass whose ``init=False`` field is never assigned any value.
+
+    Reading it raises :class:`AttributeError`, which the walk owes the caller a
+    cached-or-uncached answer for rather than the error.
+    """
+
+    name: str
+    computed: int = dataclasses.field(init=False)
+
+
+@dataclasses.dataclass
+class Threshold:
+    """Dataclass whose field has a class-level default.
+
+    Passing the **class** itself is what the walk's ``isinstance(value, type)``
+    guard is for: without it the default would be read off the class and the
+    class would be keyed as though it were an instance of itself.
+    """
+
+    limit: int = 10
+
+
 class TestAnArgumentWithoutACanonicalRendering:
     """AC11: a key that cannot be built runs the call, it does not break it."""
 
@@ -1015,6 +1382,9 @@ class TestAnArgumentWithoutACanonicalRendering:
             pytest.param(float("inf"), id="infinity"),
             pytest.param(Point(value=float("nan")), id="nan-inside-a-struct"),
             pytest.param(Point(value=float("-inf")), id="infinity-inside-a-struct"),
+            pytest.param(Unbounded.NAN, id="nan-as-an-enum-value"),
+            pytest.param(Unbounded.INFINITY, id="infinity-as-an-enum-value"),
+            pytest.param(Unbounded.NEGATIVE_INFINITY, id="negative-infinity-as-an-enum-value"),
         ],
     )
     async def test_a_non_finite_float_runs_the_call_uncached(
@@ -1061,14 +1431,53 @@ class TestAnArgumentWithoutACanonicalRendering:
         assert backend.data == {}
         assert len(_warnings(caplog, "CacheCallKeyUnrenderable")) == 1
 
-    async def test_a_mapping_keyed_by_none_runs_the_call_uncached(
+    async def test_a_self_referential_list_runs_the_call_uncached(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """The rendering succeeds and only the final encoding refuses it.
+        """The walk cannot terminate on a cycle, and exhausting the stack is not an answer."""
+        cyclic: list[Any] = []
+        cyclic.append(cyclic)
 
-        ``None`` is a hashable key that renders and sorts, so nothing before
-        ``msgspec.json.encode`` can object; FR-083 still forbids raising to the
-        caller, so the encode failure has to reach the same guard.
+        assert await _runs_and_entries(cyclic, cyclic) == (2, 0)
+        assert len(_warnings(caplog, "CacheCallKeyUnrenderable")) == 1
+
+    async def test_a_self_referential_mapping_runs_the_call_uncached(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cyclic: dict[str, Any] = {}
+        cyclic["self"] = cyclic
+
+        assert await _runs_and_entries(cyclic, cyclic) == (2, 0)
+        assert len(_warnings(caplog, "CacheCallKeyUnrenderable")) == 1
+
+    async def test_an_unassigned_dataclass_field_runs_the_call_uncached(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``getattr`` raises for the field, and no argument shape may reach the caller."""
+        pending = Pending(name="a")
+
+        assert await _runs_and_entries(pending, pending) == (2, 0)
+        assert len(_warnings(caplog, "CacheCallKeyUnrenderable")) == 1
+
+    async def test_a_dataclass_class_runs_the_call_uncached(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A class is not an instance: msgspec refuses it, and the walk must not descend it.
+
+        Walked as an instance it would key on its class-level defaults, so two
+        distinct classes with the same defaults would share one entry.
+        """
+        assert await _runs_and_entries(Threshold, Threshold) == (2, 0)
+        assert len(_warnings(caplog, "CacheCallKeyUnrenderable")) == 1
+
+    async def test_a_mapping_keyed_by_none_is_cached(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """It was refused only because a rendered mapping had to be a ``dict``.
+
+        A mapping is now a list of pairs, which is valid JSON whatever its keys
+        are, so a legitimate argument that JSON cannot use as an object key is
+        cached like any other instead of running uncached forever.
         """
         runs = 0
 
@@ -1084,9 +1493,13 @@ class TestAnArgumentWithoutACanonicalRendering:
         assert await wrapped({None: "v"}) == Doc(title="fetched")
         assert await wrapped({None: "v"}) == Doc(title="fetched")
 
-        assert runs == 2
-        assert backend.data == {}
-        assert len(_warnings(caplog, "CacheCallKeyUnrenderable")) == 1
+        assert runs == 1
+        assert len(backend.data) == 1
+        assert _warnings(caplog, "CacheCallKeyUnrenderable") == []
+
+    async def test_a_finite_enum_float_is_cached(self) -> None:
+        """The control: the refusal is about the value, not about the ``Enum``."""
+        assert await _runs_and_entries(Unbounded.FINITE, Unbounded.FINITE) == (1, 1)
 
     async def test_a_finite_float_argument_is_cached(self) -> None:
         runs = 0

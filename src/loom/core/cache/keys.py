@@ -86,7 +86,10 @@ def call_key(*, module: str, qualname: str, version: int, arguments: Any) -> str
         A composite cache key string.
 
     Raises:
-        TypeError: The rendering contains something JSON cannot encode.
+        TypeError: The rendering contains something JSON cannot encode. The
+            call renderer no longer produces one — it emits nested lists of
+            JSON scalars, and a mapping as pairs rather than as a ``dict`` —
+            but the guard belongs to any caller that builds its own rendering.
         msgspec.EncodeError: The rendering cannot be encoded at all.
     """
     digest = hashlib.sha256(msgspec.json.encode(arguments)).hexdigest()
