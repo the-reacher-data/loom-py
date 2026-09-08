@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import Any, TypeVar, cast
 
 T = TypeVar("T", bound=type[object])
 F = TypeVar("F", bound=Callable[..., object])
@@ -74,3 +76,86 @@ def cache_query(
         return func
 
     return decorator
+
+
+@dataclass(frozen=True, slots=True)
+class _CallPolicy:
+    """What a ``@cache_call`` coroutine declares about its own caching.
+
+    Attributes:
+        ttl_key: Key whose ``ttl:`` override applies, or ``None`` for the
+            configured default TTL.
+        unless: Predicate over the result; truthy means store nothing.
+        version: Bumped by the caller to invalidate every existing entry of
+            this function, which nothing else can invalidate.
+    """
+
+    ttl_key: str | None
+    unless: Callable[[Any], bool] | None
+    version: int
+
+
+def cache_call(
+    *,
+    ttl_key: str | None = None,
+    unless: Callable[[Any], bool] | None = None,
+    version: int = 1,
+) -> Callable[[F], F]:
+    """Mark a coroutine whose result a bound ``CachedCalls`` may store.
+
+    The decorator only declares: it writes the policy on the function and
+    returns the very same object, so the module imports with no configuration
+    and the coroutine stays importable and unit-testable on its own. The
+    composition root binds it later.
+
+    The coroutine must be a **pure function of its arguments**: it may not read
+    ambient identity — a contextvar tenant, a caller's credential — and may not
+    hold a caller-scoped session. The key sees only the arguments, and the load
+    is detached into its own task, so a coroutine that reads ambient state
+    serves one caller's answer to another.
+
+    A cached call is a TTL cache with no invalidation: unlike a repository read
+    it carries no dependency tags, because loom cannot know what a coroutine
+    depends on. It expires, or the caller bumps *version*.
+
+    Args:
+        ttl_key: Key whose ``ttl:`` override applies. It shares the namespace
+            with entity TTLs, so a key equal to an entity name deliberately
+            shares that entity's override.
+        unless: Predicate over the result; truthy means the result is returned
+            and nothing is stored. An empty answer from a rate-limited service
+            is the case it exists for.
+        version: Bump to invalidate every entry this function already wrote.
+
+    Returns:
+        The decorator that marks the coroutine.
+
+    Raises:
+        TypeError: The decorated object is not a coroutine function. A cached
+            call is awaited once and its single result is stored, which a
+            plain function, a generator and an async generator cannot honour.
+    """
+
+    def decorator(func: F) -> F:
+        if not inspect.iscoroutinefunction(func):
+            raise TypeError(
+                f"@cache_call requires a coroutine function; {func.__qualname__} is not one"
+            )
+        func.__cache_call__ = _CallPolicy(ttl_key, unless, version)  # type: ignore[attr-defined]
+        # ``iscoroutinefunction`` narrows the callable and erases ``F``.
+        return cast(F, func)
+
+    return decorator
+
+
+def declares_cache_call(func: object) -> _CallPolicy | None:
+    """Return the policy *func* was marked with by :func:`cache_call`.
+
+    Args:
+        func: Any callable, marked or not.
+
+    Returns:
+        The declared policy, or ``None`` when *func* carries none.
+    """
+    policy = getattr(func, "__cache_call__", None)
+    return policy if isinstance(policy, _CallPolicy) else None

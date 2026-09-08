@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Any
+
+import msgspec
 
 
 def stable_hash(value: str) -> str:
@@ -60,3 +63,31 @@ def list_index_key(
         f"{entity}:list:filters={filter_fingerprint}:page={page}:limit={limit}:"
         f"profile={profile}:deps={deps_fingerprint}"
     )
+
+
+def call_key(*, module: str, qualname: str, version: int, arguments: Any) -> str:
+    """Build the cache key for one call to a ``@cache_call`` coroutine.
+
+    The digest is the **full** SHA-256 of the canonically rendered arguments,
+    not :func:`stable_hash`: the arguments of a cached call are often chosen by
+    a model or an end user, and 64 bits over a space someone else influences is
+    not the problem an internal filter fingerprint solves.
+
+    Args:
+        module: ``__module__`` of the decorated coroutine, so two homonyms in
+            different modules never share an entry.
+        qualname: ``__qualname__`` of the decorated coroutine.
+        version: Version declared by the caller, the only manual invalidation
+            a cached call has.
+        arguments: Canonical rendering of the bound arguments, already made
+            order-independent by the caller.
+
+    Returns:
+        A composite cache key string.
+
+    Raises:
+        TypeError: The rendering contains something JSON cannot encode.
+        msgspec.EncodeError: The rendering cannot be encoded at all.
+    """
+    digest = hashlib.sha256(msgspec.json.encode(arguments)).hexdigest()
+    return f"call:{module}.{qualname}:v{version}:{digest}"

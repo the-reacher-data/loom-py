@@ -14,17 +14,32 @@ those; ``tuple`` is restored as a tuple, which builtins conversion flattens
 into a list. An annotation outside the grammar has no codec and the caller
 falls back to :class:`PassthroughResultCodec`.
 
+A coroutine marked with ``@cache_call`` uses the same machinery through
+:func:`build_call_codec`, which extends the grammar with pydantic types behind
+a lazily loaded adapter and refuses, rather than passes through, an annotation
+it cannot describe.
+
 The lenient builtins rendering every cache payload goes through lives here
 too, because the pass-through codec is its main caller.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import sys
+from collections.abc import Callable, Mapping
 from datetime import date, datetime, time
 from decimal import Decimal
 from types import GenericAlias, NoneType, UnionType
-from typing import Any, NamedTuple, Protocol, TypeVar, Union, get_args, get_origin
+from typing import (
+    Any,
+    NamedTuple,
+    Protocol,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+    is_typeddict,
+)
 from uuid import UUID
 
 import msgspec
@@ -141,6 +156,155 @@ class _TypedResultCodec:
                 return type.
         """
         return msgspec.convert(payload, self._return_type)
+
+
+class _PydanticResultCodec:
+    """Codec that converts both paths through a single ``pydantic.TypeAdapter``.
+
+    One adapter covers a ``BaseModel``, a ``RootModel``, a parameterised
+    generic model, a ``pydantic.dataclasses`` type and ``list``/``tuple``/
+    optional of those, so no reflection triage is needed to pick a branch.
+    """
+
+    __slots__ = ("_adapter",)
+
+    def __init__(self, annotation: Any) -> None:
+        """Build the adapter for an already resolved return annotation.
+
+        The import is local because pydantic is an optional dependency of
+        ``loom.core.cache``; the caller only reaches here once pydantic is
+        already loaded in the process.
+
+        Args:
+            annotation: Resolved return annotation of the cached call.
+
+        Raises:
+            Exception: pydantic cannot build an adapter for *annotation*.
+        """
+        from pydantic import TypeAdapter
+
+        self._adapter: Any = TypeAdapter(annotation)
+
+    def encode(self, result: Any) -> EncodedResult:
+        """Dump *result* to its JSON-mode payload and read it back.
+
+        Returning the decoded value rather than *result* is what makes a miss
+        and a hit indistinguishable, exactly as :class:`_TypedResultCodec`
+        does. ``by_alias=True`` stores the field names the model validates
+        from, so a model with an alias generator survives the round trip.
+
+        Raises:
+            pydantic.ValidationError: The dumped payload does not validate
+                back into the declared type.
+        """
+        payload = self._adapter.dump_python(result, mode="json", by_alias=True)
+        return EncodedResult(payload, self.decode(payload))
+
+    def decode(self, payload: Any) -> Any:
+        """Validate *payload* back into the declared type.
+
+        Validation is lax, so a field typed ``Any`` accepts whatever
+        ``mode="json"`` produced and can change shape silently between a miss
+        and a hit. Declare precise field types.
+
+        Raises:
+            pydantic.ValidationError: The payload does not match the declared
+                return type.
+        """
+        return self._adapter.validate_python(payload)
+
+
+def build_call_codec(func: Callable[..., Any]) -> ResultCodec | None:
+    """Build the codec declared by the return annotation of a cached call.
+
+    The msgspec grammar :func:`build_result_codec` implements is tried first;
+    a pydantic type falls through to a single ``TypeAdapter``. A mapping is
+    refused by decision — parameterised, bare, a ``TypedDict``, or nested
+    anywhere inside the annotation — as are ``Any``, a missing annotation, a
+    coroutine declared ``-> None`` (which has nothing to cache; ``get_type_hints``
+    normalises it to ``NoneType``, so the missing-annotation guard does not
+    cover it), an unresolvable forward reference and any pydantic annotation in
+    a process that has not imported pydantic: the caller then runs the
+    coroutine uncached instead of storing something a hit and a miss would
+    disagree about.
+
+    :class:`PassthroughResultCodec` is deliberately not reused: caching an
+    undescribed result is the shape that made a cached pydantic value read
+    back as a miss.
+
+    Args:
+        func: Coroutine function marked with ``@cache_call``.
+
+    Returns:
+        The codec for the declared type, or ``None`` when there is none.
+    """
+    annotation = resolve_type_hints(func).get("return")
+    if annotation is None or annotation is NoneType or annotation is Any:
+        return None
+    if _mentions_mapping(annotation):
+        return None
+    return_type = _resolve_return_type(annotation, None)
+    if return_type is not None:
+        return _TypedResultCodec(return_type)
+    return _pydantic_codec(annotation)
+
+
+def _mentions_mapping(annotation: Any) -> bool:
+    """Return whether *annotation* declares a mapping at any level.
+
+    Only the outermost check is not enough: ``dict[str, Any] | None`` and
+    ``list[dict[str, Any]]`` have a union and a list at the top, fall through
+    the msgspec grammar, and a ``TypeAdapter`` builds for them happily — so a
+    mapping the owner decided is out of the grammar would be cached inside a
+    container. The walk descends through every type argument.
+
+    Args:
+        annotation: Resolved return annotation, or one of its arguments.
+
+    Returns:
+        Whether a mapping appears anywhere in the annotation.
+    """
+    if _is_mapping(annotation):
+        return True
+    return any(_mentions_mapping(argument) for argument in get_args(annotation))
+
+
+def _is_mapping(annotation: Any) -> bool:
+    """Return whether one annotation level declares a mapping, in any of its forms.
+
+    The test is positive rather than a by-product of ``get_origin``: a bare
+    ``dict``, a bare ``Mapping`` and a ``TypedDict`` all have no origin and
+    would otherwise pass.
+
+    Args:
+        annotation: One level of a resolved return annotation.
+
+    Returns:
+        Whether this level is a mapping.
+    """
+    if is_typeddict(annotation):
+        return True
+    declared = get_origin(annotation) or annotation
+    return isinstance(declared, type) and issubclass(declared, Mapping)
+
+
+def _pydantic_codec(annotation: Any) -> ResultCodec | None:
+    """Build a pydantic codec for *annotation*, when pydantic is already loaded.
+
+    Args:
+        annotation: Resolved return annotation outside the msgspec grammar.
+
+    Returns:
+        The adapter-backed codec, or ``None`` when pydantic is not already
+        imported in the process — the guard is ``sys.modules``, not whether
+        the package is installed — or cannot describe *annotation*.
+    """
+    if sys.modules.get("pydantic") is None:
+        return None
+    try:
+        return _PydanticResultCodec(annotation)
+    except Exception:
+        return None
 
 
 def build_result_codec(method: Callable[..., Any], *, model: object | None) -> ResultCodec | None:

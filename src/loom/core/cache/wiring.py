@@ -4,17 +4,27 @@ The decorator declares (``@cached``), the composition root binds: the module
 built here registers the gateways and the
 :class:`~loom.core.repository.registration.RepositoryDecorator` that wraps a
 marked repository in :class:`~loom.core.cache.repository.CachedRepository`
-when the registration module builds it.  Without the section the decorator
-only announces, at boot, which marked classes run uncached.
+when the registration module builds it.  The same module binds the
+:class:`~loom.core.cache.calls.CachedCalls` that turns a ``@cache_call``
+coroutine into a cached one, for code that is not a repository.  Without the
+section both only announce, at boot, what runs uncached.
 """
 
 from __future__ import annotations
 
+import random
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from loom.core.cache._single_flight import SingleFlight
 from loom.core.cache.abc.config import CacheConfig
+from loom.core.cache.calls import (
+    CachedCalls,
+    _ConfiguredCalls,
+    _log_abandoned_call,
+    _UnconfiguredCalls,
+)
 from loom.core.cache.decorators import declares_cache_policy
 from loom.core.cache.dependency import GenerationalDependencyResolver
 from loom.core.cache.gateway import CacheGateway
@@ -49,13 +59,34 @@ class CacheGateways:
             yield self.counters
 
 
+def _register_calls(container: LoomContainer, calls: CachedCalls) -> None:
+    """Claim the ``CachedCalls`` slot with *calls*, unless it is already taken.
+
+    The same courtesy the decorator slot gets: a deployment that registered its
+    own binder keeps it, and loom says whose it kept.
+
+    Args:
+        container: Container the cache module is being applied to.
+        calls: Binder loom would bind when the slot is free.
+    """
+    if container.is_registered(CachedCalls):
+        existing = container.resolve(CachedCalls)
+        get_logger(__name__).warning(
+            "CacheCallsAlreadyRegistered", calls=type(existing).__qualname__
+        )
+        return
+    container.register_instance(CachedCalls, calls)
+
+
 def cache_module(config: CacheConfig) -> Callable[[LoomContainer], None]:
     """Build the container module for an enabled ``cache:`` section.
 
     The returned module applies *config* to aiocache before it builds any
     gateway, opens the data and counter gateways, and registers them, the
-    resolver and — unless one is already registered, in which case it logs
-    ``CacheDecoratorAlreadyRegistered`` and leaves the slot alone — a
+    resolver, the :class:`~loom.core.cache.calls.CachedCalls` binder that
+    caches ``@cache_call`` coroutines, and — unless one is already registered,
+    in which case it logs ``CacheDecoratorAlreadyRegistered`` and leaves the
+    slot alone — a
     :class:`~loom.core.repository.registration.RepositoryDecorator` that wraps
     every ``@cached`` repository the registration module builds.  All of it
     happens when the module runs against a container, so a boot that fails
@@ -93,6 +124,14 @@ def cache_module(config: CacheConfig) -> Callable[[LoomContainer], None]:
         container.register_instance(CacheGateway, data)
         container.register_instance(GenerationalDependencyResolver, resolver)
         container.register_instance(CacheGateways, CacheGateways(data=data, counters=counters))
+        # The single flight reports a load abandoned by its last caller: the
+        # body of a cached call is application code, and a failure nobody is
+        # left to await would otherwise be lost, as it is for a repository.
+        flight = SingleFlight(_log_abandoned_call)
+        # Before the decorator block, which returns early when its slot is
+        # taken: registering after it would leave a deployment that supplies
+        # its own decorator with no binder at all.
+        _register_calls(container, _ConfiguredCalls(config, data, flight, random.Random()))
         if container.is_registered(RepositoryDecorator):
             existing = container.resolve(RepositoryDecorator)
             get_logger(__name__).warning(
@@ -116,7 +155,8 @@ def _announce_uncached(repository: Any) -> Any:
 
 
 def _announcing_module(container: LoomContainer) -> None:
-    """Claim the decorator slot, when free, with the pass-through that announces."""
+    """Claim the decorator and binder slots, when free, with the pass-throughs that announce."""
+    _register_calls(container, _UnconfiguredCalls())
     if not container.is_registered(RepositoryDecorator):
         container.register_instance(RepositoryDecorator, _announce_uncached)
 
