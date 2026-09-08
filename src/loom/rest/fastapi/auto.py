@@ -935,17 +935,23 @@ def _require_authenticated_path(name: str, path: str, exclude_paths: tuple[str, 
     )
 
 
-def _register_sql_collaborators(container: LoomContainer, sql: _SqlWiring) -> None:
+def _register_sql_collaborators(
+    container: LoomContainer, sql: _SqlWiring, observability: ObservabilityRuntime
+) -> None:
     """Register both SQL collaborators (APPLICATION scope) — always present (M5).
 
     ``SqlQueryService`` is the unbound path, for system work with no caller;
     ``CallerBoundSql`` derives the roles from the verified identity and is what
     a use case acting on behalf of a caller injects. Both are always
     resolvable, so neither choice depends on the config being present.
+
+    The runtime is handed to the bound path so its queries leave the same audit
+    trail as the REST endpoint: one span per query, labelled with the effective
+    roles and the caller subject.
     """
     service = sql.service
     config = sql.config if sql.config is not None else SqlConfig(connections={})
-    caller_bound = CallerBoundSql(service, config)
+    caller_bound = CallerBoundSql(service, config, observability)
     container.register(SqlQueryService, lambda: service, scope=Scope.APPLICATION)
     container.register(CallerBoundSql, lambda: caller_bound, scope=Scope.APPLICATION)
 
@@ -1237,7 +1243,7 @@ def create_app(
         metrics=metrics_adapter,
     )
     _configure_job_service(ctx, result, observability_runtime)
-    _register_sql_collaborators(result.container, sql)
+    _register_sql_collaborators(result.container, sql, observability_runtime)
     # Registered, not merely passed: capability spans resolve it from the
     # container, and an unregistered runtime makes every Scope.TOOL span a
     # silent no-op in production while passing every test that injects one.
