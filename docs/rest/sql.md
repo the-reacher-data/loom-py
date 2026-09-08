@@ -374,8 +374,10 @@ claim — would be accepted and could name your ClickHouse roles.
 
 **4. Auditability.** Each request emits a span labelled with the effective `roles` and
 the caller `subject`; denials are logged at WARNING with connection, subject and cause.
-`CallerBoundSql` emits the same span for every query it accepts, so a use case acting
-on behalf of a caller is auditable on the same terms as the endpoint.
+`CallerBoundSql` opens a span of its own for every query it accepts, carrying the same
+`roles`, `subject` and `mechanism` labels. It is a different span from the endpoint's,
+under a narrower scope and its own name, so a use case acting on behalf of a caller is
+auditable on the same terms rather than through the same record.
 
 **Where this comes from.** Measured on ClickHouse 25.3 with a single credential and
 only the `role` parameter changed: the default role returned 497 `ACCESS_DENIED`, while

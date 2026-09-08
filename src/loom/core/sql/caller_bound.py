@@ -63,9 +63,12 @@ class CallerBoundSql:
     so :class:`~loom.core.sql.abc.errors.RolesNotBoundError` is raised. Use
     :class:`~loom.core.sql.service.SqlQueryService` for that unbound work.
 
-    Each accepted query opens one span labelled with the effective roles and
-    the caller subject, the same audit trail the REST endpoint emits. Without
-    an observability runtime there is no span and no other difference.
+    Each accepted query opens one span labelled with the effective roles, the
+    caller subject and the authentication mechanism. Those labels match what
+    the REST endpoint records, but the span is its own: a narrower scope and a
+    different name, so the two are auditable on the same terms rather than
+    being one record. Without an observability runtime there is no span and no
+    other difference.
 
     Args:
         service: Underlying query service applying the connection policy.

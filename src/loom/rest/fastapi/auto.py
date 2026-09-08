@@ -1161,9 +1161,12 @@ def create_app(
     other.  Exactly one of the two may be active.
 
     The optional ``sql:`` section wires the SQL subsystem: its connections
-    open inside the app lifespan and ``SqlQueryService`` is registered in the
-    container (a null implementation raising an actionable ``ConfigError``
-    when the section is absent). Connections opting in with
+    open inside the app lifespan and two collaborators are registered in the
+    container (null implementations raising an actionable ``ConfigError`` when
+    the section is absent). ``CallerBoundSql`` derives the query roles from the
+    verified caller and is what a use case serving a request should inject;
+    ``SqlQueryService`` takes the roles as an argument and is for system work
+    that has no caller. Connections opting in with
     ``sql_endpoint.enabled`` plus an explicit ``sql_endpoint.auth`` mount a
     ``POST /sql/{name}`` endpoint; ``auth: identity`` additionally requires a
     configured authentication mechanism, and a non-empty ``allowed_roles``

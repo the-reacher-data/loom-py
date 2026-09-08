@@ -176,7 +176,7 @@ async def test_a_configured_connection_without_an_executor_refuses_on_the_roles(
 async def test_an_accepted_query_emits_a_span_labelled_with_roles_and_subject(
     fake_executor: FakeSqlExecutor,
 ) -> None:
-    """The bound path leaves the same audit trail the REST endpoint guarantees."""
+    """The bound path records the labels the REST endpoint guarantees, on its own span."""
     observer = _RecordingObserver()
     sql = _caller_bound(
         fake_executor, make_connection_config(), observability=ObservabilityRuntime([observer])
@@ -218,10 +218,18 @@ async def test_a_refused_query_emits_no_span(fake_executor: FakeSqlExecutor) -> 
     assert observer.events == []
 
 
-async def test_without_an_observability_runtime_the_query_still_runs(
+async def test_without_an_observability_runtime_the_query_runs_and_records_nothing(
     fake_executor: FakeSqlExecutor,
 ) -> None:
-    """The span is an addition, never a requirement of the bound path."""
+    """The span is an addition, never a requirement of the bound path.
+
+    The twin of this case with a runtime is
+    ``test_an_accepted_query_emits_a_span_labelled_with_roles_and_subject``;
+    what this one pins is that dropping the runtime costs the caller nothing
+    but the record, so the observer built here must stay empty.
+    """
+    observer = _RecordingObserver()
     sql = _caller_bound(fake_executor, make_connection_config())
     await sql.execute("SELECT 1", connection="analytics", identity=_identity("role_viz_sales"))
     assert fake_executor.calls[0].options.roles == ("role_viz_sales",)
+    assert observer.events == []
