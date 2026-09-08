@@ -48,7 +48,13 @@ from loom.core.job.service import InlineJobService, JobService
 from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.persistence import PersistenceWiring, resolve_backend
-from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryService
+from loom.core.sql import (
+    CallerBoundSql,
+    NullSqlQueryService,
+    SqlConfig,
+    SqlExecutor,
+    SqlQueryService,
+)
 from loom.core.sql.config import roles_need_identity_binding
 from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.invoker import AppInvoker
@@ -929,9 +935,19 @@ def _require_authenticated_path(name: str, path: str, exclude_paths: tuple[str, 
     )
 
 
-def _register_sql_service(container: LoomContainer, service: SqlQueryService) -> None:
-    """Register ``SqlQueryService`` (APPLICATION scope) — always present (M5)."""
+def _register_sql_collaborators(container: LoomContainer, sql: _SqlWiring) -> None:
+    """Register both SQL collaborators (APPLICATION scope) — always present (M5).
+
+    ``SqlQueryService`` is the unbound path, for system work with no caller;
+    ``CallerBoundSql`` derives the roles from the verified identity and is what
+    a use case acting on behalf of a caller injects. Both are always
+    resolvable, so neither choice depends on the config being present.
+    """
+    service = sql.service
+    config = sql.config if sql.config is not None else SqlConfig(connections={})
+    caller_bound = CallerBoundSql(service, config)
     container.register(SqlQueryService, lambda: service, scope=Scope.APPLICATION)
+    container.register(CallerBoundSql, lambda: caller_bound, scope=Scope.APPLICATION)
 
 
 def _warn_sql_endpoints(sql_cfg: SqlConfig, auth: _AuthWiring) -> None:
@@ -1221,7 +1237,7 @@ def create_app(
         metrics=metrics_adapter,
     )
     _configure_job_service(ctx, result, observability_runtime)
-    _register_sql_service(result.container, sql.service)
+    _register_sql_collaborators(result.container, sql)
     # Registered, not merely passed: capability spans resolve it from the
     # container, and an unregistered runtime makes every Scope.TOOL span a
     # silent no-op in production while passing every test that injects one.
