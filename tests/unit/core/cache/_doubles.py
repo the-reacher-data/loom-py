@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import date
 from typing import Any, Generic, NamedTuple, TypeVar, cast
 from uuid import UUID
@@ -19,10 +20,11 @@ from uuid import UUID
 import msgspec
 
 from loom.core.cache import CacheConfig, CachedRepository, GenerationalDependencyResolver
-from loom.core.cache.decorators import cache_query
-from loom.core.model import BaseModel, ColumnField
+from loom.core.cache.decorators import cache_query, cached
+from loom.core.engine.post_commit import PostCommitChannel, bind_channel, reset_channel
+from loom.core.model import BaseModel, ColumnField, LoomStruct
 from loom.core.model.introspection import get_id_attribute
-from loom.core.repository import FilterParams, PageParams, PageResult, Repository
+from loom.core.repository import FilterParams, PageParams, PageResult, Repository, repository_for
 from loom.core.repository.abc.query import (
     CursorResult,
     FilterOp,
@@ -30,11 +32,22 @@ from loom.core.repository.abc.query import (
     QuerySpec,
     build_page_result,
 )
+from loom.core.repository.abc.repo_for import Listable, Readable
 from loom.core.repository.sqlalchemy.query_compiler import UnsafeFilterError
+from loom.core.transaction import close_atomic_transaction, open_atomic_transaction
 
 T = TypeVar("T")
 
 TAG_KEY_PREFIX = "tag:"
+
+MEMORY_BACKEND: dict[str, Any] = {"cache": "aiocache.SimpleMemoryCache"}
+"""aiocache entry for a raw memory alias: no serializer, native increment."""
+
+SERIALIZED_BACKEND: dict[str, Any] = {
+    **MEMORY_BACKEND,
+    "serializer": {"class": "loom.core.cache.serializer.MsgspecSerializer"},
+}
+"""aiocache entry for a memory alias that carries entity data, msgpack-encoded."""
 
 
 class Widget(BaseModel):
@@ -356,6 +369,19 @@ class WritableRepository(CountingRepository[RowT], Generic[RowT]):
         next_key = max((int(key) for key in self.storage), default=0) + 1
         payload = {self.id_attribute: next_key, "name": data.name}
         return msgspec.convert(payload, self._row_type)
+
+
+@cached
+class CachedWidgetRepository(WritableRepository[Widget], Readable[Widget], Listable[Widget]):
+    """Writable double marked ``@cached`` that declares two standard capabilities.
+
+    Registered with ``repository_for(Widget)`` by the test that needs it (see
+    :func:`registered_repository`), so the registration module binds
+    ``Readable[Widget]`` and ``Listable[Widget]`` beside the primary key.
+    """
+
+    def __init__(self, rows: Sequence[Widget] = ()) -> None:
+        super().__init__(rows, Widget)
 
 
 class ParentRepository(CountingRepository[Widget]):
@@ -688,3 +714,37 @@ def rewrap_with_cache(
         cache=env.backend,
         dependency_resolver=env.resolver,
     )
+
+
+@contextmanager
+def registered_repository(model: type[LoomStruct], repository_type: type[Any]) -> Iterator[None]:
+    """Register *repository_type* for *model* for the block, then forget it.
+
+    ``repository_for`` writes the registration on the model class, so a test
+    that leaves it behind would leak into every later suite.
+    """
+    repository_for(model)(repository_type)
+    try:
+        yield
+    finally:
+        delattr(model, "__loom_repository__")
+
+
+@contextmanager
+def open_transaction_with_channel(
+    channel: PostCommitChannel | None = None,
+) -> Iterator[PostCommitChannel]:
+    """Bind *channel* (or a fresh one) and open the transaction signal for the block.
+
+    Mirrors what a real unit of work does around a use case: yields the
+    channel so a test can enqueue extra actions on it before the write, or
+    drain it after; both are unwound on exit.
+    """
+    channel = channel or PostCommitChannel()
+    channel_token = bind_channel(channel)
+    transaction_token = open_atomic_transaction()
+    try:
+        yield channel
+    finally:
+        close_atomic_transaction(transaction_token)
+        reset_channel(channel_token)

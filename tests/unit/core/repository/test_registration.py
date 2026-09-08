@@ -8,6 +8,7 @@ from typing import Any
 import msgspec
 
 from loom.core.di.container import LoomContainer
+from loom.core.di.scope import Scope
 from loom.core.model import BaseModel, ColumnField
 from loom.core.repository.abc import (
     BulkCreatable,
@@ -20,10 +21,12 @@ from loom.core.repository.abc import (
 )
 from loom.core.repository.dynamodb.repository import RepositoryDynamoDB
 from loom.core.repository.registration import (
+    RepositoryDecorator,
     build_repository_registration_module,
     capabilities_of,
 )
 from loom.core.repository.registry import (
+    DefaultRepositoryBuilder,
     RepositoryBuildContext,
     RepositoryRegistration,
     RepositoryToken,
@@ -103,3 +106,55 @@ class TestDefaultKeys:
         assert container.is_registered(RepositoryToken(Widget))
         assert not container.is_registered(Readable[Widget])
         assert not container.is_registered(Creatable[Widget])
+
+
+class _Wrapped:
+    def __init__(self, repository: Any) -> None:
+        self.repository = repository
+
+
+class _CountingDecorator:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, repository: Any) -> Any:
+        self.calls += 1
+        return _Wrapped(repository)
+
+
+def _default_builder(context: RepositoryBuildContext) -> Any:
+    return _BulkWidgetRepository()
+
+
+def _container_with_default_builder() -> LoomContainer:
+    container = _container(_BulkWidgetRepository)
+    container.register(DefaultRepositoryBuilder, lambda: _default_builder, scope=Scope.APPLICATION)
+    return container
+
+
+class TestProviderMemo:
+    def test_every_key_of_the_model_resolves_the_same_instance(self) -> None:
+        container = _container_with_default_builder()
+
+        primary = container.resolve(RepositoryToken(Widget))
+
+        assert container.resolve(Creatable[Widget]) is primary
+        assert container.resolve(BulkCreatable[Widget]) is primary
+
+    def test_a_registered_decorator_is_applied_once_per_model(self) -> None:
+        container = _container_with_default_builder()
+        decorator = _CountingDecorator()
+        container.register_instance(RepositoryDecorator, decorator)
+
+        primary = container.resolve(RepositoryToken(Widget))
+        container.resolve(Creatable[Widget])
+        container.resolve(BulkCreatable[Widget])
+
+        assert isinstance(primary, _Wrapped)
+        assert isinstance(primary.repository, _BulkWidgetRepository)
+        assert decorator.calls == 1
+
+    def test_the_repository_is_untouched_without_a_decorator(self) -> None:
+        container = _container_with_default_builder()
+
+        assert isinstance(container.resolve(RepositoryToken(Widget)), _BulkWidgetRepository)

@@ -8,7 +8,10 @@ from loom.core.repository.abc import (
     RepositoryWrite,
 )
 from loom.core.repository.mutation import MutationEvent
-from loom.core.repository.registration import build_repository_registration_module
+from loom.core.repository.registration import (
+    RepositoryDecorator,
+    build_repository_registration_module,
+)
 from loom.core.repository.registry import (
     DefaultRepositoryBuilder,
     RepositoryBuildContext,
@@ -28,6 +31,7 @@ __all__ = [
     "RepoFor",
     "RepositoryBuildContext",
     "RepositoryBuilder",
+    "RepositoryDecorator",
     "RepositoryRegistration",
     "Repository",
     "RepositoryToken",

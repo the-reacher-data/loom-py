@@ -18,6 +18,7 @@ class ConfigKey(StrEnum):
 
     APP = "app"
     AI = "ai"
+    CACHE = "cache"
     DATABASE = "database"
     PERSISTENCE = "persistence"
     CELERY = "celery"

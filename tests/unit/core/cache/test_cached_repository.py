@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+import inspect
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Any, TypeVar, cast
 from uuid import uuid4
@@ -18,6 +18,7 @@ from loom.core.cache import (
     cached,
 )
 from loom.core.cache.keys import entity_key
+from loom.core.cache.repository import _DELEGATED_METHODS
 from loom.core.engine.post_commit import (
     PostCommitChannel,
     PostCommitError,
@@ -47,6 +48,7 @@ from ._doubles import (
     WidgetCreate,
     WidgetUpdate,
     WritableRepository,
+    open_transaction_with_channel,
     wrap_with_cache,
 )
 
@@ -701,26 +703,6 @@ def _generation(
     return int(cache.data.get(resolver._tag_key(f"{wrapped.entity_name}:list")) or 0)
 
 
-@contextmanager
-def _open_transaction_with_channel(
-    channel: PostCommitChannel | None = None,
-) -> Iterator[PostCommitChannel]:
-    """Bind *channel* (or a fresh one) and open the transaction signal for the block.
-
-    Mirrors what a real unit of work does around a use case: yields the
-    channel so a test can enqueue extra actions on it before the write, or
-    drain it after; both are unwound on exit.
-    """
-    channel = channel or PostCommitChannel()
-    channel_token = bind_channel(channel)
-    transaction_token = open_atomic_transaction()
-    try:
-        yield channel
-    finally:
-        close_atomic_transaction(transaction_token)
-        reset_channel(channel_token)
-
-
 class TestPostCommitDeferral:
     """F03: the generation bump must wait for the transaction to commit.
 
@@ -737,7 +719,7 @@ class TestPostCommitDeferral:
     ) -> None:
         """The regression: a concurrent reader must not see the bump before commit."""
         wrapped, resolver = _wrap(_FakeRepository(), cache_config)
-        with _open_transaction_with_channel() as channel:
+        with open_transaction_with_channel() as channel:
             created = await wrapped.create(_Create(name="entity-1"))
             # A second reader, mid-transaction: no bump has happened, exactly
             # as if the write had not occurred.
@@ -771,7 +753,7 @@ class TestPostCommitDeferral:
         # Simulates inline job mode: the dispatch body reads the cache while
         # the channel drains it, exactly as a real job handler would.
         generation_seen_by_dispatch: list[int] = []
-        with _open_transaction_with_channel() as channel:
+        with open_transaction_with_channel() as channel:
             # The use case body dispatches a job first...
             channel.enqueue(
                 lambda: generation_seen_by_dispatch.append(_generation(wrapped, resolver))
@@ -787,7 +769,7 @@ class TestPostCommitDeferral:
     @pytest.mark.asyncio
     async def test_rollback_publishes_no_bump_at_all(self, cache_config: CacheConfig) -> None:
         wrapped, resolver = _wrap(_FakeRepository(), cache_config)
-        with _open_transaction_with_channel() as channel:
+        with open_transaction_with_channel() as channel:
             await wrapped.create(_Create(name="entity-1"))
 
         # The transaction rolled back: the channel is discarded, not drained.
@@ -901,7 +883,7 @@ class TestPostCommitDeferral:
         self, cache_config: CacheConfig
     ) -> None:
         wrapped, resolver = _wrap(_BulkFakeRepository(), cache_config)
-        with _open_transaction_with_channel() as channel:
+        with open_transaction_with_channel() as channel:
             await wrapped.create_many([_Create(name="a")])
             assert resolver.events == []
 
@@ -921,7 +903,7 @@ class TestPostCommitDeferral:
             raise RuntimeError("cache backend unreachable")
 
         resolver.bump_from_events = _boom  # type: ignore[method-assign]
-        with _open_transaction_with_channel() as channel:
+        with open_transaction_with_channel() as channel:
             created = await wrapped.create(_Create(name="entity-1"))
 
         with caplog.at_level("ERROR"), pytest.raises(PostCommitError) as excinfo:
@@ -1111,3 +1093,50 @@ class TestEntityScopeValidation:
         assert env.repository.note_count_calls == 2
         # Granularity (update(2) keeps note_count(1) warm) is covered by
         # test_invalidation_granularity.py.
+
+
+@cached
+class _ReadOnlyRepository:
+    """Marked double that only reads, so the wrapper would advertise writes it lacks."""
+
+    async def get_by_id(self, obj_id: int, profile: str = "default") -> _EntityOut | None:
+        return None
+
+
+_OPTIONAL_OVERRIDES = frozenset({"on_transaction_committed"})
+"""Public overrides outside the precondition: the wrapper adapts them when present."""
+
+
+class TestDelegationPrecondition:
+    """The wrapper refuses what it cannot delegate to, and knows what that is."""
+
+    def test_refuses_a_repository_missing_delegated_methods(
+        self, cache_config: CacheConfig
+    ) -> None:
+        cache = _MemoryCacheBackend()
+
+        with pytest.raises(RuntimeError, match="_ReadOnlyRepository") as info:
+            CachedRepository(
+                cast(Any, _ReadOnlyRepository()),
+                config=cache_config,
+                cache=cache,
+                dependency_resolver=GenerationalDependencyResolver(cache),
+            )
+
+        message = str(info.value)
+        assert "create" in message
+        assert "list_paginated" in message
+
+    def test_the_derived_set_covers_every_public_override(self) -> None:
+        """Drift guard: a new public override must join the set or the allow-list."""
+        overridden = {
+            name
+            for name, attr in vars(CachedRepository).items()
+            if not name.startswith("_") and inspect.isfunction(attr)
+        }
+
+        assert overridden - _OPTIONAL_OVERRIDES == set(_DELEGATED_METHODS)
+
+    def test_the_derived_set_is_the_repository_surface(self) -> None:
+        assert all(hasattr(Repository, name) for name in _DELEGATED_METHODS)
+        assert not any(hasattr(Repository, name) for name in _OPTIONAL_OVERRIDES)

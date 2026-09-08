@@ -329,6 +329,14 @@ app:
 database:
   url: ${oc.env:DATABASE_URL,sqlite+aiosqlite:///store.db}
 
+cache:                      # optional; wraps every repository marked @cached
+  default_ttl: 300
+  aiocache_config:
+    default:
+      cache: aiocache.SimpleMemoryCache       # memory -> Redis: aiocache.RedisCache
+      serializer:
+        class: loom.core.cache.serializer.MsgspecSerializer
+
 observability:
   log:
     enabled: false

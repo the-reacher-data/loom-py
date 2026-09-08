@@ -12,15 +12,17 @@ import pytest
 
 from loom.core.cache import CacheGateway
 from loom.core.cache.abc.config import CacheConfig
+from loom.core.config import ConfigContext, ConfigError
+from loom.core.config.keys import ConfigKey
 
-_MEMORY = {"cache": "aiocache.SimpleMemoryCache"}
+from ._doubles import MEMORY_BACKEND
 
 
 def _named_aliases() -> CacheConfig:
     return CacheConfig(
         aiocache_alias="cache",
         counter_alias="counters",
-        aiocache_config={"cache": dict(_MEMORY), "counters": dict(_MEMORY)},
+        aiocache_config={"cache": dict(MEMORY_BACKEND), "counters": dict(MEMORY_BACKEND)},
     )
 
 
@@ -43,7 +45,7 @@ def test_an_explicit_default_is_not_overwritten() -> None:
     config = CacheConfig(
         aiocache_alias="cache",
         aiocache_config={
-            "cache": dict(_MEMORY),
+            "cache": dict(MEMORY_BACKEND),
             "default": {"cache": "aiocache.SimpleMemoryCache", "namespace": "mine"},
         },
     )
@@ -64,26 +66,26 @@ def test_a_yaml_section_keeps_its_backends() -> None:
     """``section()`` converts by field name, so the YAML key has to match one."""
     parsed = {
         "aiocache_alias": "sessions",
-        "aiocache_config": {"sessions": dict(_MEMORY)},
+        "aiocache_config": {"sessions": dict(MEMORY_BACKEND)},
     }
 
     config = msgspec.convert(parsed, CacheConfig)
 
-    assert config.aiocache_config == {"sessions": dict(_MEMORY)}
+    assert config.aiocache_config == {"sessions": dict(MEMORY_BACKEND)}
 
 
 def test_from_mapping_accepts_the_short_key_too() -> None:
     """The docstring used ``aiocache:``, so configs in the wild carry both."""
     config = CacheConfig.from_mapping(
-        {"aiocache_alias": "sessions", "aiocache": {"sessions": dict(_MEMORY)}}
+        {"aiocache_alias": "sessions", "aiocache": {"sessions": dict(MEMORY_BACKEND)}}
     )
 
-    assert config.aiocache_config == {"sessions": dict(_MEMORY)}
+    assert config.aiocache_config == {"sessions": dict(MEMORY_BACKEND)}
 
 
 def test_from_mapping_prefers_the_field_name_when_both_are_present() -> None:
     config = CacheConfig.from_mapping(
-        {"aiocache_config": {"a": dict(_MEMORY)}, "aiocache": {"b": dict(_MEMORY)}}
+        {"aiocache_config": {"a": dict(MEMORY_BACKEND)}, "aiocache": {"b": dict(MEMORY_BACKEND)}}
     )
 
     assert set(config.aiocache_config) == {"a"}
@@ -92,3 +94,17 @@ def test_from_mapping_prefers_the_field_name_when_both_are_present() -> None:
 @pytest.mark.parametrize("payload", [{}, {"aiocache": {}}, {"aiocache_config": {}}])
 def test_from_mapping_never_invents_backends(payload: dict[str, object]) -> None:
     assert CacheConfig.from_mapping(payload).aiocache_config == {}
+
+
+class TestYamlSection:
+    def test_the_section_decodes_when_every_key_is_a_field(self) -> None:
+        ctx = ConfigContext.from_dict({"cache": {"default_ttl": 5}})
+
+        assert ctx.section_optional(ConfigKey.CACHE, CacheConfig) == CacheConfig(default_ttl=5)
+
+    @pytest.mark.parametrize("unknown", ["ttls", "aiocache"])
+    def test_the_section_is_rejected_when_a_key_is_not_a_field(self, unknown: str) -> None:
+        ctx = ConfigContext.from_dict({"cache": {unknown: {}}})
+
+        with pytest.raises(ConfigError, match=unknown):
+            ctx.section_optional(ConfigKey.CACHE, CacheConfig)
