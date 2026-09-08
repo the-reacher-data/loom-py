@@ -20,6 +20,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from loom.core.bootstrap import KernelRuntime, create_kernel
+from loom.core.cache.wiring import CacheGateways, cache_module_for
 from loom.core.config import (
     ConfigContext,
     ConfigKey,
@@ -279,7 +280,13 @@ def _build_bootstrap(
     wiring = _resolve_persistence(ctx, persistence_cfg, discovered)
     discovered = _gate_autocrud_capabilities(discovered, wiring, persistence_cfg.backend)
     wiring.prepare_models(discovered.models)
-    result = _build_kernel_runtime(app_cfg, discovered, wiring, metrics=metrics)
+    result = _build_kernel_runtime(
+        app_cfg,
+        discovered,
+        wiring,
+        metrics=metrics,
+        extra_modules=(cache_module_for(ctx),),
+    )
     return result, wiring, discovered
 
 
@@ -991,11 +998,12 @@ def _build_kernel_runtime(
     discovered: DiscoveryResult,
     wiring: PersistenceWiring,
     metrics: Any | None = None,
+    extra_modules: Sequence[Callable[[LoomContainer], None]] = (),
 ) -> KernelRuntime:
     return create_kernel(
         config=app_cfg,
         use_cases=discovered.use_cases,
-        modules=[wiring.repo_registration_module],
+        modules=[wiring.repo_registration_module, *extra_modules],
         uow_factory=wiring.uow_factory,
         metrics=metrics,
     )
@@ -1234,8 +1242,12 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         async with AsyncExitStack() as stack:
-            # Registry first (outermost): its clients close even when the
-            # persistence lifespan fails to start or to shut down.
+            # Pushed first, so the gateways close after the SQL registry.
+            if result.container.is_registered(CacheGateways):
+                for gateway in result.container.resolve(CacheGateways).distinct():
+                    stack.push_async_callback(gateway.close)
+            # Registry next: its clients close even when the persistence
+            # lifespan fails to start or to shut down.
             if sql.registry is not None:
                 await stack.enter_async_context(sql.registry)
             if ai.runtime is not None:

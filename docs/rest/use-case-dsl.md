@@ -480,8 +480,8 @@ never calls them directly.
 ### What runs after commit
 
 Post-commit actions — job dispatches queued through `JobService` and
-`on_transaction_committed` hooks enqueued by the `@transactional` decorator
-(cache publication joins them in a later release) — are enqueued on a
+`on_transaction_committed` hooks enqueued by the `@transactional` decorator,
+and the cache invalidations a [cached repository](cache.md) publishes — are enqueued on a
 `PostCommitChannel` bound to the execution and drained only after the unit
 of work has closed, outside its transaction, in enqueue order:
 

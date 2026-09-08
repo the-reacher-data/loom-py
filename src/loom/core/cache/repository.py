@@ -16,6 +16,7 @@ from loom.core.cache._single_flight import SingleFlight
 from loom.core.cache.abc.backend import CacheBackend
 from loom.core.cache.abc.config import CacheConfig
 from loom.core.cache.abc.dependency import BatchFingerprintResolver, DependencyResolver
+from loom.core.cache.decorators import declares_cache_policy
 from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.cache.result_codec import (
     PassthroughResultCodec,
@@ -220,6 +221,7 @@ class CachedRepository(
         cache: CacheBackend,
         dependency_resolver: DependencyResolver,
     ) -> None:
+        _require_full_repository(repository)
         self._repository = repository
         self._config = config
         self._cache = cache
@@ -1112,3 +1114,65 @@ class CachedRepository(
         if isinstance(data, dict):
             return list(data.keys())
         return []
+
+
+def _protocol_surface(protocol: type) -> frozenset[str]:
+    """Return the public method names *protocol* and its bases declare."""
+    return frozenset(
+        name
+        for klass in protocol.__mro__
+        for name, attr in vars(klass).items()
+        if not name.startswith("_") and inspect.isfunction(attr)
+    )
+
+
+def _derive_delegated_methods() -> tuple[str, ...]:
+    """Return the ``Repository`` methods :class:`CachedRepository` overrides.
+
+    Derived from the class itself rather than transcribed, so an override added
+    later joins the precondition with no list to update.  Declaration order is
+    preserved, so a refusal names the missing methods in the order the wrapper
+    declares them.
+    """
+    surface = _protocol_surface(Repository)
+    return tuple(
+        name
+        for name, attr in vars(CachedRepository).items()
+        if name in surface and inspect.isfunction(attr)
+    )
+
+
+_DELEGATED_METHODS: tuple[str, ...] = _derive_delegated_methods()
+"""Methods the wrapper overrides, and therefore requires of what it wraps."""
+
+
+def _require_full_repository(repository: object) -> None:
+    """Check that a ``@cached`` *repository* provides every delegated method.
+
+    :class:`CachedRepository` satisfies the whole ``Repository`` protocol, so
+    wrapping a read-only object would advertise write methods that fail with an
+    opaque ``AttributeError`` on the first call.  Refusing at construction names
+    the class and what it lacks instead, at boot rather than in traffic.
+
+    Only a class that declared itself cacheable is held to the whole protocol:
+    a partial repository that never asked for the wrapper —
+    :class:`~loom.core.repository.dynamodb.repository.RepositoryDynamoDB`, which
+    serves no list and no count — may still be wrapped by hand for the reads it
+    does support.
+
+    Args:
+        repository: The instance about to be wrapped.
+
+    Raises:
+        RuntimeError: If the class is marked ``@cached`` and a delegated method
+            is missing.
+    """
+    if not declares_cache_policy(type(repository)):
+        return
+    missing = [name for name in _DELEGATED_METHODS if not callable(getattr(repository, name, None))]
+    if missing:
+        raise RuntimeError(
+            f"{type(repository).__qualname__} cannot be wrapped in CachedRepository: "
+            f"it does not implement {', '.join(missing)}. A @cached repository must "
+            f"implement the full Repository protocol."
+        )

@@ -7,8 +7,13 @@ import msgspec
 from loom.core.model import LoomFrozenStruct
 
 
-class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
+class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     """Configuration for cache behaviour including TTLs and aiocache backend settings.
+
+    Unknown keys are rejected: a misspelt override (``ttls:``) would otherwise
+    disable every TTL in silence.  The ``aiocache:`` short key that
+    :meth:`from_mapping` accepts is therefore not read from YAML; declare
+    ``aiocache_config:``.
 
     Attributes:
         enabled: Global toggle for cache operations.

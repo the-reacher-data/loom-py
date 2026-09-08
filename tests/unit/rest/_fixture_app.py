@@ -19,6 +19,25 @@ _NON_IDENTIFIER = re.compile(r"\W", re.ASCII)
 _AUTOINCREMENT_ID_FIELD = "id: int = ColumnField(primary_key=True, autoincrement=True)"
 UUID4_ID_FIELD = "id: str = ColumnField(primary_key=True, server_default=ServerDefault.UUID4)"
 """Primary key a backend without sequences (Mongo) accepts."""
+CACHED_RECORDS_PREFIX = "/cached-records"
+"""Prefix of the auto-CRUD routes of the ``@cached`` fixture model."""
+
+
+class ReadCounter:
+    """Counts the reads the ``@cached`` fixture repository serves itself."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def record(self) -> None:
+        self.calls += 1
+
+    def reset(self) -> None:
+        self.calls = 0
+
+
+CACHED_READS = ReadCounter()
+"""Shared by every generated fixture module; reset it before each test."""
 
 _APP_SOURCE = '''\
 """Minimal discoverable app used by the create_app configuration tests."""
@@ -55,6 +74,41 @@ class ConfigPingInterface(RestInterface[str]):
     routes = (RestRoute(use_case=ConfigPingUseCase, method="GET", path="{route_path}"),)
 '''
 
+_CACHED_MODEL_SOURCE = '''
+
+from loom.core.cache import cached
+from loom.core.repository import RepositoryBuildContext, repository_for
+from loom.core.repository.sqlalchemy import RepositorySQLAlchemy, SessionManager
+from tests.unit.rest._fixture_app import CACHED_READS
+
+
+class CachedRecord(BaseModel):
+    __tablename__ = "cached_records_fixture"
+
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    name: str = ColumnField(length=50)
+
+
+def _build_cached_record_repository(context: RepositoryBuildContext) -> Any:
+    assert context.container is not None
+    return CachedRecordRepository(context.container.resolve(SessionManager), CachedRecord)
+
+
+@cached
+@repository_for(CachedRecord, builder=_build_cached_record_repository)
+class CachedRecordRepository(RepositorySQLAlchemy[CachedRecord, int]):
+    """Counts every read that reaches the database."""
+
+    async def get_by_id(self, obj_id: int, profile: str = "default") -> CachedRecord | None:
+        CACHED_READS.record()
+        return await super().get_by_id(obj_id, profile)
+
+
+class CachedRecordInterface(RestInterface[CachedRecord]):
+    prefix = "{cached_prefix}"
+    auto = True
+'''
+
 
 def write_project(
     tmp_path: Path,
@@ -64,9 +118,11 @@ def write_project(
     observability: dict[str, Any] | None = None,
     persistence: dict[str, Any] | None = None,
     database: dict[str, Any] | None = _DEFAULT_DATABASE,
+    cache: dict[str, Any] | None = None,
     prefix: str = "/ping",
     route_path: str = "/",
     id_field: str = _AUTOINCREMENT_ID_FIELD,
+    with_cached_model: bool = False,
 ) -> str:
     """Write the fixture module plus a YAML config and return the config path.
 
@@ -77,9 +133,13 @@ def write_project(
         observability: Contents of the ``observability`` section.
         persistence: Contents of the ``persistence`` section.
         database: Contents of the ``database`` section; ``None`` omits it.
+        cache: Contents of the ``cache`` section; ``None`` omits it.
         prefix: Prefix of the generated REST interface.
         route_path: Path of its single route, relative to *prefix*.
         id_field: Source line declaring the fixture model's primary key.
+        with_cached_model: Add a second model served by a ``@cached``
+            SQLAlchemy repository that counts its reads in ``CACHED_READS``,
+            with auto-CRUD routes under ``CACHED_RECORDS_PREFIX``.
 
     Returns:
         Path of the written YAML config file.
@@ -88,6 +148,8 @@ def write_project(
     # name would serve the first test's routes to every later one.
     module = f"{_MODULE_PREFIX}_{_NON_IDENTIFIER.sub('_', tmp_path.name)}"
     source = _APP_SOURCE.format(prefix=prefix, route_path=route_path, id_field=id_field)
+    if with_cached_model:
+        source += _CACHED_MODEL_SOURCE.format(cached_prefix=CACHED_RECORDS_PREFIX)
     (tmp_path / f"{module}.py").write_text(source, encoding="utf-8")
     config: dict[str, Any] = {
         "app": {
@@ -101,6 +163,8 @@ def write_project(
     }
     if database is not None:
         config["database"] = dict(database)
+    if cache is not None:
+        config["cache"] = dict(cache)
     if rest is not None:
         config["app"]["rest"] = rest
     if sql is not None:

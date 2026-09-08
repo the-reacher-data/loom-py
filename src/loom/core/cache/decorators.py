@@ -13,6 +13,11 @@ def cached(cls: T) -> T:
     return cls
 
 
+def declares_cache_policy(cls: type) -> bool:
+    """Return whether *cls* was marked with :func:`cached`."""
+    return bool(getattr(cls, "__cache_policy__", False))
+
+
 def cache_query(
     *,
     scope: str = "list",

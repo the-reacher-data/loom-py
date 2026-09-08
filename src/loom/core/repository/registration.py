@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, cast, get_origin
+from typing import Any, Protocol, cast, get_origin
 
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
@@ -24,6 +24,8 @@ from loom.core.repository.registry import (
     get_repository_registration,
 )
 
+_UNBUILT = object()
+
 _STANDARD_PROTOCOLS: tuple[Any, ...] = (
     Readable,
     Creatable,
@@ -33,6 +35,18 @@ _STANDARD_PROTOCOLS: tuple[Any, ...] = (
     Listable,
     Countable,
 )
+
+
+class RepositoryDecorator(Protocol):
+    """Binding key for the hook applied to every repository this module builds.
+
+    A single slot: registering a second decorator replaces the first, it
+    does not compose.  The provider looks it up when it runs, so the order
+    in which the decorator and the repository module reach the container
+    does not matter.
+    """
+
+    def __call__(self, repository: Any) -> Any: ...
 
 
 def is_standard_capability(annotation: object) -> bool:
@@ -190,9 +204,19 @@ def _build_repository_provider(
     registration: RepositoryRegistration | None,
     build_registered_repository: Callable[[RepositoryBuildContext, RepositoryRegistration], Any],
 ) -> Callable[[], Any]:
-    context = RepositoryBuildContext(model=model, container=container)
+    """Return the provider shared by every DI key of *model* this module registers.
 
-    def _provider() -> Any:
+    The first call builds the repository, applies the registered
+    :class:`RepositoryDecorator` if any, and keeps the result, so each key
+    this module registers resolves one instance and the decorator runs once
+    per model per container.  Keys registered beforehand are left untouched,
+    so a pre-registered primary key makes ``resolve_repo`` and the capability
+    keys resolve different objects.
+    """
+    context = RepositoryBuildContext(model=model, container=container)
+    memo: Any = _UNBUILT
+
+    def _build() -> Any:
         if registration is not None:
             return build_registered_repository(context, registration)
         if not issubclass(model, BaseModel):
@@ -201,6 +225,18 @@ def _build_repository_provider(
             )
         default_builder = container.resolve(DefaultRepositoryBuilder)
         return default_builder(context)
+
+    def _decorate(repository: Any) -> Any:
+        if not container.is_registered(RepositoryDecorator):
+            return repository
+        decorator = container.resolve(RepositoryDecorator)
+        return decorator(repository)
+
+    def _provider() -> Any:
+        nonlocal memo
+        if memo is _UNBUILT:
+            memo = _decorate(_build())
+        return memo
 
     return _provider
 

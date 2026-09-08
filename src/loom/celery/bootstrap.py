@@ -82,6 +82,7 @@ from loom.celery.runner import (
 )
 from loom.core.async_bridge import build_backend_options
 from loom.core.bootstrap import create_kernel
+from loom.core.cache.wiring import cache_module_for
 from loom.core.config import (
     ConfigContext,
     ConfigKey,
@@ -824,6 +825,7 @@ def bootstrap_worker(
 
     uow_factory, session_manager = _resolve_uow_factory(ctx)
     final_models, runtime_modules = _compile_db_layer(session_manager, resolved.models, modules)
+    runtime_modules = (*runtime_modules, cache_module_for(ctx))
 
     resolved = _WorkerResolved(
         compilables=all_compilables,

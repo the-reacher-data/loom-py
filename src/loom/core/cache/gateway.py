@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 import msgspec
 
+from loom.core.cache.errors import CacheWriteError
 from loom.core.cache.serializer import MsgspecSerializer
 from loom.core.config.errors import ConfigError
 
@@ -17,6 +18,11 @@ T = TypeVar("T")
 _SIMPLE_MEMORY_CACHE = "SimpleMemoryCache"
 _DEFAULT_ALIAS = "default"
 _MEMORY_FALLBACK = {"cache": "aiocache.SimpleMemoryCache"}
+
+
+def _identity(value: Any) -> Any:
+    """``dumps_fn`` handed to aiocache once loom has already encoded the value."""
+    return value
 
 
 def _is_raw_backend(cache: Any) -> bool:
@@ -68,8 +74,9 @@ class CacheGateway:
         """
         caches = importlib.import_module("aiocache").caches
         self._cache = caches.get(alias)
-        # Raw backends (no MsgspecSerializer) support native atomic increment.
-        self._native_counters: bool = _is_raw_backend(self._cache)
+        # Raw backends store values as they are: no encoding on write, and
+        # native atomic increment.
+        self._raw_backend: bool = _is_raw_backend(self._cache)
 
     # ------------------------------------------------------------------
     # Configuration helpers
@@ -138,6 +145,11 @@ class CacheGateway:
     @overload
     async def get_value(self, key: str, *, type: None = ...) -> Any: ...
 
+    # Kept for structural typing: without it ``CacheGateway`` no longer
+    # satisfies the ``CacheBackend`` protocol ``CachedRepository`` asks for.
+    @overload
+    async def get_value(self, key: str, *, type: type[T] | None = None) -> T | Any | None: ...
+
     async def get_value(self, key: str, *, type: type[T] | None = None) -> T | Any | None:
         """Retrieve a cached value, optionally converting it to the given type.
 
@@ -192,15 +204,34 @@ class CacheGateway:
     # Write
     # ------------------------------------------------------------------
 
+    def _encode(self, key: str, value: Any) -> Any:
+        """Serialise *value* with the backend serializer, naming the key on failure."""
+        try:
+            return self._cache.serializer.dumps(value)
+        except (TypeError, ValueError, msgspec.MsgspecError) as exc:
+            raise CacheWriteError(
+                f"cache key {key!r}: cannot serialise {type(value).__name__}"
+            ) from exc
+
     async def set_value(self, key: str, value: Any, ttl: int | None = None) -> None:
         """Store a value under the given key.
+
+        On a serialised backend the value is encoded here, so a value the
+        serializer rejects raises :class:`~loom.core.cache.errors.CacheWriteError`
+        and nothing reaches the backend.  A raw backend stores *value* as is.
 
         Args:
             key: Cache key.
             value: Value to store.
             ttl: Time-to-live in seconds. ``None`` means no expiration.
+
+        Raises:
+            CacheWriteError: If the backend serializer cannot encode *value*.
         """
-        await self._cache.set(key, value, ttl=ttl)
+        if self._raw_backend:
+            await self._cache.set(key, value, ttl=ttl)
+            return
+        await self._cache.set(key, self._encode(key, value), ttl=ttl, dumps_fn=_identity)
 
     async def multi_set_values(
         self,
@@ -209,11 +240,21 @@ class CacheGateway:
     ) -> None:
         """Store multiple key-value pairs in a single round-trip.
 
+        On a serialised backend every pair is encoded before any is written,
+        so one rejected value stores none of them.
+
         Args:
             pairs: List of ``(key, value)`` tuples.
             ttl: Time-to-live in seconds applied to all entries.
+
+        Raises:
+            CacheWriteError: If the backend serializer cannot encode a value.
         """
-        await self._cache.multi_set(pairs, ttl=ttl)
+        if self._raw_backend:
+            await self._cache.multi_set(pairs, ttl=ttl)
+            return
+        encoded = [(key, self._encode(key, value)) for key, value in pairs]
+        await self._cache.multi_set(encoded, ttl=ttl, dumps_fn=_identity)
 
     async def incr(self, key: str, delta: int = 1) -> int:
         """Increment a numeric value at the given key.
@@ -238,7 +279,7 @@ class CacheGateway:
         Returns:
             The new value after incrementing.
         """
-        if self._native_counters:
+        if self._raw_backend:
             return await self._native_incr(key, delta)
         return await self._serialized_incr(key, delta)
 
