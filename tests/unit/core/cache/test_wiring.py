@@ -4,20 +4,32 @@ AC2, AC3 and AC4 of spec 009: the decorator hook fires once per model
 whichever module is loaded first, the wrapped instance is shared by every key
 of the model, invalidation lands in the counter alias, not the data one, and a
 deployment without the section learns at boot which marked classes run uncached.
+AC14 of spec 010 rides along: the same module binds the ``CachedCalls`` a
+``kind: python`` factory resolves.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack
 from typing import Any
 
+import msgspec
 import pytest
 from aiocache import caches
 
-from loom.core.cache import CacheConfig, CachedRepository
+from loom.core.cache import (
+    CacheConfig,
+    CachedCalls,
+    CachedRepository,
+    cache_call,
+    cached_calls,
+)
+from loom.core.cache.calls import AsyncCallable, _ConfiguredCalls, _UnconfiguredCalls
 from loom.core.cache.decorators import cached
+from loom.core.cache.keys import call_key
 from loom.core.cache.wiring import CacheGateways, cache_module, cache_module_for
 from loom.core.config import ConfigContext
 from loom.core.di.container import LoomContainer, ResolutionError
@@ -350,3 +362,164 @@ class TestCacheNotConfigured:
 
         assert isinstance(container.resolve_repo(Widget), CachedRepository)
         assert _not_configured_warnings(caplog) == []
+
+
+class Answer(msgspec.Struct):
+    """Return type inside the msgspec grammar, so the call really is cached."""
+
+    text: str
+
+
+@cache_call(ttl_key="web_search")
+async def fetch_answer(query: str) -> Answer:
+    """Marked coroutine the container's binder is asked to cache.
+
+    Args:
+        query: The only argument the key sees.
+
+    Returns:
+        An answer built from *query*.
+    """
+    return Answer(text=query)
+
+
+class _UserCalls:
+    """Binder a user module registered before loom's, which loom must keep."""
+
+    def wrap(self, func: AsyncCallable) -> AsyncCallable:
+        return func
+
+    def bind(self, obj: object) -> list[AsyncCallable]:
+        del obj
+        return []
+
+
+def _already_registered_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record for record in caplog.records if "CacheCallsAlreadyRegistered" in record.getMessage()
+    ]
+
+
+class TestCachedCallsBinding:
+    """AC14: which ``CachedCalls`` a container hands to a ``kind: python`` factory."""
+
+    def test_a_section_binds_the_configured_binder(self) -> None:
+        container = _container(cache_module(_single_alias()))
+
+        assert isinstance(cached_calls(container), _ConfiguredCalls)
+
+    @pytest.mark.parametrize(
+        "raw",
+        [pytest.param({}, id="absent"), pytest.param({"cache": {"enabled": False}}, id="disabled")],
+    )
+    def test_no_usable_section_binds_the_pass_through(self, raw: dict[str, Any]) -> None:
+        """Bound, not merely returned: the announcing module must claim the slot.
+
+        ``cached_calls`` builds a fresh pass-through for a container that has
+        no binding at all, so an ``isinstance`` check alone would pass with no
+        registration whatsoever. The registration is what makes every factory
+        in one container share a binder — and with it the once-set that keeps
+        ``CacheCallNotConfigured`` to one record per marked coroutine.
+        """
+        container = _container(cache_module_for(ConfigContext.from_dict(raw)))
+
+        assert container.is_registered(CachedCalls)
+        assert isinstance(cached_calls(container), _UnconfiguredCalls)
+        assert cached_calls(container) is cached_calls(container)
+
+    def test_a_binder_registered_before_the_cache_module_is_kept(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        container = LoomContainer()
+        user_calls = _UserCalls()
+        container.register_instance(CachedCalls, user_calls)
+
+        with caplog.at_level(logging.WARNING, logger="loom.core.cache.wiring"):
+            cache_module(_single_alias())(container)
+
+        assert cached_calls(container) is user_calls
+        warnings = _already_registered_warnings(caplog)
+        assert len(warnings) == 1
+        assert "_UserCalls" in warnings[0].getMessage()
+
+    def test_a_container_holding_a_decorator_still_gets_the_configured_binder(self) -> None:
+        """The decorator block returns early; the binder must be bound before it."""
+        container = LoomContainer()
+        container.register_instance(RepositoryDecorator, _user_decorator)
+
+        cache_module(_single_alias())(container)
+
+        assert container.resolve(RepositoryDecorator) is _user_decorator
+        assert isinstance(cached_calls(container), _ConfiguredCalls)
+
+    async def test_the_configured_binder_writes_to_the_data_alias(self) -> None:
+        """The binder is built over the data gateway, never the counter one.
+
+        The counter alias carries generation numbers and is configured without
+        the entity serializer; a payload written there is spec 009's separation
+        broken, and an ``isinstance`` check cannot see which gateway went in.
+        """
+        container = _container(cache_module(_two_aliases()))
+
+        answer = await cached_calls(container).wrap(fetch_answer)("q")
+
+        assert answer == Answer(text="q")
+        key = call_key(
+            module=fetch_answer.__module__,
+            qualname=fetch_answer.__qualname__,
+            version=1,
+            arguments={"query": "q"},
+        )
+        assert await _backend("data").exists(key)
+        assert not await _backend("counters").exists(key)
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    """Yield the loop until *condition* holds, so a callback can run."""
+    for _ in range(200):
+        if condition():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("the condition never held")
+
+
+class TestTheBinderReportsAnAbandonedLoad:
+    """The body of a cached call is application code; its failure is not lost.
+
+    The load is detached into its own task, so a caller that goes away leaves
+    nobody to receive an exception. Without a reporter the single flight
+    retrieves it and drops it, and a third-party body that fails every time is
+    completely silent — the repository's binder is wired with one, and this one
+    must be too.
+    """
+
+    async def test_a_failure_with_no_caller_left_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        container = _container(cache_module(_single_alias()))
+        started = asyncio.Event()
+        gate = asyncio.Event()
+
+        @cache_call()
+        async def fail_later(query: str) -> Answer:
+            started.set()
+            await gate.wait()
+            raise RuntimeError("upstream down")
+
+        wrapped = cached_calls(container).wrap(fail_later)
+
+        with caplog.at_level(logging.WARNING, logger="loom.core.cache.calls"):
+            caller = asyncio.create_task(wrapped("q"))
+            await _until(started.is_set)
+            caller.cancel()
+            gate.set()
+            await asyncio.gather(caller, return_exceptions=True)
+            await _until(lambda: bool(_abandoned_warnings(caplog)))
+
+        records = _abandoned_warnings(caplog)
+        assert len(records) == 1
+        assert "upstream down" in records[0].getMessage()
+
+
+def _abandoned_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if "CacheCallLoadAbandoned" in record.getMessage()]

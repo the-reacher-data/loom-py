@@ -130,6 +130,227 @@ The bare `user` tag is in every key's tag list but the framework never bumps
 it: it is the manual flush handle. Incrementing `tag:user` on the counter
 backend evicts every cached entry of that entity at once.
 
+## Caching any coroutine
+
+Not every expensive call is a repository read. `@cache_call` marks any
+coroutine function — an outbound search, an agent toolset method, a slow
+computation — and `cached_calls(container)` binds it at the composition root.
+The split is the one `@cached` uses: the decorator declares, the composition
+root binds, nothing global is touched.
+
+### The contract: a pure function of its arguments
+
+Before anything else, the rule that makes the rest safe. A `@cache_call`
+coroutine must be a **pure function of its arguments**. It may not read ambient
+identity — a contextvar tenant, the caller's credential, the current request —
+and it may not hold a caller-scoped session.
+
+The reason is mechanical. The key is built from the arguments and nothing else,
+and on a miss the body runs in a detached task shared by every concurrent
+caller, so whoever missed first is the one whose ambient state the body sees. A
+coroutine that reads identity from anywhere but its arguments will serve one
+caller's answer to another. loom cannot detect this and does not try.
+
+An object that carries identity must put it in the arguments, where the key can
+see it. A toolset holding a per-tenant client is not a candidate; a toolset that
+takes `tenant` as a parameter is.
+
+### Declaring
+
+```python
+from loom.core.cache import cache_call
+
+
+@cache_call(ttl_key="web_search", unless=lambda docs: not docs, version=2)
+async def fetch(query: str, limit: int = 10) -> list[Doc]: ...
+```
+
+`@cache_call` writes a marker on the function and returns it unchanged: the
+module imports with no configuration, and the function stays importable and
+unit-testable on its own. Applied to anything that is not a coroutine function —
+a `def`, a generator, an async generator — it raises `TypeError` at decoration
+time, naming the function.
+
+### Binding
+
+```python
+from loom.core.cache import cached_calls
+
+
+def build_toolset(ctx: ToolsetContext) -> AbstractToolset[Any]:
+    return FunctionToolset(cached_calls(ctx.container).bind(SearchTools()))
+```
+
+`cached_calls(container)` returns the `CachedCalls` that boot built from the
+`cache:` section, or a pass-through when the application has no section. Always
+go through it: `container.resolve(CachedCalls)` raises for a container the
+bootstraps did not build, and a `kind: python` factory has no way to know
+whether it was. The engine calls that factory as `factory(ctx, **params)` — see
+[the `python` capability](#python-application-owned-toolsets).
+
+`wrap(func)` caches one coroutine and returns a function with the original's
+name, signature and resolved annotations. `bind(obj)` does the same across an
+object and hands the result straight to a `FunctionToolset`.
+
+`bind` publishes **every public coroutine method** of the object, inherited ones
+included; marked methods come back cached, unmarked ones bound and otherwise
+untouched, in declaration order with base classes first. Adding a public
+coroutine helper to a toolset class therefore publishes a tool — give it a
+leading underscore, or move it off the class. An `async` `staticmethod` or
+`classmethod` is a public coroutine method like any other and is published and
+cached the same way. Methods are read off the class, so a property is never
+evaluated.
+
+Inheritance is the trap, because a leading underscore only covers the methods
+you wrote. `bind` walks the whole MRO, so a class deriving from an async HTTP
+client or an SDK base hands the model that base's public coroutines — `request`,
+`send`, `aclose` — as callable tools, and `kind: python` has no `include`/
+`exclude` to filter them the way `skills`, `mcp` and `a2a` do. A class meant for
+`bind` should not subclass anything with public coroutines: **compose, do not
+inherit** — hold the client as an attribute and expose the calls you mean to
+publish.
+
+### The key
+
+```text
+call:<module>.<qualname>:v<version>:<sha256 of the bound arguments>
+```
+
+Arguments are bound to the signature and defaults are applied before they are
+rendered, so `fetch("q")` and `fetch("q", limit=10)` share an entry, as do
+`fetch("q")` and `fetch(query="q")`. Mappings render with their keys sorted —
+including a `**kwargs` mapping — and a `set` or `frozenset` renders as a sorted
+list, so argument order never splits an entry.
+
+Instance identity is not in the key, and neither is the class of the instance:
+the qualified name is the one of the class that **defines** the method. Two
+instances of one toolset class share an entry for equal arguments — correct for
+a stateless toolset, and the other half of the purity contract — but so do
+`TenantATools(BaseTools)` and `TenantBTools(BaseTools)` for a method they both
+inherit from `BaseTools`: different classes, different credentials, the same
+key. Subclassing does not separate entries. The only separators are the
+arguments and `version`, so a per-tenant answer takes `tenant` as a parameter.
+
+The rendering is **content-based and type-erasing**: it describes what a value
+contains, never what class it was. A `datetime`, a `date`, an `Enum` member and
+the plain string they render to share one key, so `w(datetime(2020, 1, 1))` and
+`w("2020-01-01T00:00:00")` are one entry and the second call gets the first
+call's answer. A `list`, a `tuple` and a `set` with equal contents share one key
+— the set rendering requires it — as do a struct and a mapping with the same
+fields. Two keys of a mapping argument that render equal collapse into a single
+entry: `{Color.RED: 1, "red": 2}` renders as `{"red": 2}`, one pair short.
+
+The consequence is a rule about parameters, not about values: a parameter whose
+union members render to the same JSON scalar cannot be relied on to separate
+entries. Annotate such a parameter as one type and convert at the boundary, or
+add a discriminating argument. Tagging every leaf with its type would fix it,
+and would also invalidate every entry already written, so it belongs with a
+`version` bump rather than with a patch release.
+
+An argument the renderer cannot describe — an open socket, a `nan` or an
+infinity, at the top level or nested inside a struct, a list or a mapping —
+makes the call run **uncached** and logs one `CacheCallKeyUnrenderable` for that
+function. It is not an error: a non-finite float would render as `null` and
+collide with `None`, so refusing to key it is safer than keying it wrong.
+
+### TTL, `version`, and what is never invalidated
+
+`ttl_key` resolves through the same `ttl:` mapping entity TTLs use, so a
+`ttl_key` equal to an entity name deliberately shares that entity's override.
+Without `ttl_key` the call uses `default_ttl`. Either way the written TTL is
+spread by `ttl_jitter`, as every other write is.
+
+A cached call is **never invalidated**. It carries no dependency tags — loom
+cannot know what an arbitrary coroutine reads — so no write anywhere evicts it,
+and there is no manual flush handle for it. It expires, or you bump `version`,
+which changes the key and abandons every entry written under the old one. That
+is the whole difference from a cached repository read, and it is why a
+`@cache_call` TTL should be one you are willing to serve stale for.
+
+### `unless`: do not store this answer
+
+`unless(result)` runs on every miss, before anything is stored. Returning true
+means the call returns its value and stores nothing. The case it exists for: a
+rate-limited search returns an empty list, and without `unless=lambda docs: not
+docs` that emptiness is cached and the agent answers "nothing found" for a whole
+TTL.
+
+A result `unless` skips is returned **exactly as the body produced it**, not
+encoded and decoded, so its shape can differ from a hit's — one more reason to
+declare a precise return type. An `unless` that raises is a bug in your
+predicate: it propagates, and nothing is stored.
+
+A body returning `None` is written, but `None` is also the backends' miss
+sentinel, so the next call re-runs the body. When that `None` is expensive,
+declare `unless=lambda r: r is None` and skip the pointless write.
+
+### Return types
+
+The codec comes from the return annotation, so a hit and a miss return the same
+type. An annotation outside the grammar caches **nothing**: the call runs every
+time and boot logs one `CacheCallNotCacheable` for that function. Storing a
+value a hit and a miss would disagree about is the defect this whole feature
+exists to prevent, so the refusal is deliberate and there is no opt-out.
+
+| Annotation | Cached |
+|---|---|
+| `msgspec.Struct`, a scalar, and `list`/`tuple`/optional of those | yes |
+| `BaseModel`, `RootModel`, a parameterised generic model, a `pydantic.dataclasses` type, and `list`/`tuple`/optional of those | yes |
+| Any mapping, at any depth: `dict[str, Any]`, `Mapping[str, int]`, a bare `dict`, a `TypedDict`, `dict[str, Any] \| None`, `list[dict[str, Any]]` | no |
+| `Any`, `None`, an annotation that does not resolve | no |
+
+The pydantic half of that grammar depends on the process: a pydantic-annotated
+return is cached only where pydantic is already imported, because
+`loom.core.cache` never imports it itself. A worker built without the `rest`
+extra runs the very same coroutine uncached, with `CacheCallNotCacheable`.
+
+The value is decoded on the **write** path, so a model that pydantic cannot
+re-validate fails on the very first call rather than on a later hit. That is a
+smoke test, not a safety net: `validate_python` is lax, so a field typed `Any`
+holding a `datetime` comes back a `str` on both paths without raising anything.
+Type your fields precisely; `Any` inside a cached model is where shapes drift.
+
+A payload the codec cannot decode on the **read** path — a model that gained a
+field without a `version` bump — is treated as a miss: the body runs, the fresh
+value is stored, and one `CacheCallPayloadMismatch` is logged with the key. It
+is never raised to the caller. In a cache with no invalidation, the alternative
+is failing every caller for a whole TTL.
+
+### What a deployment sees
+
+Six `WARNING` lines name the function, each logged once per function. The
+first two are emitted when the function is wrapped — at boot, before any
+traffic is served — and the other four only when a call meets the condition:
+
+- `CacheCallNotConfigured` — no `cache:` section, or `enabled: false`; the
+  function runs uncached, so the bill is not the first hint.
+- `CacheCallNotCacheable` — the return annotation is outside the grammar above,
+  or its type hints do not resolve.
+- `CacheCallKeyUnrenderable` — an argument could not be rendered into a key.
+- `CacheCallPayloadMismatch` — a stored payload no longer decodes.
+- `CacheCallReadFailed` — the backend could not be read; the call is served by
+  running its body, exactly as an unconfigured deployment would.
+- `CacheCallWriteFailed` — the backend refused or could not receive the value.
+
+A seventh, `CacheCallLoadAbandoned`, names the **key** rather than the function:
+the load runs detached, so a body that fails after its last caller went away is
+reported here instead of disappearing.
+
+That last one is a **deliberate divergence** from the repository, and both
+policies are intentional: a cached repository read lets `CacheWriteError`
+propagate, because a write it cannot cache is a wiring fault worth surfacing at
+once; a cached call logs it and returns the value anyway, because the body has
+already produced the caller's answer and failing then would trade a cache
+problem for an application outage. The same reasoning covers the read: both
+backend calls are guarded, and any failure they raise — a rejected value, a
+connection reset, a timeout — degrades the call to an uncached one rather than
+failing it, so a Redis outage costs latency and money, not availability. Neither is a bug to be "fixed" into the
+other. The value is encoded before the store is attempted, so a caller whose
+write failed still receives the **decoded** value and cannot tell a failed
+write from a stored one; a result skipped by `unless` remains the one case
+where the body's own object comes back. Every other exception from the body
+propagates untouched, and nothing is stored.
+
 ## Disabled and missing
 
 With `enabled: false`, or with no `cache:` section at all, nothing is wrapped

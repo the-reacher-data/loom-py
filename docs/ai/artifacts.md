@@ -754,12 +754,16 @@ as **keyword arguments**. The factory declares its own named parameters with
 defaults:
 
 ```python
+from typing import Any
+
+from pydantic_ai.toolsets import AbstractToolset
+
 from loom.ai import ToolsetContext
 
 
 def build_metrics_toolset(
     context: ToolsetContext, *, max_results: int = 3, radius_km: int = 25
-):
+) -> AbstractToolset[Any]:
     session = context.remote("metrics")  # one of this agent's mcp grants
     ...
 ```
@@ -781,6 +785,13 @@ the factory runs: `PYTHON_FACTORY_NOT_CALLABLE` when what it returns is not a
 toolset, `PYTHON_REMOTE_NOT_GRANTED` when it asks for a server the agent was not
 granted, and `PYTHON_FACTORY_FAILED` when the factory itself raises — the
 exception class is reported, its message is not.
+
+A toolset caches through `cached_calls`, never by writing its own keys: a
+factory typed `(ctx: ToolsetContext) -> AbstractToolset[Any]` returns
+`FunctionToolset(cached_calls(ctx.container).bind(MyTools()))`, and every method
+marked `@cache_call` is served from the application's `cache:` section. What is
+cached, what is refused and why a cached call is never invalidated are in
+[Caching any coroutine](../rest/cache.md#caching-any-coroutine).
 
 ```{admonition} Breaking change
 :class: warning
