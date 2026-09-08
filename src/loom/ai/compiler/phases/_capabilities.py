@@ -13,7 +13,6 @@ names.  Reading a directory is not network access and keeps FR-010 intact.
 
 from __future__ import annotations
 
-import inspect
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ from loom.ai.compiler._plan import (
     CompiledUsecaseCapability,
 )
 from loom.ai.compiler._symbols import import_symbol
+from loom.ai.compiler.phases._factories import FactoryFault, reject_factory_signature
 from loom.ai.config import A2AAgentConfig, AiConfig, McpServerConfig
 from loom.ai.declarative import (
     A2ACapability,
@@ -91,9 +91,6 @@ _LOCAL_LIBRARY_PREFIX: Final[str] = "./"
 _CompileResult = tuple[tuple[CompiledCapability, ...], list[AgentCompilationIssue]]
 _HandlerResult = tuple[CompiledCapability | None, list[AgentCompilationIssue]]
 _ResolveResult = tuple[Path | None, list[AgentCompilationIssue]]
-
-_FIRST_POSITIONAL: Final[object] = object()
-"""Stand-in for the build-time first positional when binding ``params``."""
 
 
 @dataclass(frozen=True)
@@ -406,24 +403,17 @@ def _rejected_params(
 ) -> AgentCompilationIssue | None:
     """Return the issue that keeps ``factory(context, **params)`` from binding.
 
-    The context positional is bound alone first, so a factory with no slot for
-    it is reported as not a ``ToolsetFactory`` rather than as rejecting the
-    ``params``. A callable whose signature cannot be inspected is accepted:
-    Python's own call at build reports whatever is wrong.
+    The shape is checked by :func:`reject_factory_signature`, which every
+    ``factory(context, **params)`` declaration shares; the mapping from its
+    named fault to a ``python`` capability code belongs here, so no other
+    declaration can report one of these codes.
     """
-    try:
-        signature = inspect.signature(factory)
-    except (ValueError, TypeError):
+    rejection = reject_factory_signature(factory, params)
+    if rejection is None:
         return None
-    try:
-        signature.bind_partial(_FIRST_POSITIONAL)
-    except TypeError:
+    if rejection.fault is FactoryFault.NOT_CALLABLE:
         return python_factory_not_callable(component, ref)
-    try:
-        signature.bind(_FIRST_POSITIONAL, **params)
-    except TypeError as exc:
-        return python_factory_params_rejected(component, ref, str(exc))
-    return None
+    return python_factory_params_rejected(component, ref, rejection.detail)
 
 
 def _compile_native(capability: NativeCapability, context: _Context) -> _HandlerResult:

@@ -22,6 +22,7 @@ from typing import Any, ClassVar, Final
 
 import msgspec
 
+from loom.ai.abc import InstructionsFactory, OutputCheck
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
@@ -46,6 +47,25 @@ class CompiledOutput(LoomFrozenStruct, frozen=True, kw_only=True):
     # ``Any`` type parameter: the decoded type is derived from the artifact's
     # schema at compile time, so it cannot be named statically.
     decoder: msgspec.json.Decoder[Any]
+
+
+class CompiledDynamicInstructions(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Imported ``dynamic_instructions`` factory, resolved at compile time.
+
+    The same shape :class:`CompiledPythonCapability` carries, for the same
+    reason: the artifact names a factory and the plan carries the handle, so
+    no string is resolved on the request path.  The factory is called once at
+    build; the provider it returns is what each run calls.
+
+    Attributes:
+        factory_ref: The artifact's reference, carried for error messages.
+        factory: Imported factory, called once as ``factory(context, **params)``.
+        params: Declared parameters, splatted as keyword arguments at build.
+    """
+
+    factory_ref: str
+    factory: InstructionsFactory
+    params: Mapping[str, Any]
 
 
 class CompiledUsecaseCapability(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -291,6 +311,14 @@ HOOK_OUTPUT_FIELD: Final[str] = "output"
 HOOK_MESSAGES_FIELD: Final[str] = "messages"
 """Input name under which the hook offers the run's serialised new messages."""
 
+HOOK_TOOL_CALLS_FIELD: Final[str] = "tool_calls"
+"""Input name under which the hook offers the run's tool-call summary.
+
+Declaring the field is the opt-in: the runtime accumulates
+:class:`~loom.ai.abc.ToolCallRecord` values only for a hook whose Input names
+it, so an artifact whose hook stays silent pays nothing.
+"""
+
 CONVERSATION_CONTEXT_FIELDS: Final[tuple[str, ...]] = (
     "conversation_id",
     "interaction_id",
@@ -351,9 +379,17 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
         name: Unique agent name within the application.
         description: What the agent does; published in the A2A card.
         instructions: Instructions the agent follows; never published.
+        dynamic_instructions: Factory contributing instructions per request,
+            imported at compile time, or ``None`` when the artifact declares
+            none. The literal ``instructions`` compose first and the
+            provider's text is appended to them.
         spec_version: Artifact format version, retained for self-description.
         inference: Resolved model binding; one binding, no fallback (FR-019a).
         output: Structured-output contract with its built decoder.
+        output_check: Rule the answer must satisfy beyond its schema, imported
+            at compile time, or ``None`` when the artifact declares none. The
+            engine registers it as its output validator, so a rejection reaches
+            the model as another attempt rather than as a failed run.
         capabilities: Compiled capabilities with resolved handles.
         policies: Validated execution limits.
         on_output: Output hook, when the artifact declares one.
@@ -365,9 +401,11 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
     name: str
     description: str
     instructions: str
+    dynamic_instructions: CompiledDynamicInstructions | None = None
     spec_version: int
     inference: InferenceTarget
     output: CompiledOutput
+    output_check: OutputCheck | None = None
     capabilities: tuple[CompiledCapability, ...] = ()
     policies: PolicySpec
     on_output: CompiledOutputHook | None = None

@@ -11,6 +11,7 @@ from typing import Any
 
 import msgspec
 
+from loom.ai.abc import ToolCallRecord
 from loom.core.command import Command, Internal
 from loom.core.identity import Identity
 from loom.core.use_case import Caller, Input, UseCase
@@ -104,4 +105,20 @@ class RecordTurn(UseCase[Any, TriageRecorded]):
     """Hook use case whose Input also demands the run's new messages."""
 
     async def execute(self, cmd: RecordTurnCommand = Input()) -> TriageRecorded:
+        return TriageRecorded(triage_id=cmd.interaction_id)
+
+
+class RecordAuditCommand(Command, frozen=True, kw_only=True):
+    """Command additionally requiring the run's tool-call summary."""
+
+    output: TriageReport
+    interaction_id: str
+    tool_calls: tuple[ToolCallRecord, ...]
+
+
+@use_case_key("incidents.record_audit")
+class RecordAudit(UseCase[Any, TriageRecorded]):
+    """Hook use case whose Input also demands the run's tool calls."""
+
+    async def execute(self, cmd: RecordAuditCommand = Input()) -> TriageRecorded:
         return TriageRecorded(triage_id=cmd.interaction_id)

@@ -45,6 +45,27 @@ RETRIES_DEFAULT: Final[int] = 2
 RETRIES_MIN: Final[int] = 0
 RETRIES_MAX: Final[int] = 10
 
+RETRY_AXES_DESCRIPTION: Final[str] = (
+    "Attempts an agent may spend. One number, three distinct axes. "
+    "(1) Loom's provider retries replay the whole run after an infrastructure "
+    "failure, and only for an agent holding no capability: replaying a run that "
+    "may already have invoked an application use case would invoke it twice, so "
+    "any capability disables this axis whatever the value. "
+    "(2) The engine's tool-call budget replays a tool call the model got wrong, "
+    "inside the same run. "
+    "(3) The engine's output-validation budget asks the model again for an "
+    "answer an output_check rejected, inside the same run. Declaring an "
+    "output_check floors this axis at one, so a check can always correct once."
+)
+"""The three retry axes ``retries`` governs, written once.
+
+This is the single wording: the published JSON Schema emits it as the
+``policies.retries`` description, and the two prose sites that describe the
+field — :class:`PolicySpec` and
+:mod:`loom.ai.engines.pydantic_ai._spec` — point here instead of restating it,
+so the three sites cannot drift apart.
+"""
+
 TOOL_TIMEOUT_MS_DEFAULT: Final[int] = 20000
 TOOL_TIMEOUT_MS_MIN: Final[int] = 100
 TOOL_TIMEOUT_MS_MAX: Final[int] = 600000
@@ -131,6 +152,19 @@ class OutputHookSpec(
     resolved against the same registry at compile time. The model never sees
     it: it is not a tool, and it never enters the instructions.
 
+    The hook's own Command decides what else the run offers it, and declaring
+    a field is the whole opt-in — this block gains no key for either:
+
+    * ``tool_calls``: the run's tool traffic as
+      :class:`~loom.ai.abc.ToolCallRecord` values, in call order. A record
+      carries loom's own outcome vocabulary and never what the tool returned,
+      so a hook that needs the data re-reads it through its own repositories.
+      A ``kind: native`` tool is executed by the provider, emits no function
+      events, and therefore never appears in the summary.
+    * ``messages``: the run's new messages in the engine's serialised form,
+      still tied to a conversation — ``None`` unless the run carried a
+      ``conversation_id``.
+
     Args:
         usecase: Use-case key of the registry to execute with the validated output.
     """
@@ -157,6 +191,45 @@ class ConversationSpec(
     """
 
     usecase: _NonEmptyStr
+
+
+class DynamicInstructionsSpec(
+    msgspec.Struct,
+    frozen=True,
+    kw_only=True,
+    forbid_unknown_fields=True,
+):
+    """Application code contributing instructions to each request.
+
+    A block rather than a bare reference, because it genuinely has two parts,
+    and the same shape a ``kind: python`` capability already uses: a factory
+    called once at build as ``factory(context, **params)``, returning the
+    provider called once per **model request**.
+
+    Per request, not per run: the engine rebuilds the instructions before every
+    request it makes to the model, so a run that calls one tool calls the
+    provider twice and a run reaching ``max_iterations`` calls it that many
+    times. That multiplier is why the provider must be synchronous and do no
+    I/O, and why a provider whose text varies between calls sends the model
+    different instructions inside one run — the author's decision, and the
+    author's to defend.
+
+    It never replaces :attr:`AgentSpecV1.instructions`, which stays mandatory
+    and literal: the literal composes first and the provider's text is
+    appended to it.
+
+    Args:
+        factory: ``module:factory`` called once at build as
+            ``factory(context, **params)``, returning an
+            :data:`~loom.ai.abc.InstructionsProvider` called once per model
+            request. A factory, never a constructed provider.
+        params: Nested block passed to the factory as keyword arguments. The
+            names are validated against the factory's signature at compile;
+            the values are decoded YAML, not validated. Settings, never secrets.
+    """
+
+    factory: _SymbolRef
+    params: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
 class UsecaseCapability(
@@ -344,7 +417,10 @@ class PolicySpec(
     rather than as a decoding failure.
 
     Args:
-        retries:         Attempts the engine makes before a failure is final.
+        retries:         Attempts an agent may spend, across the three axes
+            :data:`RETRY_AXES_DESCRIPTION` names. It is one operator-facing
+            knob and not one enforcement: a capability-bearing agent never
+            replays a provider call, whatever this says.
         tool_timeout_ms: Deadline of a single tool call.
         max_iterations:  Maximum reason/act iterations in one run.
         run_timeout_ms:  Deadline of a whole run.
@@ -376,9 +452,19 @@ class AgentSpecV1(
         description:   What the agent does. Published in the A2A card.
         instructions:  Instructions the agent follows. Never published, and
             never a place to encode authorization.
+        dynamic_instructions: Application code contributing instructions per
+            request, or ``None`` when the literal is the whole prompt. The
+            literal composes first and this text is appended to it, so this
+            never replaces ``instructions``.
         model_role:    Logical model role bound to a concrete provider and
             model by deployment configuration.
         output:        Declaration of the structured answer the agent returns.
+        output_check:  ``module:symbol`` reference to the rule the answer must
+            satisfy beyond its schema, or ``None`` when the schema is the whole
+            contract. A bare reference rather than a block: the value has one
+            meaning and no tag to read. The symbol satisfies
+            :data:`~loom.ai.abc.OutputCheck` — it returns ``None`` to accept and
+            the text the model must read to correct itself to reject.
         on_output:     Use case executed once per completed run with the
             validated output; ``None`` when the artifact declares no hook.
         conversation:  Use case executed before a run that carries a
@@ -393,8 +479,10 @@ class AgentSpecV1(
     name: Annotated[str, msgspec.Meta(pattern=AGENT_NAME_PATTERN)]
     description: _NonEmptyStr
     instructions: _NonEmptyStr
+    dynamic_instructions: DynamicInstructionsSpec | None = None
     model_role: Annotated[str, msgspec.Meta(pattern=MODEL_ROLE_PATTERN)] = DEFAULT_MODEL_ROLE
     output: OutputSpec
+    output_check: _SymbolRef | None = None
     on_output: OutputHookSpec | None = None
     conversation: ConversationSpec | None = None
     capabilities: tuple[CapabilitySpec, ...] = ()

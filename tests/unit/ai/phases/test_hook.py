@@ -47,6 +47,7 @@ def triage_registry(triage: ModuleType) -> UseCaseRegistry:
         triage.RecordTriageById,
         triage.CountTriages,
         triage.RecordTurn,
+        triage.RecordAudit,
     ]
     for use_case in use_cases:
         compiler.compile(use_case)
@@ -210,3 +211,17 @@ def test_compila_el_hook_cuando_el_input_tambien_pide_messages(
     assert hooked.on_output.use_case is triage.RecordTurn
     assert hooked.on_output.accepted == frozenset({"output", "interaction_id", "messages"})
     assert hooked.capabilities == plain.capabilities
+
+
+def test_compila_el_hook_cuando_el_input_pide_los_tool_calls(
+    spec_factory: Callable[..., AgentSpecV1],
+    plan_for: Callable[..., Any],
+    triage: ModuleType,
+    triage_registry: UseCaseRegistry,
+) -> None:
+    """Declaring ``tool_calls`` is the opt-in, so the name is offered and compiles (011/L19)."""
+    hooked = plan_for(_hooked(spec_factory, "incidents.record_audit"), registry=triage_registry)
+
+    assert hooked.on_output is not None
+    assert hooked.on_output.use_case is triage.RecordAudit
+    assert hooked.on_output.accepted == frozenset({"output", "interaction_id", "tool_calls"})

@@ -7,10 +7,12 @@ from typing import Any
 import msgspec
 import pytest
 
+from loom.ai.abc import ToolCallOutcome, ToolCallRecord
 from loom.ai.compiler._plan import (
     HOOK_CONTEXT_FIELDS,
     HOOK_MESSAGES_FIELD,
     HOOK_OUTPUT_FIELD,
+    HOOK_TOOL_CALLS_FIELD,
     AgentPlan,
     CompiledOutput,
 )
@@ -21,7 +23,16 @@ from loom.ai.runtime._hooks import hook_command
 from loom.core.command import Command
 from loom.core.identity import Identity
 
-_ALL_NAMES = frozenset({HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS})
+_ALL_NAMES = frozenset(
+    {HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, HOOK_TOOL_CALLS_FIELD, *HOOK_CONTEXT_FIELDS}
+)
+
+_RECORD = ToolCallRecord(
+    tool="get_incident",
+    call_id="c1",
+    arguments={"ref": "INC-1"},
+    result=ToolCallOutcome(ok=True, summary="3 rows"),
+)
 
 
 class _Report(msgspec.Struct, frozen=True, kw_only=True):
@@ -80,6 +91,7 @@ def test_ofrece_el_contexto_del_run_cuando_el_input_lo_acepta(run: RunContext) -
     assert command == {
         "output": {},
         "messages": None,
+        "tool_calls": (),
         "interaction_id": "int-1",
         "conversation_id": "c-42",
         "subject": "user-1",
@@ -121,7 +133,12 @@ def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(run: RunContex
     """The run-time command and the compile-time offer are one contract, not two lists."""
     command = hook_command({}, run, _ALL_NAMES)
 
-    assert set(command) == {HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS}
+    assert set(command) == {
+        HOOK_OUTPUT_FIELD,
+        HOOK_MESSAGES_FIELD,
+        HOOK_TOOL_CALLS_FIELD,
+        *HOOK_CONTEXT_FIELDS,
+    }
 
 
 def test_ofrece_los_messages_cuando_el_run_los_lleva(run: RunContext) -> None:
@@ -143,3 +160,24 @@ def test_ofrece_messages_none_cuando_no_se_indican(run: RunContext) -> None:
     command = hook_command({}, run, _ALL_NAMES)
 
     assert command[HOOK_MESSAGES_FIELD] is None
+
+
+def test_ofrece_los_tool_calls_cuando_el_run_los_acumulo(run: RunContext) -> None:
+    """The accumulated records are offered verbatim, in call order (011/L19)."""
+    command = hook_command({}, run, _ALL_NAMES, tool_calls=[_RECORD])
+
+    assert command[HOOK_TOOL_CALLS_FIELD] == (_RECORD,)
+
+
+def test_filtra_los_tool_calls_cuando_el_input_no_los_declara(run: RunContext) -> None:
+    """A Command not declaring ``tool_calls`` never receives them."""
+    command = hook_command({}, run, frozenset({"output"}), tool_calls=[_RECORD])
+
+    assert command == {"output": {}}
+
+
+def test_ofrece_tool_calls_vacio_cuando_no_se_acumulo_nada(run: RunContext) -> None:
+    """A hook that declared the name but saw no tool traffic gets an empty tuple."""
+    command = hook_command({}, run, _ALL_NAMES)
+
+    assert command[HOOK_TOOL_CALLS_FIELD] == ()

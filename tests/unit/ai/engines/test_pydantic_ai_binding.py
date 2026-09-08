@@ -12,6 +12,7 @@ import pytest
 from msgspec import structs
 from pydantic import TypeAdapter
 from pydantic_ai import NativeOutput, ToolOutput
+from pydantic_ai.models import Model
 from pydantic_ai.models.bedrock import BedrockConverseModel
 from pydantic_ai.models.test import TestModel
 
@@ -23,6 +24,21 @@ from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from tests.helpers.pydantic_ai_engine import STRICT_SCHEMA, NullDeps, make_plan
+
+
+def _configured_api_key(model: Model) -> str:
+    """Read the key the vendor client was configured with.
+
+    ``resolve_model`` is typed to the engine's ``Model`` base, which declares no
+    client: the attribute belongs to the vendor subclasses this test builds. The
+    lookup is explicit rather than a cast, so a binding that stops configuring a
+    client fails here with a readable message instead of an attribute error.
+    """
+    client = getattr(model, "client", None)
+    assert client is not None, f"{type(model).__name__} configured no vendor client"
+    key = getattr(client, "api_key", None)
+    assert isinstance(key, str)
+    return key
 
 
 @pytest.fixture
@@ -81,7 +97,7 @@ class TestModelBinding:
 
         model = resolve_model(target)
 
-        assert model.client.api_key == "the-real-key"
+        assert _configured_api_key(model) == "the-real-key"
 
     def test_lee_la_variable_por_defecto_del_sdk_cuando_no_hay_credentials_ref(
         self, monkeypatch: pytest.MonkeyPatch
@@ -90,7 +106,7 @@ class TestModelBinding:
         monkeypatch.setenv("OPENAI_API_KEY", "sdk-default")
         target = InferenceTarget(provider="openai", model="a-model")
 
-        assert resolve_model(target).client.api_key == "sdk-default"
+        assert _configured_api_key(resolve_model(target)) == "sdk-default"
 
     @pytest.mark.parametrize("provider", ["openai", "anthropic", "gateway"])
     def test_falla_nombrando_la_variable_cuando_no_esta_puesta(
@@ -138,13 +154,19 @@ class TestModelBinding:
 
 class TestSpecTranslation:
     def test_el_spec_lleva_el_esquema_y_las_politicas_cuando_se_traduce(self) -> None:
-        """The plan's output schema and limits reach the engine's own spec."""
+        """The plan's output schema and limits reach the engine's own spec.
+
+        ``retries`` travels as the engine's split budget rather than as a bare
+        int; the two shapes normalise to the same thing, and the split is what
+        lets an ``output_check`` floor the output axis (see
+        ``test_output_check.py``).
+        """
         plan: AgentPlan = make_plan(retries=3)
 
         spec = build_agent_spec(plan)
 
         assert spec.output_schema == dict(plan.output.schema)
-        assert spec.retries == 3
+        assert spec.retries == {"tools": 3, "output": 3}
 
     def test_el_spec_no_lleva_tool_timeout_cuando_loom_ya_lo_aplica(self) -> None:
         """``tool_timeout_ms`` has one enforcer, so the engine gets no deadline.

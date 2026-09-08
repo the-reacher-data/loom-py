@@ -52,6 +52,7 @@ RUN_ERROR_DETAILS: Final[Mapping[AgentRunErrorCode, str]] = MappingProxyType(
         AgentRunErrorCode.UNAUTHORIZED: "the caller is not permitted to perform this run",
         AgentRunErrorCode.CANCELLED: "the run was cancelled",
         AgentRunErrorCode.HOOK_FAILED: "the output hook failed",
+        AgentRunErrorCode.INSTRUCTIONS_FAILED: "the agent could not build its instructions",
         AgentRunErrorCode.CONVERSATION_LOAD_FAILED: "the conversation could not be loaded",
         AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: (
             "the conversation loader exceeded its time limit"

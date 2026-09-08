@@ -32,6 +32,9 @@
       "minLength": 1,
       "description": "Instructions the agent follows. NEVER published. Must not encode authorization."
     },
+    "dynamic_instructions": {
+      "$ref": "#/$defs/dynamic_instructions"
+    },
     "model_role": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_-]{0,31}$",
@@ -40,6 +43,11 @@
     },
     "output": {
       "$ref": "#/$defs/output"
+    },
+    "output_check": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$",
+      "description": "module:symbol the answer is checked against once the engine has parsed it, beyond the shape 'output' declares. It returns null to accept, or the text the model must read to correct itself, which spends one of the engine's output-validation attempts. Synchronous and free of effects: it runs once per attempt."
     },
     "on_output": {
       "$ref": "#/$defs/on_output"
@@ -105,6 +113,24 @@
         }
       ]
     },
+    "dynamic_instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "factory"
+      ],
+      "properties": {
+        "factory": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "module:factory called once at build as factory(context, **params), returning the provider called once per model request. Per request, not per run: a run that calls one tool makes two model requests and calls the provider twice, up to max_iterations times. The provider is therefore synchronous and performs no I/O: it runs on the prompt path, which no timeout of the artifact covers, and whatever it costs is paid per request. A provider whose text varies between calls sends the model different instructions inside one run. It never replaces 'instructions': the literal composes first and this text is appended to it."
+        },
+        "params": {
+          "type": "object",
+          "description": "Keyword arguments the factory is called with. Names are validated against the factory signature at compile time; values are not. Settings, never secrets."
+        }
+      }
+    },
     "on_output": {
       "type": "object",
       "additionalProperties": false,
@@ -115,7 +141,7 @@
         "usecase": {
           "type": "string",
           "minLength": 1,
-          "description": "Use-case key of the registry executed once per completed run with the validated output. Not a tool: the model never sees it, and the same key must not also be granted as a usecase capability."
+          "description": "Use-case key of the registry executed once per completed run with the validated output. Not a tool: the model never sees it, and the same key must not also be granted as a usecase capability. Its Command opts into the run's tool-call summary by declaring a 'tool_calls' field: a record carries the tool name, the arguments the model sent and loom's own outcome, never what the tool returned, so a hook that needs the data re-reads it itself. A native tool is run by the provider and never appears in the summary. A 'messages' field stays tied to a conversation: it is null unless the run carried a conversation_id."
         }
       }
     },
@@ -346,7 +372,8 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 10,
-          "default": 2
+          "default": 2,
+          "description": "Attempts an agent may spend. One number, three distinct axes. (1) Loom's provider retries replay the whole run after an infrastructure failure, and only for an agent holding no capability: replaying a run that may already have invoked an application use case would invoke it twice, so any capability disables this axis whatever the value. (2) The engine's tool-call budget replays a tool call the model got wrong, inside the same run. (3) The engine's output-validation budget asks the model again for an answer an output_check rejected, inside the same run. Declaring an output_check floors this axis at one, so a check can always correct once."
         },
         "tool_timeout_ms": {
           "type": "integer",

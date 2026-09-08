@@ -27,6 +27,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from loom.ai.declarative import agent_spec_json_schema, agent_spec_schema_path
+from loom.ai.declarative._v1 import RETRY_AXES_DESCRIPTION
 
 _CONTRACT_PATH: Path = agent_spec_schema_path(1)
 
@@ -130,6 +131,79 @@ def test_la_capacidad_sql_emitida_exige_las_cotas_de_resultado_cuando_se_constru
 def test_el_hook_de_salida_emitido_exige_el_usecase_cuando_se_construye() -> None:
     """``on_output`` names one use case and naming it is the whole declaration (002/AC1)."""
     assert _emitted()["$defs"]["on_output"]["required"] == ["usecase"]
+
+
+def test_el_hook_de_salida_emitido_documenta_los_limites_del_resumen_de_llamadas() -> None:
+    """The three assumable-otherwise limits of the hook's inputs are published (011/L19).
+
+    Declaring ``tool_calls`` on the Command is the opt-in, so the artifact
+    gains no key and the description is the only place a reader learns what
+    the summary is, what it is not, and that ``messages`` stays tied to a
+    conversation.
+    """
+    description = _emitted()["$defs"]["on_output"]["properties"]["usecase"]["description"]
+
+    assert "'tool_calls' field" in description
+    assert "never what the tool returned" in description
+    assert "native tool is run by the provider and never appears" in description
+    assert "null unless the run carried a conversation_id" in description
+
+
+def test_el_output_check_emitido_es_una_referencia_suelta_cuando_se_construye() -> None:
+    """``output_check`` is a bare ``module:symbol`` string, not a block (011/L17).
+
+    It is optional and constrained by the same pattern every other symbol
+    reference uses, so a filesystem path is not representable.
+    """
+    emitted = _emitted()["properties"]["output_check"]
+
+    assert emitted["type"] == "string"
+    assert (
+        emitted["pattern"]
+        == _emitted()["$defs"]["output"]["oneOf"][1]["properties"]["ref"]["pattern"]
+    )
+    assert "output_check" not in _emitted()["required"]
+
+
+def test_el_output_check_emitido_documenta_el_contrato_de_retorno_cuando_se_construye() -> None:
+    """The inverted return contract is not guessable, so the schema states it."""
+    description = _emitted()["properties"]["output_check"]["description"]
+
+    assert "null to accept" in description
+    assert "correct itself" in description
+
+
+def test_las_instrucciones_dinamicas_emitidas_son_un_bloque_cuando_se_construye() -> None:
+    """``dynamic_instructions`` is a block with a factory and its params (011/L18).
+
+    A block rather than a bare reference, because it genuinely has two parts;
+    the factory is required, the params are not, and nothing else is accepted.
+    """
+    emitted = _emitted()["$defs"]["dynamic_instructions"]
+
+    assert emitted["required"] == ["factory"]
+    assert set(emitted["properties"]) == {"factory", "params"}
+    assert emitted["additionalProperties"] is False
+    assert "dynamic_instructions" not in _emitted()["required"]
+
+
+def test_la_factoria_de_instrucciones_emitida_documenta_el_contrato_cuando_se_construye() -> None:
+    """The provider's two hard limits are what an author has to read before writing one."""
+    description = _emitted()["$defs"]["dynamic_instructions"]["properties"]["factory"][
+        "description"
+    ]
+
+    assert "synchronous and performs no I/O" in description
+    assert "never replaces 'instructions'" in description
+
+
+def test_las_politicas_emitidas_documentan_los_tres_ejes_de_retries_cuando_se_construye() -> None:
+    """``retries`` is one knob over three axes, and the schema is one of its three sites.
+
+    The wording is defined once, in ``loom.ai.declarative._v1``, so this asserts
+    that the schema emits *that* text and not a paraphrase of it (011/AC5).
+    """
+    assert _policy_properties(_emitted())["retries"]["description"] == RETRY_AXES_DESCRIPTION
 
 
 def test_el_cargador_de_conversacion_emitido_exige_el_usecase_cuando_se_construye() -> None:

@@ -9,6 +9,23 @@ The plan's output schema reaches the engine through the spec; a pinned
 ``output_mode`` on the model binding reaches it as ``output_type=`` on
 ``Agent.from_spec`` (see :func:`~loom.ai.engines.pydantic_ai._spec.build_output_type`),
 and that keyword is absent when no mode is pinned.
+
+The plan's ``instructions`` and ``description`` reach the agent as keyword
+arguments rather than inside the spec, so a text containing ``{{`` stays a
+literal instead of selecting the engine's template branch (see
+:mod:`~loom.ai.engines.pydantic_ai._spec`).
+
+The plan's ``output_check`` is registered on the built agent by
+:mod:`~loom.ai.engines.pydantic_ai._checks`, which owns the translation from
+loom's return contract to the engine's retry signal, and which also refuses,
+before anything is built, the one binding that cannot serve a check: a pinned
+``output_mode: native``, where a rejection would show the caller the answer
+twice.
+
+The plan's ``dynamic_instructions`` factory is called, and the provider it
+returns registered, by :mod:`~loom.ai.engines.pydantic_ai._instructions`. Both
+registrations happen on the already-built agent, so the engine factory keeps
+one responsibility.
 """
 
 from __future__ import annotations
@@ -25,7 +42,12 @@ from loom.ai.engines.pydantic_ai._capabilities import (
     build_capabilities,
     build_toolsets,
 )
+from loom.ai.engines.pydantic_ai._checks import (
+    register_output_check,
+    reject_unservable_output_check,
+)
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
+from loom.ai.engines.pydantic_ai._instructions import register_dynamic_instructions
 from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
 from loom.ai.engines.pydantic_ai._native import supported_native_tools
@@ -110,27 +132,50 @@ class PydanticAIEngineProvider:
         Raises:
             TypeError: When ``plan`` is not an ``AgentPlan``.
             AgentCompilationError: When the vendor SDK the binding needs is not
-                installed, or a required provider setting is missing.
+                installed, a required provider setting is missing, a declared
+                factory fails to produce what it promised, or the artifact
+                declares an ``output_check`` the binding's pinned output mode
+                cannot serve.
         """
         if not isinstance(plan, AgentPlan):
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
-        model = self._resolve_model(plan.inference)
-        toolsets = build_toolsets(plan, container, mcp=self._mcp)
-        capabilities = build_capabilities(plan, container)
+        reject_unservable_output_check(plan)
+        agent = self._build_agent(plan, container)
+        register_output_check(agent, plan.output_check)
+        register_dynamic_instructions(agent, plan, container, mcp=self._mcp)
+        return PydanticAIEngine(plan=plan, agent=agent, deps=deps, container=container)
+
+    def _build_agent(self, plan: AgentPlan, container: LoomContainer) -> Agent[Any, Any]:
+        """Assemble the engine agent from the plan's spec, model and toolsets.
+
+        The template-typed ``instructions`` and ``description`` travel as
+        keyword arguments rather than inside the spec, for the reason
+        :mod:`~loom.ai.engines.pydantic_ai._spec` gives.
+
+        Args:
+            plan: Compiled plan to build.
+            container: Application container the factories receive.
+
+        Returns:
+            The built agent, before anything is registered on it.
+        """
         output_type = build_output_type(plan)
         # The keyword is absent, not ``None``, when no mode is pinned: the
         # engine's default for ``output_type`` is ``str``, and passing ``None``
         # would override the resolution ``output_schema`` alone triggers.
         pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
-        agent = Agent.from_spec(
+        toolsets = build_toolsets(plan, container, mcp=self._mcp)
+        capabilities = build_capabilities(plan, container)
+        return Agent.from_spec(
             build_agent_spec(plan),
-            model=model,
+            model=self._resolve_model(plan.inference),
             deps_type=object,
+            instructions=plan.instructions,
+            description=plan.description,
             toolsets=toolsets or None,
             capabilities=capabilities or None,
             **pinned,
         )
-        return PydanticAIEngine(plan=plan, agent=agent, deps=deps, container=container)
 
     def native_tool_support(self, target: InferenceTarget) -> frozenset[str]:
         """Return the provider tools the model bound to *target* admits.

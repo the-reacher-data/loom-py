@@ -39,6 +39,7 @@ from loom.ai.abc import (
     McpSession,
 )
 from loom.ai.compiler._plan import (
+    HOOK_TOOL_CALLS_FIELD,
     AgentPlan,
     CompiledA2ACapability,
     CompiledMcpCapability,
@@ -72,6 +73,7 @@ from loom.ai.runtime._mcp import (
     listing_timeout_issues,
     mcp_key,
 )
+from loom.ai.runtime._tool_calls import ToolCallAccumulator
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
 from loom.core.sql.config import SqlConfig
@@ -731,29 +733,74 @@ class AgentRuntime:
         identity: Identity,
         conversation_id: str | None,
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
+        """Admit one run and serve its events, releasing the permit on the way out.
+
+        Every run of every entry point crosses this method: it takes the
+        concurrency permit, mints the run context, loads the conversation the
+        request names and hands the engine's stream to
+        :meth:`_composed_events`, which owns the pipeline built over it.
+
+        Args:
+            name: Agent to run.
+            prompt: What the caller asked.
+            identity: Verified caller of this run.
+            conversation_id: Conversation the run continues, or ``None``.
+
+        Yields:
+            The run's events, supervised and hooked.
+        """
         slot = self._require_slot(name)
         _check_conversation_id(conversation_id)
         await self._admit(name)
         try:
-            run = RunContext(
-                plan=slot.plan,
-                identity=identity,
-                interaction_id=uuid4().hex,
-                conversation_id=conversation_id,
-            )
+            run = _new_run(slot.plan, identity, conversation_id)
             conversation = await load_conversation(run, self._deps, self._container)
-            async with slot.engine.run_stream(
-                prompt, identity=identity, conversation=conversation
-            ) as events:
-                supervised = supervised_events(events, slot.plan.policies)
-                hooked = hooked_events(supervised, run, self._deps, self._container)
-                try:
-                    yield hooked
-                finally:
-                    await hooked.aclose()
-                    await supervised.aclose()
+            async with (
+                slot.engine.run_stream(
+                    prompt, identity=identity, conversation=conversation
+                ) as events,
+                self._composed_events(run, events) as composed,
+            ):
+                yield composed
         finally:
             self._runs.release()
+
+    @asynccontextmanager
+    async def _composed_events(
+        self, run: RunContext, events: AsyncIterator[AgentEvent]
+    ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
+        """Build the run's event pipeline over the engine's stream, and close it.
+
+        Three stages at most: the supervisor enforcing the declared limits, the
+        tool-call accumulator when — and only when — the plan's hook asked for
+        the summary, and the hook stage that re-creates the terminal event.
+        Every generator opened here is closed here, in reverse order, so a
+        consumer that abandons the stream leaves nothing suspended.
+
+        Args:
+            run: Context of the admitted run.
+            events: The engine's raw event stream.
+
+        Yields:
+            The outermost stage, which is what the caller iterates.
+        """
+        supervised = supervised_events(events, run.plan.policies)
+        accumulator = _tool_call_accumulator(run.plan)
+        tracked = None if accumulator is None else accumulator.track(supervised)
+        hooked = hooked_events(
+            supervised if tracked is None else tracked,
+            run,
+            self._deps,
+            self._container,
+            tool_calls=accumulator,
+        )
+        try:
+            yield hooked
+        finally:
+            await hooked.aclose()
+            if tracked is not None:
+                await tracked.aclose()
+            await supervised.aclose()
 
     async def _admit(self, name: str) -> None:
         """Take a run slot, refusing instead of queueing when none is free."""
@@ -783,6 +830,47 @@ class AgentRuntime:
                 "'async with runtime:' to open its clients and build its engines"
             )
         return slot
+
+
+def _new_run(plan: AgentPlan, identity: Identity, conversation_id: str | None) -> RunContext:
+    """Mint the context of one admitted run.
+
+    The interaction id is minted here and nowhere else: it identifies this run
+    in every event, hook command and error the run produces.
+
+    Args:
+        plan: Compiled plan of the agent being run.
+        identity: Verified caller of this run.
+        conversation_id: Conversation the run continues, or ``None``.
+
+    Returns:
+        The context every stage of the run reads.
+    """
+    return RunContext(
+        plan=plan,
+        identity=identity,
+        interaction_id=uuid4().hex,
+        conversation_id=conversation_id,
+    )
+
+
+def _tool_call_accumulator(plan: AgentPlan) -> ToolCallAccumulator | None:
+    """Build the run's accumulator, or ``None`` when no hook asked for the summary.
+
+    Declaring the ``tool_calls`` field on the hook's Input is the opt-in, so a
+    plan without a hook, or with a hook that does not name it, gets no wrapper
+    on its event path at all.
+
+    Args:
+        plan: Compiled plan of the agent being run.
+
+    Returns:
+        A fresh accumulator, or ``None`` when the run must not accumulate.
+    """
+    hook = plan.on_output
+    if hook is None or HOOK_TOOL_CALLS_FIELD not in hook.accepted:
+        return None
+    return ToolCallAccumulator()
 
 
 def _check_conversation_id(conversation_id: str | None) -> None:

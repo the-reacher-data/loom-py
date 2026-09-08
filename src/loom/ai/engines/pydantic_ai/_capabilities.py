@@ -359,14 +359,22 @@ class _PythonToolsetContext:
         return session
 
 
-def _python_context(
-    capability: CompiledPythonCapability, context: BuildContext
-) -> _PythonToolsetContext:
-    """Build the factory's context over the plan's own ``mcp`` grants.
+def build_toolset_context(factory_ref: str, context: BuildContext) -> ToolsetContext:
+    """Build the context one declared factory of the plan receives at build.
 
-    Each session wraps the very toolset ``for_build`` hands the agent's ``mcp``
-    capability, so a factory that reuses a remote shares the worker's one
-    connection to it rather than opening a second.
+    Shared by the two declarations built as ``factory(context, **params)``:
+    a ``kind: python`` capability and ``dynamic_instructions``.  Each session
+    wraps the very toolset ``for_build`` hands the agent's ``mcp`` capability,
+    so a factory that reuses a remote shares the worker's one connection to it
+    rather than opening a second.
+
+    Args:
+        factory_ref: The artifact's reference, named in a refusal the context
+            itself raises.
+        context: Build facts of the plan being built.
+
+    Returns:
+        The context to pass as the factory's first positional.
     """
     remotes = {
         grant.server: _ToolsetSession(context.mcp.for_build(grant, context.agent))
@@ -375,7 +383,7 @@ def _python_context(
     return _PythonToolsetContext(
         agent=context.agent,
         container=context.container,
-        factory_ref=capability.factory_ref,
+        factory_ref=factory_ref,
         remotes=remotes,
     )
 
@@ -406,7 +414,7 @@ def _call_factory(capability: CompiledPythonCapability, context: BuildContext) -
     text could echo a ``params`` value, and the artifact's issues are shown to
     whoever deploys it.
     """
-    python_context: ToolsetContext = _python_context(capability, context)
+    python_context = build_toolset_context(capability.factory_ref, context)
     try:
         return capability.factory(python_context, **capability.params)
     except AgentCompilationError:

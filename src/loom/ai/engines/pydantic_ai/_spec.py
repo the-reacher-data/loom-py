@@ -14,6 +14,14 @@ What is deliberately **not** projected:
 * ``run_timeout_ms`` / ``max_iterations`` — enforced by
   :class:`~loom.ai.runtime.AgentRuntime`, which supervises every stream; a
   second enforcement here would be a hidden, divergent limit.
+* ``instructions`` / ``description`` — the engine types both as
+  ``TemplateStr | str``, a union whose discriminator is literally the presence
+  of ``{{`` in the text, and whose template branch imports a templating package
+  a default install does not carry. An artifact's instructions and description
+  are literal by contract, so building the spec with them would turn a prompt
+  that merely mentions braces into an ``ImportError`` at start-up. They travel
+  as keyword arguments of ``Agent.from_spec()`` instead (``provider``), where
+  the engine keeps a plain string untouched.
 * ``tool_timeout_ms`` — enforced on loom's side, by
   ``_guards.capability_call`` around every granted tool and by
   ``AgentRuntime``'s own tool deadline. Those two agree: same code, same
@@ -24,11 +32,22 @@ What is deliberately **not** projected:
   ``PROVIDER_UNAVAILABLE`` (retried) where loom's is ``TOOL_TIMEOUT`` (not
   retried). One value, two retry behaviours, chosen by the event loop.
 
-``retries`` **is** projected, and it is not the same axis as the runtime's
-``plan.policies.retries + 1`` attempts (``_engine``): the engine's counter
-replays a failed *tool* call inside one run, loom's replays a failed
-*provider* call across runs. They share one artifact field on purpose — a
-single operator-facing knob — but neither enforcement subsumes the other.
+``retries`` **is** projected, as the engine's split budget rather than as a
+bare int: the engine keeps a tool-call axis and an output-validation axis, and
+a bare int only sets both to the same number, which leaves an artifact
+declaring an ``output_check`` with a check that cannot correct anything at
+``retries: 0``. Projecting the pair explicitly is what lets
+:func:`build_agent_spec` floor the output axis for such an artifact. For every
+other artifact the projection is the engine's own normalisation of a bare int,
+so the behaviour is unchanged.
+
+The three axes the one artifact field governs — loom's provider retries, the
+engine's tool-call budget and the engine's output-validation budget — are
+described once, in
+:data:`~loom.ai.declarative._v1.RETRY_AXES_DESCRIPTION`, which the published
+JSON Schema emits and the policy field points at. Neither the runtime's
+``plan.policies.retries + 1`` attempts (``_engine``) nor either engine budget
+subsumes the others: they share one operator-facing knob on purpose.
 
 ``output_mode`` (``ai.models.<role>``) is projected next to the spec rather than
 inside it: ``AgentSpec.output_schema`` has no mode field, so the mode travels as
@@ -38,12 +57,20 @@ engine keeps resolving the mode itself from ``output_schema``.
 
 from __future__ import annotations
 
-from typing import Any, assert_never, cast
+from typing import Any, Final, assert_never, cast
 
-from pydantic_ai import AgentSpec, NativeOutput, StructuredDict, ToolOutput
+from pydantic_ai import AgentRetries, AgentSpec, NativeOutput, StructuredDict, ToolOutput
 
 from loom.ai.compiler import AgentPlan
 from loom.ai.inference import OutputMode
+
+_CHECKED_OUTPUT_RETRIES_FLOOR: Final[int] = 1
+"""Output attempts an artifact declaring an ``output_check`` always gets.
+
+A rejection is only useful if the model may answer again, so a declared zero is
+raised to one. A declared value above it is left alone: the artifact asked for
+more, not for less.
+"""
 
 
 def build_agent_spec(plan: AgentPlan) -> AgentSpec:
@@ -55,6 +82,10 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
     shape (tool call or native structured output) is not part of the spec;
     :func:`build_output_type` overrides it when the binding pins a mode.
 
+    The spec carries no ``instructions`` and no ``description``: both are
+    template-typed on the engine side and travel as keyword arguments instead,
+    for the reason this module's docstring gives.
+
     Args:
         plan: Compiled agent plan.
 
@@ -64,11 +95,24 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
     schema: dict[str, Any] = dict(plan.output.schema)
     return AgentSpec(
         name=plan.name,
-        description=plan.description,
-        instructions=plan.instructions,
         output_schema=schema,
-        retries=plan.policies.retries,
+        retries=_retry_budget(plan),
     )
+
+
+def _retry_budget(plan: AgentPlan) -> AgentRetries:
+    """Split the artifact's one ``retries`` value into the engine's two axes.
+
+    Both axes carry the declared value, which is what the engine derives from a
+    bare int itself, so nothing changes for an artifact without an output check.
+    With one, the output axis is floored at
+    :data:`_CHECKED_OUTPUT_RETRIES_FLOOR`: a check that cannot ask for a second
+    answer can only fail runs.
+    """
+    declared = plan.policies.retries
+    if plan.output_check is None:
+        return AgentRetries(tools=declared, output=declared)
+    return AgentRetries(tools=declared, output=max(declared, _CHECKED_OUTPUT_RETRIES_FLOOR))
 
 
 def build_output_type(plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | None:

@@ -66,4 +66,4 @@ def test_corpus_compiles_clean_when_offline_and_credentialless(
     )
     decoded = load_specs([CORPUS_PATTERN], root=CORPUS_DIR)
     plans = compiler.compile_all(decoded)
-    assert len(plans) == len(decoded) == 10
+    assert len(plans) == len(decoded) == 12

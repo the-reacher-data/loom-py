@@ -58,6 +58,17 @@ class AgentErrorCode(StrEnum):
     OUTPUT_SCHEMA_INVALID = "OUTPUT_SCHEMA_INVALID"
     OUTPUT_TYPE_REF_UNRESOLVABLE = "OUTPUT_TYPE_REF_UNRESOLVABLE"
     OUTPUT_TYPE_REF_UNSUPPORTED = "OUTPUT_TYPE_REF_UNSUPPORTED"
+    OUTPUT_CHECK_UNRESOLVABLE = "OUTPUT_CHECK_UNRESOLVABLE"
+    OUTPUT_CHECK_NOT_CALLABLE = "OUTPUT_CHECK_NOT_CALLABLE"
+    OUTPUT_CHECK_COROUTINE_UNSUPPORTED = "OUTPUT_CHECK_COROUTINE_UNSUPPORTED"
+    OUTPUT_CHECK_NATIVE_MODE_UNSUPPORTED = "OUTPUT_CHECK_NATIVE_MODE_UNSUPPORTED"
+
+    # Dynamic instructions
+    DYNAMIC_INSTRUCTIONS_UNRESOLVABLE = "DYNAMIC_INSTRUCTIONS_UNRESOLVABLE"
+    DYNAMIC_INSTRUCTIONS_NOT_CALLABLE = "DYNAMIC_INSTRUCTIONS_NOT_CALLABLE"
+    DYNAMIC_INSTRUCTIONS_PARAMS_REJECTED = "DYNAMIC_INSTRUCTIONS_PARAMS_REJECTED"
+    DYNAMIC_INSTRUCTIONS_FACTORY_FAILED = "DYNAMIC_INSTRUCTIONS_FACTORY_FAILED"
+    DYNAMIC_INSTRUCTIONS_PROVIDER_COROUTINE = "DYNAMIC_INSTRUCTIONS_PROVIDER_COROUTINE"
     ON_OUTPUT_USECASE_UNKNOWN = "ON_OUTPUT_USECASE_UNKNOWN"
     ON_OUTPUT_INPUT_UNSATISFIED = "ON_OUTPUT_INPUT_UNSATISFIED"
     ON_OUTPUT_USECASE_ALSO_GRANTED = "ON_OUTPUT_USECASE_ALSO_GRANTED"
@@ -291,6 +302,142 @@ def output_type_ref_unsupported(component: str, ref: str, reason: str) -> AgentC
         message=f"{component}: output type reference '{ref}' is unsupported: {reason}",
         component=component,
         field="output.ref",
+    )
+
+
+_OUTPUT_CHECK_FIELD: Final[str] = "output_check"
+"""Spec field every ``output_check`` compilation issue points at."""
+
+
+def output_check_unresolvable(component: str, ref: str, reason: str) -> AgentCompilationIssue:
+    """The ``output_check`` reference does not import."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.OUTPUT_CHECK_UNRESOLVABLE,
+        message=f"{component}: output check '{ref}' cannot be imported: {reason}",
+        component=component,
+        field=_OUTPUT_CHECK_FIELD,
+    )
+
+
+def output_check_not_callable(component: str, ref: str) -> AgentCompilationIssue:
+    """The ``output_check`` reference resolves to something that is not called."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.OUTPUT_CHECK_NOT_CALLABLE,
+        message=(
+            f"{component}: output check '{ref}' does not satisfy OutputCheck: it is not callable"
+        ),
+        component=component,
+        field=_OUTPUT_CHECK_FIELD,
+    )
+
+
+def output_check_coroutine_unsupported(component: str, ref: str) -> AgentCompilationIssue:
+    """The ``output_check`` reference is a coroutine function, which cannot be awaited here."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.OUTPUT_CHECK_COROUTINE_UNSUPPORTED,
+        message=(
+            f"{component}: output check '{ref}' is a coroutine function; an output check "
+            f"runs once per attempt inside the engine's retry loop and must be synchronous"
+        ),
+        component=component,
+        field=_OUTPUT_CHECK_FIELD,
+    )
+
+
+def output_check_native_mode_unsupported(component: str, model: str) -> AgentCompilationIssue:
+    """The artifact declares a check the pinned native output mode cannot serve.
+
+    An artifact-versus-deployment mismatch, reported the way every other one is:
+    at build, with its own code, rather than by forcing a mode the artifact does
+    not own or by letting the caller see the answer twice.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.OUTPUT_CHECK_NATIVE_MODE_UNSUPPORTED,
+        message=(
+            f"{component}: declares an output_check, but the model binding of its role "
+            f"pins output_mode: native on {model}; in that mode the provider delivers the "
+            f"structured answer as text, loom streams text as deltas, and the engine retries "
+            f"inside one run, so a rejected attempt would reach the caller before the accepted "
+            f"one — the same answer twice. Pin output_mode: tool for that role, or remove the "
+            f"artifact's output_check"
+        ),
+        component=component,
+        field=_OUTPUT_CHECK_FIELD,
+    )
+
+
+_DYNAMIC_INSTRUCTIONS_FACTORY_FIELD: Final[str] = "dynamic_instructions.factory"
+"""Spec field every ``dynamic_instructions`` factory issue points at."""
+
+_DYNAMIC_INSTRUCTIONS_PARAMS_FIELD: Final[str] = "dynamic_instructions.params"
+"""Spec field a rejected ``dynamic_instructions`` parameter block points at."""
+
+
+def dynamic_instructions_unresolvable(
+    component: str, factory: str, reason: str
+) -> AgentCompilationIssue:
+    """The ``dynamic_instructions`` factory reference does not import."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.DYNAMIC_INSTRUCTIONS_UNRESOLVABLE,
+        message=f"{component}: instructions factory '{factory}' cannot be imported: {reason}",
+        component=component,
+        field=_DYNAMIC_INSTRUCTIONS_FACTORY_FIELD,
+    )
+
+
+def dynamic_instructions_not_callable(component: str, factory: str) -> AgentCompilationIssue:
+    """The ``dynamic_instructions`` reference does not satisfy ``InstructionsFactory``."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.DYNAMIC_INSTRUCTIONS_NOT_CALLABLE,
+        message=(
+            f"{component}: instructions factory '{factory}' does not satisfy "
+            f"InstructionsFactory: it is not callable as factory(context, **params), "
+            f"or it did not return a callable provider"
+        ),
+        component=component,
+        field=_DYNAMIC_INSTRUCTIONS_FACTORY_FIELD,
+    )
+
+
+def dynamic_instructions_params_rejected(
+    component: str, factory: str, reason: str
+) -> AgentCompilationIssue:
+    """The ``dynamic_instructions`` ``params`` do not bind to the factory's signature."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.DYNAMIC_INSTRUCTIONS_PARAMS_REJECTED,
+        message=f"{component}: instructions factory '{factory}' rejects params: {reason}",
+        component=component,
+        field=_DYNAMIC_INSTRUCTIONS_PARAMS_FIELD,
+    )
+
+
+def dynamic_instructions_factory_failed(
+    component: str, factory: str, error: str
+) -> AgentCompilationIssue:
+    """A ``dynamic_instructions`` factory raised while building its provider at start-up.
+
+    Only the exception class is named, as ``python_factory_failed`` does: the
+    message could carry a ``params`` value or anything else the factory touched.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.DYNAMIC_INSTRUCTIONS_FACTORY_FAILED,
+        message=f"{component}: instructions factory '{factory}' raised {error} while building",
+        component=component,
+        field=_DYNAMIC_INSTRUCTIONS_FACTORY_FIELD,
+    )
+
+
+def dynamic_instructions_provider_coroutine(component: str, factory: str) -> AgentCompilationIssue:
+    """A ``dynamic_instructions`` factory returned a coroutine function as its provider."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.DYNAMIC_INSTRUCTIONS_PROVIDER_COROUTINE,
+        message=(
+            f"{component}: instructions factory '{factory}' returned a coroutine function; "
+            f"a provider runs on the prompt path, which no timeout of the artifact covers, "
+            f"and must be synchronous"
+        ),
+        component=component,
+        field=_DYNAMIC_INSTRUCTIONS_FACTORY_FIELD,
     )
 
 
@@ -1131,6 +1278,7 @@ class AgentRunErrorCode(StrEnum):
     UNAUTHORIZED = "UNAUTHORIZED"
     CANCELLED = "CANCELLED"
     HOOK_FAILED = "HOOK_FAILED"
+    INSTRUCTIONS_FAILED = "INSTRUCTIONS_FAILED"
     CONVERSATION_LOAD_FAILED = "CONVERSATION_LOAD_FAILED"
     CONVERSATION_LOAD_TIMEOUT = "CONVERSATION_LOAD_TIMEOUT"
 
@@ -1189,6 +1337,7 @@ _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProx
         AgentRunErrorCode.UNAUTHORIZED: AgentRunErrorClass.AUTHORIZATION,
         AgentRunErrorCode.CANCELLED: AgentRunErrorClass.CLIENT,
         AgentRunErrorCode.HOOK_FAILED: AgentRunErrorClass.APPLICATION,
+        AgentRunErrorCode.INSTRUCTIONS_FAILED: AgentRunErrorClass.APPLICATION,
         AgentRunErrorCode.CONVERSATION_LOAD_FAILED: AgentRunErrorClass.APPLICATION,
         AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: AgentRunErrorClass.INFRASTRUCTURE,
     }

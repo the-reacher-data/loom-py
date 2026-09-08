@@ -10,22 +10,26 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
 
-from loom.ai.abc import NativeToolSupport
+from loom.ai.abc import NativeToolSupport, OutputCheck
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledCapability,
     CompiledConversation,
+    CompiledDynamicInstructions,
     CompiledOutput,
     CompiledOutputHook,
 )
 from loom.ai.compiler.phases._capabilities import compile_capabilities
 from loom.ai.compiler.phases._conversation import compile_conversation
+from loom.ai.compiler.phases._dynamic_instructions import compile_dynamic_instructions
 from loom.ai.compiler.phases._hook import compile_output_hook
 from loom.ai.compiler.phases._limits import validate_policies
 from loom.ai.compiler.phases._model_role import resolve_model_role
 from loom.ai.compiler.phases._output import compile_output
+from loom.ai.compiler.phases._output_check import compile_output_check
 from loom.ai.config import AiConfig
 from loom.ai.declarative import AgentSpecV1, DecodedSpec
 from loom.ai.errors import (
@@ -40,6 +44,34 @@ from loom.core.use_case.registry import UseCaseRegistry
 _UNNAMED_SOURCE = "<in-memory spec>"
 
 _CompileResult = tuple[AgentPlan | None, list[AgentCompilationIssue]]
+
+
+@dataclass(frozen=True, slots=True)
+class _Resolved:
+    """Everything the phases resolved for one spec, gathered for the plan.
+
+    The phases already ran and reported clean; this only carries their results
+    across to :meth:`AgentCompiler._build_plan` so the plan is built from two
+    values — the artifact and what compiling it produced — instead of from a
+    positional list that grows with every optional field the format gains.
+
+    Attributes:
+        inference: Resolved model binding of the agent's role.
+        output: Structured-output contract with its built decoder.
+        output_check: Imported answer rule, when the artifact declares one.
+        dynamic_instructions: Imported prompt factory, when declared.
+        capabilities: Compiled capabilities with resolved handles.
+        on_output: Compiled output hook, when declared.
+        conversation: Compiled conversation loader, when declared.
+    """
+
+    inference: InferenceTarget
+    output: CompiledOutput
+    output_check: OutputCheck | None
+    dynamic_instructions: CompiledDynamicInstructions | None
+    capabilities: tuple[CompiledCapability, ...]
+    on_output: CompiledOutputHook | None
+    conversation: CompiledConversation | None
 
 
 class AgentCompiler:
@@ -132,9 +164,26 @@ class AgentCompiler:
 
     def _compile_one(self, spec: AgentSpecV1, source_path: str | None) -> _CompileResult:
         component = source_path if source_path is not None else spec.name
+        resolved, issues = self._resolve(spec, component, source_path)
+        if resolved is None:
+            return None, issues
+        return self._build_plan(spec, resolved, source_path), []
+
+    def _resolve(
+        self, spec: AgentSpecV1, component: str, source_path: str | None
+    ) -> tuple[_Resolved | None, list[AgentCompilationIssue]]:
+        """Run every phase over one spec, accumulating the issues of all of them.
+
+        Returns ``None`` for the resolution as soon as anything was reported,
+        so the plan is only ever built out of a spec that compiled clean.
+        """
         issues: list[AgentCompilationIssue] = []
         output, output_issues = compile_output(spec.output, component)
         issues.extend(output_issues)
+        output_check, check_issues = compile_output_check(spec.output_check, component)
+        issues.extend(check_issues)
+        dynamic, dynamic_issues = compile_dynamic_instructions(spec.dynamic_instructions, component)
+        issues.extend(dynamic_issues)
         on_output, hook_issues = compile_output_hook(
             spec, component=component, registry=self._registry
         )
@@ -146,7 +195,34 @@ class AgentCompiler:
         issues.extend(validate_policies(spec.policies, component))
         inference, role_issues = resolve_model_role(spec.model_role, self._config.models, component)
         issues.extend(role_issues)
-        capabilities, capability_issues = compile_capabilities(
+        capabilities, capability_issues = self._resolve_capabilities(
+            spec, component, source_path, inference
+        )
+        issues.extend(capability_issues)
+        if issues or output is None or inference is None:
+            return None, issues
+        return (
+            _Resolved(
+                inference=inference,
+                output=output,
+                output_check=output_check,
+                dynamic_instructions=dynamic,
+                capabilities=capabilities,
+                on_output=on_output,
+                conversation=conversation,
+            ),
+            issues,
+        )
+
+    def _resolve_capabilities(
+        self,
+        spec: AgentSpecV1,
+        component: str,
+        source_path: str | None,
+        inference: InferenceTarget | None,
+    ) -> tuple[tuple[CompiledCapability, ...], list[AgentCompilationIssue]]:
+        """Compile the grants against this compiler's deployment inputs."""
+        return compile_capabilities(
             spec,
             component=component,
             config=self._config,
@@ -157,35 +233,22 @@ class AgentCompiler:
             native_tools=self._native_tools,
             source_path=source_path,
         )
-        issues.extend(capability_issues)
-        if issues or output is None or inference is None:
-            return None, issues
-        plan = self._build_plan(
-            spec, inference, output, capabilities, on_output, conversation, source_path
-        )
-        return plan, []
 
     @staticmethod
-    def _build_plan(
-        spec: AgentSpecV1,
-        inference: InferenceTarget,
-        output: CompiledOutput,
-        capabilities: tuple[CompiledCapability, ...],
-        on_output: CompiledOutputHook | None,
-        conversation: CompiledConversation | None,
-        source_path: str | None,
-    ) -> AgentPlan:
+    def _build_plan(spec: AgentSpecV1, resolved: _Resolved, source_path: str | None) -> AgentPlan:
         return AgentPlan(
             name=spec.name,
             description=spec.description,
             instructions=spec.instructions,
+            dynamic_instructions=resolved.dynamic_instructions,
             spec_version=spec.spec_version,
-            inference=inference,
-            output=output,
-            capabilities=capabilities,
+            inference=resolved.inference,
+            output=resolved.output,
+            output_check=resolved.output_check,
+            capabilities=resolved.capabilities,
             policies=spec.policies,
-            on_output=on_output,
-            conversation=conversation,
+            on_output=resolved.on_output,
+            conversation=resolved.conversation,
             metadata=MappingProxyType(dict(spec.metadata)),
             source_path=source_path,
         )

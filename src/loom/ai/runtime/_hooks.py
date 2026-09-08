@@ -12,16 +12,22 @@ Nothing here imports an engine or an optional extra.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from typing import Any, Final
 
 import msgspec
 
 from loom.ai._usecase import invoke_as, require_invoker
-from loom.ai.abc import AgentEvent, DepsFactory, ErrorEvent, FinalEvent
-from loom.ai.compiler._plan import HOOK_MESSAGES_FIELD, HOOK_OUTPUT_FIELD, CompiledOutputHook
+from loom.ai.abc import AgentEvent, DepsFactory, ErrorEvent, FinalEvent, ToolCallRecord
+from loom.ai.compiler._plan import (
+    HOOK_MESSAGES_FIELD,
+    HOOK_OUTPUT_FIELD,
+    HOOK_TOOL_CALLS_FIELD,
+    CompiledOutputHook,
+)
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.runtime._bounded import RunContext, bounded, failure_error
+from loom.ai.runtime._tool_calls import ToolCallAccumulator
 from loom.core.di import LoomContainer
 
 HOOK_FAILED_MESSAGE: Final[str] = "the output hook failed; the detail is recorded server-side"
@@ -49,14 +55,16 @@ def hook_command(
     accepted: frozenset[str],
     *,
     messages: bytes | None = None,
+    tool_calls: Sequence[ToolCallRecord] = (),
 ) -> dict[str, Any]:
     """Build the command the hook use case receives, filtered to its Input's names.
 
     The validated output is nested under ``output``, the run's new messages
-    under ``messages``, and the run context is offered beside them; nothing
-    from the output can shadow a context name.  Filtering to ``accepted`` —
-    the Input's declared names, computed once at compile — lets a
-    ``forbid_unknown_fields`` Command decode the result.
+    under ``messages``, its tool-call summary under ``tool_calls``, and the run
+    context is offered beside them; nothing from the output can shadow a
+    context name.  Filtering to ``accepted`` — the Input's declared names,
+    computed once at compile — lets a ``forbid_unknown_fields`` Command decode
+    the result.
 
     Args:
         output: Validated answer of the run.
@@ -64,6 +72,8 @@ def hook_command(
         accepted: Internal names the Input declares.
         messages: The run's new messages in the engine's serialised form;
             ``None`` on a run without a conversation.
+        tool_calls: The run's tool calls in call order; empty when the Input
+            does not declare the name, since nothing is then accumulated.
 
     Returns:
         The payload ``from_payload`` will decode.
@@ -71,6 +81,7 @@ def hook_command(
     offered: dict[str, Any] = {
         HOOK_OUTPUT_FIELD: msgspec.to_builtins(output),
         HOOK_MESSAGES_FIELD: messages,
+        HOOK_TOOL_CALLS_FIELD: tuple(tool_calls),
         "interaction_id": run.interaction_id,
         "conversation_id": run.conversation_id,
         "subject": run.identity.subject,
@@ -88,11 +99,18 @@ async def _invoke_hook(
     run: RunContext,
     deps: DepsFactory,
     container: LoomContainer,
+    tool_calls: ToolCallAccumulator | None,
 ) -> object:
     """Run the hook use case as the caller through the bundle's bound invoker."""
     bundle = deps.build(run.identity, container)
     invoker = require_invoker(bundle, f"{_HOOK} '{hook.usecase}'")
-    command = hook_command(final.output, run, hook.accepted, messages=final.messages)
+    command = hook_command(
+        final.output,
+        run,
+        hook.accepted,
+        messages=final.messages,
+        tool_calls=() if tool_calls is None else tool_calls.records(),
+    )
     return await invoke_as(invoker, hook.use_case, run.identity, params=None, payload=command)
 
 
@@ -101,6 +119,8 @@ async def hooked_events(
     run: RunContext,
     deps: DepsFactory,
     container: LoomContainer,
+    *,
+    tool_calls: ToolCallAccumulator | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Forward a supervised stream, running the hook at its terminal event.
 
@@ -116,6 +136,9 @@ async def hooked_events(
         run: Context of the admitted run.
         deps: Per-invocation dependency factory.
         container: Application container.
+        tool_calls: Accumulator filled from the same stream, when the hook's
+            Input declares the name; ``None`` when it does not, in which case
+            nothing was accumulated and the hook is offered no summary.
 
     Yields:
         The run's events, terminal event re-created.
@@ -125,7 +148,7 @@ async def hooked_events(
             yield msgspec.structs.replace(event, interaction_id=run.interaction_id)
             return
         if type(event) is FinalEvent:
-            yield await _terminal(event, run, deps, container)
+            yield await _terminal(event, run, deps, container, tool_calls)
             return
         yield event
     yield ErrorEvent(
@@ -136,14 +159,20 @@ async def hooked_events(
 
 
 async def _terminal(
-    final: FinalEvent, run: RunContext, deps: DepsFactory, container: LoomContainer
+    final: FinalEvent,
+    run: RunContext,
+    deps: DepsFactory,
+    container: LoomContainer,
+    tool_calls: ToolCallAccumulator | None,
 ) -> FinalEvent | ErrorEvent:
     """Run the hook, if any, and produce the stream's terminal event."""
     hook = run.plan.on_output
     if hook is None:
         return msgspec.structs.replace(final, interaction_id=run.interaction_id)
     try:
-        result = await bounded(_invoke_hook(hook, final, run, deps, container), run, what=_HOOK)
+        result = await bounded(
+            _invoke_hook(hook, final, run, deps, container, tool_calls), run, what=_HOOK
+        )
     except Exception as exc:  # recovery: the run fails closed with a coded, detail-free error
         error = failure_error(
             exc, run, code=AgentRunErrorCode.HOOK_FAILED, message=HOOK_FAILED_MESSAGE, what=_HOOK

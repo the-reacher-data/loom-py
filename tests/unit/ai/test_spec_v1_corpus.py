@@ -146,6 +146,32 @@ def test_el_corpus_cubre_todos_los_kinds_de_salida_cuando_se_recorre_entero() ->
     assert _declared_output_kinds() == set(_OUTPUT_KINDS)
 
 
+def test_el_corpus_cubre_el_output_check_cuando_se_recorre_entero() -> None:
+    """The optional answer rule has a fixture, and it is a bare symbol reference.
+
+    A block would be a different shape in the format, so the assertion is on the
+    value's type as much as on its presence.
+    """
+    declared = [_read_artifact(path).get("output_check") for path in _corpus_paths()]
+    references = [value for value in declared if value is not None]
+
+    assert references != []
+    assert all(isinstance(value, str) and ":" in value for value in references)
+
+
+def test_el_corpus_cubre_las_instrucciones_dinamicas_cuando_se_recorre_entero() -> None:
+    """The optional prompt factory has a fixture, and it is a block, not a bare string.
+
+    The shape is the contract: ``dynamic_instructions`` genuinely has two parts,
+    so a fixture declaring it as a loose reference would be a different format.
+    """
+    declared = [_read_artifact(path).get("dynamic_instructions") for path in _corpus_paths()]
+    blocks = [value for value in declared if value is not None]
+
+    assert blocks != []
+    assert all(isinstance(value, dict) and ":" in value["factory"] for value in blocks)
+
+
 def test_cada_artefacto_vive_en_un_directorio_con_su_nombre_cuando_se_recorre_el_corpus() -> None:
     """The layout is one directory per agent, named after the agent."""
     mismatched = [

@@ -64,10 +64,15 @@ description: Investigates production incidents by combining warehouse data, tool
 instructions: >-
   Investigate the reported incident, gather the supporting evidence and propose the next
   remediation step. State explicitly when the evidence is inconclusive.
+dynamic_instructions:
+  factory: myapp.agents.prompts:build_checklist
+  params:
+    locale: en
 model_role: reasoning
 output:
   kind: type_ref
   ref: myapp.domain.incidents:IncidentReport
+output_check: myapp.agents.checks:report_is_complete
 on_output:
   usecase: incidents.record_report
 conversation:
@@ -111,8 +116,10 @@ metadata:
 | `name` | yes | — | `^[a-z][a-z0-9_-]{0,62}$`. Unique in the application. **Published** in the A2A card. |
 | `description` | yes | — | Non-empty. **Published** in the A2A card. |
 | `instructions` | yes | — | Non-empty. **Never published.** Never a place to encode authorization. |
+| `dynamic_instructions` | no | — | Block naming a factory that contributes instructions per model request; see below. |
 | `model_role` | no | `default` | `^[a-z][a-z0-9_-]{0,31}$`. A logical role, never a vendor name or a model id. |
 | `output` | yes | — | The declared answer shape. See below. |
+| `output_check` | no | — | Bare `module:symbol` of a rule the answer must satisfy beyond its schema; see below. |
 | `on_output` | no | — | Use case executed once per completed run with the validated output; see below. |
 | `conversation` | no | — | Use case executed before a run that carries a `conversation_id`; returns the prior history; see below. |
 | `capabilities` | no | `[]` | Explicit grants. Empty means the agent can only talk. |
@@ -171,6 +178,135 @@ output:
 The reference is `module:Symbol`. Filesystem paths are not representable by the
 pattern.
 
+## `output_check` — a rule the schema cannot express
+
+A schema states the *shape* of an answer. A check states a rule over its
+*values*: "a report that claims resolution must name a root cause". It is a
+**bare string**, not a block — one optional value with one meaning, so there is
+no tag to read and nothing to nest:
+
+```yaml
+output:
+  kind: type_ref
+  ref: myapp.domain.incidents:IncidentReport
+output_check: myapp.agents.checks:report_is_complete
+```
+
+```python
+from collections.abc import Mapping
+from typing import Any
+
+
+def report_is_complete(answer: Mapping[str, Any]) -> str | None:
+    """Reject a report that claims resolution without naming the cause."""
+    if answer.get("resolved") and answer.get("root_cause_id") is None:
+        return "resolved reports must name a root cause; query it and answer again"
+    return None
+```
+
+**The return contract is inverted.** `None` **accepts**; a string **rejects**,
+and that string is the text the model reads to correct itself. The rejection
+reaches the model as another attempt at the same run, not as a failure the
+caller has to handle afterwards. The public alias is `loom.ai.abc.OutputCheck`.
+
+What the function receives is the mapping the engine parsed, never loom's
+decoded object: loom decodes the answer once, from the run's raw messages,
+after the engine has finished. Mutating the mapping in place therefore changes
+nothing downstream.
+
+**It must be pure and synchronous.** It runs inside the engine's
+output-retry loop, so anything it did would be repeated once per attempt. A
+check that is unresolvable, not callable, or a coroutine function fails
+compilation, each with its own error code. Work that needs to read data belongs
+in `on_output`, which runs once, outside the engine.
+
+**It consumes the output retry axis.** See [`policies`](#policies--execution-limits):
+declaring a check floors that axis at one, so a check can always correct once
+even at `retries: 0`.
+
+**It cannot be served in the native output mode.** A role whose binding pins
+`output_mode: native` delivers the structured answer as *text*, which loom
+streams to the caller as deltas; since the engine retries inside a single run,
+a rejection would show the caller the rejected answer and then the accepted one
+— the same answer twice. Neither half may be silently overridden, so an
+artifact declaring `output_check` under such a role fails at start-up with
+`OUTPUT_CHECK_NATIVE_MODE_UNSUPPORTED`. The two ways out are naming the
+artifact: pin `output_mode: tool` for that role, or drop the check. In the tool
+output mode nothing is duplicated: a structured answer arrives as tool-call
+parts, which loom does not project as deltas.
+
+## `dynamic_instructions` — instructions per model request
+
+`instructions` stays mandatory and literal. This block **adds** to it: the
+literal composes first and the returned text is appended.
+
+```yaml
+instructions: >-
+  Investigate the reported incident and propose the next remediation step.
+dynamic_instructions:
+  factory: myapp.agents.prompts:build_checklist
+  params:
+    locale: en
+```
+
+A block, not a bare reference, because it genuinely has two parts — the same
+shape a [`kind: python`](#python--application-owned-toolsets) capability uses:
+
+| Key | Required | Notes |
+|---|---|---|
+| `factory` | yes | `module:factory`, called **once at build** as `factory(context, **params)`. |
+| `params` | no | Keyword arguments. Names validated against the signature at compile time; values are decoded YAML. Settings, never secrets. |
+
+```python
+from loom.ai import InstructionsProvider, InstructionsRequest, ToolsetContext
+
+
+def build_checklist(context: ToolsetContext, *, locale: str = "en") -> InstructionsProvider:
+    """Build the per-request checklist provider once, at start-up."""
+    catalog = context.container.resolve(ChecklistCatalog)
+
+    def provide(request: InstructionsRequest) -> str | None:
+        return catalog.render(request.prompt, locale=locale)
+
+    return provide
+```
+
+**Two moments, and the difference matters.** The factory runs **once at
+start-up**, with the application container behind it, which is where anything
+needing I/O is read and closed over. The provider it returns runs **once per
+model request — not once per run**: the engine rebuilds the instructions before
+every request it makes to the model, so a run that calls one tool calls the
+provider twice, and a run that reaches `max_iterations` calls it that many
+times. Only a run that answers without calling anything costs exactly one.
+
+That multiplier is why the provider is **synchronous and does no I/O**:
+whatever it costs is paid per request, and the prompt path is bounded by no
+deadline of loom's — `tool_timeout_ms` covers tool calls, not prompt building.
+A factory returning a coroutine function is refused at start-up. It also means
+a provider whose text varies between calls genuinely sends the model different
+instructions inside one run, with the earlier text still in the history; that
+is the author's decision to make and the author's to defend. A provider that
+must be stable within a run derives its text from `InstructionsRequest` alone,
+which is identical across the requests of one run.
+
+The provider receives exactly four names, and no more — what reaches
+prompt-building code is a security decision, so the list is fixed:
+
+| Name | Meaning |
+|---|---|
+| `agent` | Name of the agent serving the request |
+| `prompt` | The prompt this run was called with |
+| `subject` | Verified subject of the caller |
+| `mechanism` | Authentication mechanism that produced the subject |
+
+The application container and the caller-bound invoker are **not** reachable
+through it. The prompt is there to choose *which* material to compose and never
+to decide what the agent may do: authorization is the caller's identity,
+enforced at the capability boundary. Returning `None` contributes nothing,
+which is how a provider says "this request needs no extra material". A provider
+that raises ends the run with `INSTRUCTIONS_FAILED` and a fixed message: its
+exception text never reaches the caller.
+
 ## `on_output` — a use case run once per completed run
 
 ```yaml
@@ -207,6 +343,7 @@ context beside it:
 |---|---|
 | `output` | The validated answer, as **one nested value**, whatever the artifact's `output` block declares. |
 | `messages` | This run's **new** messages in the engine's serialised form, as `bytes`; `None` on a run that carried no conversation. See [`conversation`](#conversation--loading-the-prior-turns). Never return `cmd.messages` or the stored thread from the hook: `hook_result` is encoded as-is. |
+| `tool_calls` | What the run consulted: a `tuple[ToolCallRecord, ...]` in call order. Empty unless the Command declares the name — declaring it *is* the opt-in, and a run whose hook stays silent accumulates nothing. See below. |
 | `interaction_id` | Identifier the runtime mints for every admitted run. |
 | `conversation_id` | The request's `conversation_id`, verbatim; `None` when the request carried none; over A2A it is never `None`: loom mints a `contextId` when the client sends none. |
 | `subject`, `mechanism` | The caller's identity. |
@@ -257,6 +394,54 @@ class RecordTriage(UseCase[Triage, TriageRecorded]):
 The verdict the on-call engineer gives later ("wrong severity") is an ordinary
 use case of your application, called with the `interaction_id` the app already
 holds. Loom stores nothing.
+
+#### `tool_calls` — what the run consulted
+
+The artifact gains no key for this: a hook opts in by naming the field on the
+Command it already declares, which is where the rest of its inputs live.
+
+```python
+from loom.ai import ToolCallRecord
+
+
+class RecordReportCommand(Command):
+    output: IncidentReport
+    tool_calls: tuple[ToolCallRecord, ...]
+```
+
+Each record carries the tool `name`, the `call_id` the engine minted, the
+`arguments` the model sent, and a `result`:
+
+| Field | Value |
+|---|---|
+| `tool` | Tool name as the engine exposes it. |
+| `call_id` | Correlation id of the call, so a record can be matched against your own trace of the same run. |
+| `arguments` | The arguments the model supplied, decoded once on the event path. |
+| `result` | A `ToolCallOutcome` — an `ok` flag and a short `summary` — or `None`. |
+
+**The result is loom's own closed vocabulary and never what the tool
+returned.** `summary` is a short outcome such as `"3 rows"` or `"refused"`; the
+tool's payload does not cross this boundary. A hook learns *which* tools ran
+and *with which arguments*, and re-reads the data it needs through its own
+repositories. That is what answers "the agent ran 3 of the 11 mandatory
+queries", which is the question this exists for.
+
+`result` is `None` when the run ended before the tool answered, which is
+deliberately distinguishable from a call that failed (`result.ok` is `False`):
+an absent result is an interrupted run, a failed one is an answered call.
+
+A [`kind: native`](#native--tools-the-model-provider-runs) tool is executed by
+the provider and emits no function events, so **it never appears here.**
+
+> **The name collides with `AgentUsage.tool_calls`,** the integer counter of
+> invocations a run completed. The collision is deliberate — `tool_calls` is
+> the name an author reaches for — but it has one consequence worth knowing,
+> because it turns a start-up failure into a run-time one. The hook's inputs
+> are validated **by name and never by type**. A Command declaring
+> `tool_calls: int` — the natural spelling next to that counter — used to fail
+> compilation with `ON_OUTPUT_INPUT_UNSATISFIED`; it now compiles and then
+> fails to decode on every run. Declare the field as
+> `tuple[ToolCallRecord, ...]`.
 
 ### The compile-time rule
 
@@ -864,6 +1049,26 @@ For tools loom itself should call, use `mcp` or `python` instead.
 | `max_iterations` | `12` | `1` | `100` |
 | `run_timeout_ms` | `120000` | `1000` | `1800000` |
 | `max_history_bytes` | `1048576` | `1024` | `67108864` |
+
+`retries` is **one number governing three distinct axes**, and no enforcement
+subsumes another:
+
+1. **Loom's provider retries** replay the whole run after an infrastructure
+   failure — and only for an agent holding **no** capability. Replaying a run
+   that may already have invoked an application use case would invoke it twice,
+   so any capability disables this axis whatever the value. Most agents have
+   capabilities, so for most agents this axis is dead.
+2. **The engine's tool-call budget** replays a tool call the model got wrong,
+   inside the same run.
+3. **The engine's output-validation budget** asks the model again for an answer
+   an [`output_check`](#output_check--a-rule-the-schema-cannot-express)
+   rejected, inside the same run.
+
+Declaring an `output_check` **floors the third axis at one**, so a check can
+always correct once even at `retries: 0`; a check with no attempt left could
+only fail runs, never fix one. Without an `output_check` nothing changes: both
+engine axes carry the declared value, which is exactly what the engine derives
+from a bare number itself.
 
 `run_timeout_ms` bounds the **whole run**, not one capability call.
 `tool_timeout_ms` bounds a single call. `max_history_bytes` caps the serialised

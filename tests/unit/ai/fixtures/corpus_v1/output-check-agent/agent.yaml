@@ -1,0 +1,27 @@
+spec_version: 1
+name: output-check-agent
+description: Reports on production incidents and refuses to close one without a cause.
+instructions: >-
+  Investigate the reported incident and propose the next remediation step. Only mark the
+  incident resolved when you can name the root cause you found.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - summary
+      - resolved
+    properties:
+      summary:
+        type: string
+        description: Short natural-language account of the incident.
+      resolved:
+        type: boolean
+        description: Whether the incident is closed.
+      root_cause_id:
+        type: string
+        description: Identifier of the cause, mandatory once resolved.
+output_check: myapp.agents.checks:report_is_complete
+policies:
+  retries: 2

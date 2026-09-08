@@ -210,9 +210,9 @@ class TestCorpus:
         self, compiler: AgentCompiler
     ) -> None:
         decoded = load_specs([CORPUS_PATTERN], root=CORPUS_DIR)
-        assert len(decoded) == 10
+        assert len(decoded) == 12
         plans = compiler.compile_all(decoded)
-        assert len(plans) == 10
+        assert len(plans) == 12
 
     def test_compile_all_resolves_local_skill_libraries_when_specs_keep_their_path(
         self, compiler: AgentCompiler

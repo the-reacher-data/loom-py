@@ -1,0 +1,25 @@
+spec_version: 1
+name: dynamic-instructions-agent
+description: Triages a production incident against the checklist the request calls for.
+instructions: >-
+  Investigate the reported incident and propose the next remediation step. State explicitly
+  when the evidence is inconclusive.
+dynamic_instructions:
+  factory: myapp.agents.prompts:build_checklist
+  params:
+    locale: en
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - summary
+      - next_step
+    properties:
+      summary:
+        type: string
+        description: Short natural-language account of the incident.
+      next_step:
+        type: string
+        description: The remediation step to take next.

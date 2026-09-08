@@ -41,6 +41,7 @@ from ._v1 import (
     RETRIES_DEFAULT,
     RETRIES_MAX,
     RETRIES_MIN,
+    RETRY_AXES_DESCRIPTION,
     RUN_TIMEOUT_MS_DEFAULT,
     RUN_TIMEOUT_MS_MAX,
     RUN_TIMEOUT_MS_MIN,
@@ -76,6 +77,7 @@ def _v1_properties() -> dict[str, Any]:
                 "Instructions the agent follows. NEVER published. Must not encode authorization."
             ),
         },
+        "dynamic_instructions": {"$ref": "#/$defs/dynamic_instructions"},
         "model_role": {
             "type": "string",
             "pattern": MODEL_ROLE_PATTERN,
@@ -86,6 +88,17 @@ def _v1_properties() -> dict[str, Any]:
             ),
         },
         "output": {"$ref": "#/$defs/output"},
+        "output_check": {
+            "type": "string",
+            "pattern": SYMBOL_REF_PATTERN,
+            "description": (
+                "module:symbol the answer is checked against once the engine has "
+                "parsed it, beyond the shape 'output' declares. It returns null to "
+                "accept, or the text the model must read to correct itself, which "
+                "spends one of the engine's output-validation attempts. Synchronous "
+                "and free of effects: it runs once per attempt."
+            ),
+        },
         "on_output": {"$ref": "#/$defs/on_output"},
         "conversation": {"$ref": "#/$defs/conversation"},
         "capabilities": {
@@ -315,6 +328,39 @@ def _v1_native_capability() -> dict[str, Any]:
     }
 
 
+def _v1_dynamic_instructions_def() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["factory"],
+        "properties": {
+            "factory": {
+                "type": "string",
+                "pattern": SYMBOL_REF_PATTERN,
+                "description": (
+                    "module:factory called once at build as factory(context, **params), "
+                    "returning the provider called once per model request. Per request, "
+                    "not per run: a run that calls one tool makes two model requests and "
+                    "calls the provider twice, up to max_iterations times. The provider is "
+                    "therefore synchronous and performs no I/O: it runs on the prompt path, "
+                    "which no timeout of the artifact covers, and whatever it costs is paid "
+                    "per request. A provider whose text varies between calls sends the model "
+                    "different instructions inside one run. It never replaces 'instructions': "
+                    "the literal composes first and this text is appended to it."
+                ),
+            },
+            "params": {
+                "type": "object",
+                "description": (
+                    "Keyword arguments the factory is called with. Names are "
+                    "validated against the factory signature at compile time; "
+                    "values are not. Settings, never secrets."
+                ),
+            },
+        },
+    }
+
+
 def _v1_output_hook_def() -> dict[str, Any]:
     return {
         "type": "object",
@@ -327,7 +373,14 @@ def _v1_output_hook_def() -> dict[str, Any]:
                 "description": (
                     "Use-case key of the registry executed once per completed run "
                     "with the validated output. Not a tool: the model never sees it, "
-                    "and the same key must not also be granted as a usecase capability."
+                    "and the same key must not also be granted as a usecase capability. "
+                    "Its Command opts into the run's tool-call summary by declaring a "
+                    "'tool_calls' field: a record carries the tool name, the arguments "
+                    "the model sent and loom's own outcome, never what the tool "
+                    "returned, so a hook that needs the data re-reads it itself. A "
+                    "native tool is run by the provider and never appears in the "
+                    "summary. A 'messages' field stays tied to a conversation: it is "
+                    "null unless the run carried a conversation_id."
                 ),
             },
         },
@@ -358,6 +411,7 @@ def _v1_conversation_def() -> dict[str, Any]:
 def _v1_defs() -> dict[str, Any]:
     return {
         "output": _v1_output_def(),
+        "dynamic_instructions": _v1_dynamic_instructions_def(),
         "on_output": _v1_output_hook_def(),
         "conversation": _v1_conversation_def(),
         "capability": {
@@ -380,6 +434,7 @@ def _v1_defs() -> dict[str, Any]:
                     "minimum": RETRIES_MIN,
                     "maximum": RETRIES_MAX,
                     "default": RETRIES_DEFAULT,
+                    "description": RETRY_AXES_DESCRIPTION,
                 },
                 "tool_timeout_ms": {
                     "type": "integer",

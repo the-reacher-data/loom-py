@@ -1,8 +1,8 @@
 """Output-hook phase: resolve ``on_output.usecase`` and prove its Input is feedable.
 
 The runtime offers one nested ``output`` key, the run's serialised new
-``messages`` and a fixed set of run-context names
-(:data:`~loom.ai.compiler._plan.HOOK_CONTEXT_FIELDS`).  The feedability proof
+``messages``, the run's ``tool_calls`` summary and a fixed set of run-context
+names (:data:`~loom.ai.compiler._plan.HOOK_CONTEXT_FIELDS`).  The feedability proof
 itself lives in :mod:`loom.ai.compiler.phases._feedable`, shared with the
 conversation phase so the two rules cannot drift.
 
@@ -16,6 +16,7 @@ from loom.ai.compiler._plan import (
     HOOK_CONTEXT_FIELDS,
     HOOK_MESSAGES_FIELD,
     HOOK_OUTPUT_FIELD,
+    HOOK_TOOL_CALLS_FIELD,
     CompiledOutputHook,
 )
 from loom.ai.compiler.phases._feedable import feedable_input, is_granted
@@ -30,7 +31,9 @@ from loom.core.use_case.registry import UseCaseRegistry
 
 _HookResult = tuple[CompiledOutputHook | None, list[AgentCompilationIssue]]
 
-_OFFERED: frozenset[str] = frozenset({HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS})
+_OFFERED: frozenset[str] = frozenset(
+    {HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, HOOK_TOOL_CALLS_FIELD, *HOOK_CONTEXT_FIELDS}
+)
 
 
 def compile_output_hook(
