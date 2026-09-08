@@ -25,6 +25,7 @@ from fasta2a.schema import (
     JSONRPCError,
     JSONRPCResponse,
     MethodNotFoundError,
+    TaskNotFoundError,
     UnsupportedOperationError,
 )
 from starlette.responses import Response
@@ -115,6 +116,10 @@ def method_not_found_error(method: str) -> MethodNotFoundError:
 
 def invalid_params_error(reason: str) -> InvalidParamsError:
     return InvalidParamsError(code=-32602, message="Invalid parameters", data={"reason": reason})
+
+
+def task_not_found_error(reason: str) -> TaskNotFoundError:
+    return TaskNotFoundError(code=-32001, message="Task not found", data={"reason": reason})
 
 
 def _invalid_request_error(reason: str) -> InvalidRequestError:

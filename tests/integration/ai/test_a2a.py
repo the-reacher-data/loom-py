@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -32,6 +33,7 @@ from loom.ai.a2a.server import bind_a2a_endpoints
 from loom.ai.abc import (
     AgentEvent,
     Conversation,
+    DepsFactory,
     FinalEvent,
     HealthStatus,
     TextDeltaEvent,
@@ -53,10 +55,13 @@ from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
+    ConversationRecorder,
     CountingEngineProvider,
+    RecordingDepsFactory,
     RecordingObserver,
     ScriptedEngine,
     StubDepsFactory,
+    conversational_plan,
     error_script,
     make_ai_config,
     make_endpoint,
@@ -146,7 +151,7 @@ def tool_script() -> tuple[AgentEvent, ...]:
 @asynccontextmanager
 async def _serving(
     *,
-    deps: StubDepsFactory,
+    deps: DepsFactory,
     container: LoomContainer,
     plans: Sequence[AgentPlan] | None = None,
     engines: Mapping[str, ScriptedEngine] | None = None,
@@ -211,7 +216,7 @@ async def _serving(
 
 def _runtime(
     *,
-    deps: StubDepsFactory,
+    deps: DepsFactory,
     container: LoomContainer,
     config: Any,
     plans: Sequence[AgentPlan],
@@ -228,7 +233,7 @@ def _runtime(
 
 async def _bind_a2a(
     *,
-    deps: StubDepsFactory,
+    deps: DepsFactory,
     container: LoomContainer,
     mounted_exclusions: Sequence[str] = (),
     agents_prefix: str,
@@ -262,7 +267,7 @@ async def _bind_a2a(
 @asynccontextmanager
 async def _serving_anonymously(
     *,
-    deps: StubDepsFactory,
+    deps: DepsFactory,
     container: LoomContainer,
     endpoints: Mapping[str, AgentEndpointConfig],
 ) -> AsyncIterator[httpx.AsyncClient]:
@@ -286,21 +291,30 @@ async def _serving_anonymously(
             yield client
 
 
-def _rpc(method: str, *, prompt: str = "hola", request_id: int | str = 7) -> dict[str, Any]:
-    """Build one JSON-RPC request body carrying a single text part."""
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "method": method,
-        "params": {
-            "message": {
-                "role": "user",
-                "kind": "message",
-                "messageId": "m-1",
-                "parts": [{"kind": "text", "text": prompt}],
-            }
-        },
+def _rpc(
+    method: str,
+    *,
+    prompt: str = "hola",
+    request_id: int | str = 7,
+    context_id: str | int | None = None,
+    task_id: str | int | None = None,
+) -> dict[str, Any]:
+    """Build one JSON-RPC request body carrying a single text part.
+
+    ``context_id`` and ``task_id`` are added to the message when not ``None``,
+    so a test can send an empty string, a wrong type or nothing at all.
+    """
+    message: dict[str, Any] = {
+        "role": "user",
+        "kind": "message",
+        "messageId": "m-1",
+        "parts": [{"kind": "text", "text": prompt}],
     }
+    if context_id is not None:
+        message["contextId"] = context_id
+    if task_id is not None:
+        message["taskId"] = task_id
+    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": {"message": message}}
 
 
 def _auth() -> dict[str, str]:
@@ -679,6 +693,227 @@ class TestRedaccionDeFallos:
         assert response.json()["error"]["data"]["detail"] == "An unexpected error occurred"
 
 
+class TestConversaciones:
+    """``contextId`` is the ``conversation_id``, on both methods (008 AC1-AC5, AC9)."""
+
+    @staticmethod
+    def _agent_spans(recorder: RecordingObserver) -> list[object]:
+        return [event for event in recorder.events if event.scope is Scope.AGENT]
+
+    async def test_entrega_el_context_id_al_hook_cuando_el_cliente_lo_envia(
+        self,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
+        container: LoomContainer,
+    ) -> None:
+        """AC1: the sent ``contextId`` is echoed on the task and reaches the hook."""
+        async with _serving(
+            deps=conversation_deps, container=container, plans=(conversational_plan(_AGENT),)
+        ) as (
+            _app,
+            client,
+        ):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}",
+                json=_rpc("message/send", context_id="c-42"),
+                headers=_auth(),
+            )
+
+        assert response.json()["result"]["contextId"] == "c-42"
+        assert [cmd.conversation_id for cmd in conversation_recorder.commands] == ["c-42"]
+
+    @pytest.mark.parametrize("context_id", [None, ""])
+    async def test_acuna_un_context_id_cuando_el_cliente_no_lo_envia(
+        self,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
+        container: LoomContainer,
+        context_id: str | None,
+    ) -> None:
+        """AC2: absent or empty, loom mints one and the hook gets the same id, never ``None``."""
+        async with _serving(
+            deps=conversation_deps, container=container, plans=(conversational_plan(_AGENT),)
+        ) as (
+            _app,
+            client,
+        ):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}",
+                json=_rpc("message/send", context_id=context_id),
+                headers=_auth(),
+            )
+
+        minted = response.json()["result"]["contextId"]
+        assert re.fullmatch(r"[0-9a-f]{32}", minted)
+        assert [cmd.conversation_id for cmd in conversation_recorder.commands] == [minted]
+
+    async def test_estampa_el_context_id_en_cada_frame_cuando_hace_stream(
+        self,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
+        container: LoomContainer,
+    ) -> None:
+        """AC3: every frame, the initial ``submitted`` task included, carries the sent id."""
+        async with _serving(
+            deps=conversation_deps, container=container, plans=(conversational_plan(_AGENT),)
+        ) as (
+            _app,
+            client,
+        ):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}",
+                json=_rpc("message/stream", context_id="c-42"),
+                headers=_auth(),
+            )
+
+        results = _stream_results(response.text)
+        assert results[0]["kind"] == "task"
+        assert results[0]["status"]["state"] == "submitted"
+        assert [result["contextId"] for result in results] == ["c-42"] * len(results)
+        assert [cmd.conversation_id for cmd in conversation_recorder.commands] == ["c-42"]
+
+    async def test_entrega_el_context_id_al_loader_y_al_engine_cuando_el_plan_declara_conversation(
+        self,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
+        container: LoomContainer,
+    ) -> None:
+        """AC3: over a conversational plan, the loader and the engine see the sent id."""
+        engine = ScriptedEngine()
+        async with _serving(
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT, loader=True),),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}",
+                json=_rpc("message/stream", context_id="c-42"),
+                headers=_auth(),
+            )
+
+        assert {result["contextId"] for result in _stream_results(response.text)} == {"c-42"}
+        assert [cmd.conversation_id for cmd in conversation_recorder.load_commands] == ["c-42"]
+        assert engine.conversations == [Conversation(conversation_id="c-42")]
+
+    @pytest.mark.parametrize("method", ["message/send", "message/stream"])
+    @pytest.mark.parametrize("context_id", ["x" * 129, 7])
+    async def test_rechaza_con_32602_cuando_el_context_id_no_tiene_forma(
+        self,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
+        container: LoomContainer,
+        method: str,
+        context_id: str | int,
+    ) -> None:
+        """AC4, AC9: a malformed ``contextId`` is refused before any run or span, unechoed."""
+        engine = ScriptedEngine()
+        observer = RecordingObserver()
+        async with _serving(
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            engines={_AGENT: engine},
+            observability_runtime=ObservabilityRuntime([observer]),
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}", json=_rpc(method, context_id=context_id), headers=_auth()
+            )
+
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert "contextId" in error["data"]["reason"]
+        assert "x" * 129 not in response.text
+        assert conversation_recorder.commands == []
+        assert engine.stream_count == 0
+        assert self._agent_spans(observer) == []
+
+    @pytest.mark.parametrize("method", ["message/send", "message/stream"])
+    async def test_rechaza_con_32001_cuando_el_mensaje_continua_un_task(
+        self,
+        conversation_deps: RecordingDepsFactory,
+        conversation_recorder: ConversationRecorder,
+        container: LoomContainer,
+        method: str,
+    ) -> None:
+        """AC5: loom retains no task, so a non-empty ``taskId`` names one that does not exist."""
+        engine = ScriptedEngine()
+        observer = RecordingObserver()
+        async with _serving(
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            engines={_AGENT: engine},
+            observability_runtime=ObservabilityRuntime([observer]),
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}", json=_rpc(method, task_id="t-1"), headers=_auth()
+            )
+
+        error = response.json()["error"]
+        assert error["code"] == -32001
+        assert "taskId" in error["data"]["reason"]
+        assert conversation_recorder.commands == []
+        assert engine.stream_count == 0
+        assert self._agent_spans(observer) == []
+
+    async def test_rechaza_con_32602_cuando_el_task_id_no_es_un_string(
+        self, conversation_deps: RecordingDepsFactory, container: LoomContainer
+    ) -> None:
+        """A malformed ``taskId`` is a shape error, like a malformed ``contextId``."""
+        engine = ScriptedEngine()
+        async with _serving(
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}", json=_rpc("message/send", task_id=7), headers=_auth()
+            )
+
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert "taskId" in error["data"]["reason"]
+        assert engine.stream_count == 0
+
+    async def test_rechaza_con_32001_antes_de_leer_las_partes_cuando_continua_un_task(
+        self, conversation_deps: RecordingDepsFactory, container: LoomContainer
+    ) -> None:
+        """A message continuing a task is refused on that ground even without a text part."""
+        engine = ScriptedEngine()
+        async with _serving(
+            deps=conversation_deps,
+            container=container,
+            plans=(conversational_plan(_AGENT),),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            body = _rpc("message/send", task_id="t-1")
+            body["params"]["message"]["parts"] = []
+            response = await client.post(f"{_PREFIX}/{_AGENT}", json=body, headers=_auth())
+
+        error = response.json()["error"]
+        assert error["code"] == -32001
+        assert "taskId" in error["data"]["reason"]
+        assert engine.stream_count == 0
+
+    async def test_ignora_el_task_id_cuando_esta_vacio(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """AC5: an empty ``taskId`` counts as absent and the run proceeds."""
+        engine = ScriptedEngine()
+        async with _serving(deps=deps, container=container, engines={_AGENT: engine}) as (
+            _app,
+            client,
+        ):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}", json=_rpc("message/send", task_id=""), headers=_auth()
+            )
+
+        assert response.json()["result"]["status"] == {"state": "completed"}
+        assert engine.stream_count == 1
+
+
 class TestExclusionesEfectivas:
     """The FR-041b guard reads the exclusions actually mounted (T151 B3, M1)."""
 
@@ -779,17 +1014,17 @@ class TestAnuncioDePublicacion:
     @staticmethod
     async def _publication_warning(
         *,
-        deps: StubDepsFactory,
+        deps: DepsFactory,
         container: LoomContainer,
         caplog: pytest.LogCaptureFixture,
         endpoints: Mapping[str, AgentEndpointConfig] | None = None,
+        plans: Sequence[AgentPlan] | None = None,
     ) -> str:
         """Return the WARNING text emitted while publishing one agent."""
         with caplog.at_level(logging.WARNING):
-            async with _serving(deps=deps, container=container, endpoints=endpoints) as (
-                _app,
-                _client,
-            ):
+            async with _serving(
+                deps=deps, container=container, endpoints=endpoints, plans=plans
+            ) as (_app, _client):
                 pass
         return caplog.text
 
@@ -814,6 +1049,26 @@ class TestAnuncioDePublicacion:
 
         assert "allow_anonymous=False" in text
         assert "NOT authenticated" not in text
+
+    async def test_avisa_de_que_el_context_id_es_la_credencial_cuando_el_mount_anonimo_conversa(
+        self,
+        conversation_deps: RecordingDepsFactory,
+        container: LoomContainer,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """AC6: an anonymous mount of a conversational agent says the id is the credential."""
+        endpoints = {_AGENT: make_endpoint(allow_anonymous=True)}
+        text = await self._publication_warning(
+            deps=conversation_deps,
+            container=container,
+            caplog=caplog,
+            endpoints=endpoints,
+            plans=(conversational_plan(_AGENT, loader=True),),
+        )
+
+        assert "allow_anonymous=True" in text
+        assert "contextId" in text
+        assert "credential" in text
 
 
 class TestLimiteDeCuerpo:
