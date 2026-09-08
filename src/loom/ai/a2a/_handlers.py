@@ -35,10 +35,11 @@ from loom.ai.a2a._rpc import (
     internal_error,
     invalid_params_error,
     rpc_response,
+    task_not_found_error,
     unsupported_error,
 )
 from loom.ai.a2a.events import A2AEventProjector
-from loom.ai.abc import AgentResult
+from loom.ai.abc import CONVERSATION_ID_MAX_LENGTH, AgentResult
 from loom.ai.config import AiConfig
 from loom.ai.errors import AgentRunError
 from loom.ai.fastapi.response import ENCODER, AgentJSONResponse
@@ -96,16 +97,20 @@ def _text_of(part: object) -> str | None:
     return text if isinstance(text, str) else None
 
 
-def _extract_prompt(params: Mapping[str, Any] | None, *, max_prompt_bytes: int) -> str:
+def _message_of(params: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """Return ``params.message``, or an empty mapping when it is not an object."""
+    message = params.get("message") if params is not None else None
+    return message if isinstance(message, Mapping) else {}
+
+
+def _extract_prompt(message: Mapping[str, Any], *, max_prompt_bytes: int) -> str:
     """Read the caller prompt out of the message parts.
 
     Raises:
         RpcFault: ``-32602`` when no text part is present or the concatenated
             text exceeds ``ai.max_prompt_bytes``.
     """
-    message = params.get("message") if params is not None else None
-    parts = message.get("parts") if isinstance(message, Mapping) else None
-    texts = [text for part in parts or () if (text := _text_of(part)) is not None]
+    texts = [text for part in message.get("parts") or () if (text := _text_of(part)) is not None]
     if not texts:
         raise RpcFault(invalid_params_error("'params.message.parts' must carry a text part"))
     prompt = "".join(texts)
@@ -116,6 +121,53 @@ def _extract_prompt(params: Mapping[str, Any] | None, *, max_prompt_bytes: int) 
             )
         )
     return prompt
+
+
+def _refuse_task_id(message: Mapping[str, Any]) -> None:
+    """Refuse a message that continues a task: loom retains none.
+
+    Raises:
+        RpcFault: ``-32602`` when ``taskId`` is not a string; ``-32001`` when it
+            is a non-empty one.
+    """
+    value = message.get("taskId")
+    if value is None or value == "":
+        return
+    if not isinstance(value, str):
+        raise RpcFault(invalid_params_error("'params.message.taskId' must be a string"))
+    raise RpcFault(task_not_found_error("no task is retained; omit 'params.message.taskId'"))
+
+
+def _thread_of(message: Mapping[str, Any]) -> str:
+    """Return the message's ``contextId``, minting one when absent or empty.
+
+    Raises:
+        RpcFault: ``-32602`` when ``contextId`` is not a string or exceeds
+            ``CONVERSATION_ID_MAX_LENGTH``; the value itself is never echoed.
+    """
+    value = message.get("contextId")
+    if value is None or value == "":
+        return uuid4().hex
+    if not isinstance(value, str) or len(value) > CONVERSATION_ID_MAX_LENGTH:
+        raise RpcFault(
+            invalid_params_error(
+                "'params.message.contextId' must be a string of at most "
+                f"{CONVERSATION_ID_MAX_LENGTH} characters"
+            )
+        )
+    return value
+
+
+def _read_message(params: Mapping[str, Any] | None, *, max_prompt_bytes: int) -> tuple[str, str]:
+    """Return the prompt and the thread id of one message, refusing what cannot run.
+
+    Runs before any span opens: a refused message admits no run and leaves no
+    trace of one.
+    """
+    message = _message_of(params)
+    prompt = _extract_prompt(message, max_prompt_bytes=max_prompt_bytes)
+    _refuse_task_id(message)
+    return prompt, _thread_of(message)
 
 
 def _task(task_id: str, context_id: str, status: Mapping[str, object]) -> Mapping[str, object]:
@@ -142,6 +194,7 @@ async def _annotated_run(
     name: str,
     prompt: str,
     identity: Identity,
+    conversation_id: str,
 ) -> AgentResult:
     """Run one agent, publishing what it spent however it ends.
 
@@ -154,6 +207,7 @@ async def _annotated_run(
         name: Agent to run.
         prompt: Caller prompt.
         identity: Verified caller.
+        conversation_id: Thread the run continues: the message's ``contextId``.
 
     Returns:
         The completed run's result.
@@ -162,7 +216,7 @@ async def _annotated_run(
         AgentRunError: Whatever the run failed with, unchanged.
     """
     try:
-        result = await runtime.run(name, prompt, identity=identity)
+        result = await runtime.run(name, prompt, identity=identity, conversation_id=conversation_id)
     except AgentRunError as exc:
         annotate_usage(span, exc.usage)
         raise
@@ -181,7 +235,7 @@ def _make_send_handler(
 
     async def send_message(call: Call) -> Response:
         name = call.agent.name
-        prompt = _extract_prompt(call.params, max_prompt_bytes=config.max_prompt_bytes)
+        prompt, context_id = _read_message(call.params, max_prompt_bytes=config.max_prompt_bytes)
         span = observability_runtime.open_span(
             Scope.AGENT,
             "agent_run",
@@ -198,13 +252,15 @@ def _make_send_handler(
             # surface does it: what the run spent is only known once it ends,
             # and both surfaces must answer the same query about the same span.
             with always_closed(span), span.as_current():
-                result = await _annotated_run(runtime, span, name, prompt, call.identity)
+                result = await _annotated_run(
+                    runtime, span, name, prompt, call.identity, conversation_id=context_id
+                )
         except AgentRunError as exc:
             # The failure text stays server-side: only the code and its fixed
             # catalogue detail travel outward.
             _logger.warning("a2a run of agent %r failed: %s", name, exc)
             return error_response(call.request_id, internal_error(exc.code))
-        task = _completed_task(uuid4().hex, uuid4().hex, result.output)
+        task = _completed_task(uuid4().hex, context_id, result.output)
         return AgentJSONResponse(content=rpc_response(call.request_id, task))
 
     return send_message
@@ -222,7 +278,7 @@ def _run_frames(
         yield _sse_frame(call.request_id, _task(task_id, context_id, {"state": "submitted"}))
         try:
             async with runtime.run_stream(
-                call.agent.name, prompt, identity=call.identity
+                call.agent.name, prompt, identity=call.identity, conversation_id=context_id
             ) as events:
                 async for event in events:
                     for projected in projector.project(event):
@@ -248,8 +304,8 @@ def _make_stream_handler(
 
     async def stream_message(call: Call) -> Response:
         name = call.agent.name
-        prompt = _extract_prompt(call.params, max_prompt_bytes=config.max_prompt_bytes)
-        task_id, context_id = uuid4().hex, uuid4().hex
+        prompt, context_id = _read_message(call.params, max_prompt_bytes=config.max_prompt_bytes)
+        task_id = uuid4().hex
 
         async def _framed() -> AsyncIterator[bytes]:
             with always_closed(

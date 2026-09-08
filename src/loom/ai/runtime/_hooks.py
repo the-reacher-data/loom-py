@@ -30,8 +30,6 @@ HOOK_FAILED_MESSAGE: Final[str] = "the output hook failed; the detail is recorde
 _HOOK: Final[str] = "on_output hook"
 """Name of the hook step in log lines and errors."""
 
-HookRun = RunContext  # kept one release for importers of the old name
-
 
 def no_terminal_message(agent: str) -> str:
     """Return the text of the error closing a stream that ended without a terminal event.

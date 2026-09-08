@@ -49,6 +49,7 @@ class PublishedAgent:
     card: bytes
     max_steps: int
     endpoint: AgentEndpointConfig | None
+    conversational: bool
 
 
 def published_agents(
@@ -83,6 +84,7 @@ def published_agents(
                 card=card,
                 max_steps=plan.policies.max_iterations,
                 endpoint=_active_endpoint(config.endpoints.get(name)),
+                conversational=plan.conversation is not None,
             )
         )
     return tuple(published)
@@ -252,18 +254,30 @@ def announce_publication(
         agent.name,
         mechanism or "none",
         allow_anonymous,
-        _identity_notice(allow_anonymous),
+        _identity_notice(allow_anonymous, conversational=agent.conversational),
     )
 
 
-def _identity_notice(allow_anonymous: bool) -> str:
-    """State plainly which identity an external A2A caller's run executes as."""
+def _identity_notice(allow_anonymous: bool, *, conversational: bool = False) -> str:
+    """State plainly which identity an external A2A caller's run executes as.
+
+    Anonymous callers share one subject, so when the agent declares a
+    ``conversation`` loader nothing but the A2A ``contextId`` separates their
+    threads: whoever presents an id reads that thread.
+    """
     if allow_anonymous:
-        return (
+        notice = (
             "allow_anonymous is set, so external callers are NOT authenticated: every run "
             "spends model tokens on behalf of an unidentified stranger, and only "
             "'max_concurrent_runs' and 'run_timeout_ms' bound that cost"
         )
+        if conversational:
+            notice += (
+                "; 'conversation' is declared, and every anonymous caller shares one "
+                "subject, so threads are separated by the A2A 'contextId' alone: the id is "
+                "the credential"
+            )
+        return notice
     return (
         "the card is served anonymously; every invocation requires a verified caller, and "
         "each capability call then runs as that identity"

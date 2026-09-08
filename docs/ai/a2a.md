@@ -199,6 +199,43 @@ A mechanism with no A2A representation publishes **no scheme at all**, never a
 bearer guess. A client that acts on a guessed scheme sends a credential the
 wrong way.
 
+### Conversations
+
+The A2A `contextId` **is** the `conversation_id`. When an agent declares
+`conversation` (see [`conversation` — loading the prior
+turns](artifacts.md#conversation--loading-the-prior-turns)), the loader and the
+`on_output` hook receive the `contextId` the client sent; when the client sends
+none — or an empty string — loom mints one. Either way the id is echoed as
+`contextId` on the returned `Task` and on every stream frame, so a client
+continues a thread by sending back what it received.
+
+| The message carries | Answer |
+|---|---|
+| `contextId` absent or `""` | A fresh id is minted and echoed. |
+| `contextId` that is not a string, or longer than `CONVERSATION_ID_MAX_LENGTH` (128) | `-32602`, naming the field and the bound — never the value. No run, no span. |
+| `taskId` non-empty | `-32001` `Task not found`: loom retains no task, so there is none to continue. Omit it. No run, no span. |
+| `taskId` `""` | Treated as absent. |
+| `taskId` that is not a string | `-32602`, naming the field. No run, no span. |
+| `referenceTaskIds`, `metadata` | Accepted and ignored. |
+
+Two consequences follow from the id being the same value on both surfaces.
+For the same caller, the HTTP `conversation_id` and the A2A `contextId` of the
+same agent select the **same** loader conversation: a thread started over one
+surface continues over the other. And over A2A the hook's `conversation_id` is
+**never `None`**, because a `contextId` is minted before the run starts.
+
+With authenticated callers, isolation is the loader's: it receives `subject`
+beside the id and must scope its lookup by both, refusing a thread that belongs
+to someone else (see [Tenancy is the application's](artifacts.md#tenancy-is-the-applications)).
+A `contextId` is client-controlled input: treat it as untrusted when the loader
+or the hook logs or persists it.
+
+Under `allow_anonymous` every caller shares one subject, so nothing but the
+`contextId` separates their threads: **the id is the credential**. Whoever
+presents an id reads that thread. The start-up WARNING of such a mount says so;
+if that is not acceptable, authenticate the callers or leave `conversation`
+undeclared on that agent.
+
 ## Methods
 
 Transport is HTTPS + JSON-RPC 2.0, streaming over SSE.

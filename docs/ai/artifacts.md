@@ -208,7 +208,7 @@ context beside it:
 | `output` | The validated answer, as **one nested value**, whatever the artifact's `output` block declares. |
 | `messages` | This run's **new** messages in the engine's serialised form, as `bytes`; `None` on a run that carried no conversation. See [`conversation`](#conversation--loading-the-prior-turns). Never return `cmd.messages` or the stored thread from the hook: `hook_result` is encoded as-is. |
 | `interaction_id` | Identifier the runtime mints for every admitted run. |
-| `conversation_id` | The request's `conversation_id`, verbatim; `None` when the request carried none. |
+| `conversation_id` | The request's `conversation_id`, verbatim; `None` when the request carried none; over A2A it is never `None`: loom mints a `contextId` when the client sends none. |
 | `subject`, `mechanism` | The caller's identity. |
 | `agent`, `provider`, `model` | The agent's name, and the provider and model its `model_role` resolved to. |
 
@@ -630,7 +630,8 @@ accepts the parameter and ignores it, so scripted tests stay byte for byte.
 Clients keep sending `{"prompt", "conversation_id"}`. The `/run` body has
 exactly `output`, `usage`, `interaction_id` and `hook_result`; the `final`
 frame has the same four keys; `messages` appears in neither, nor in any A2A
-frame — the A2A `contextId` is neither read nor written yet (FR-060).
+frame. Over A2A the thread travels as the message's `contextId`, which the
+runtime treats as the `conversation_id` (see [the A2A surface](a2a.md#conversations)).
 
 ### Two turns
 
