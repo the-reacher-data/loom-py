@@ -4,7 +4,12 @@ from typing import TYPE_CHECKING, Any
 from loom.testing.agents import ContractScenario, FakeAgentEngine, agent_engine_contract_suite
 from loom.testing.golden import GoldenHarness, serialize_plan
 from loom.testing.in_memory import InMemoryRepository
-from loom.testing.runner import UseCaseTest
+from loom.testing.runner import (
+    AgentHandleDouble,
+    McpHandleDouble,
+    SqlGrantHandleDouble,
+    UseCaseTest,
+)
 
 if TYPE_CHECKING:
     from loom.testing.http_harness import HttpTestHarness
@@ -15,13 +20,16 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "AgentHandleDouble",
     "ContractScenario",
     "FakeAgentEngine",
     "GoldenHarness",
     "HttpTestHarness",
     "InMemoryRepository",
+    "McpHandleDouble",
     "RepositoryIntegrationHarness",
     "ScenarioDict",
+    "SqlGrantHandleDouble",
     "UseCaseTest",
     "agent_engine_contract_suite",
     "build_repository_harness",

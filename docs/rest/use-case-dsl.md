@@ -156,6 +156,157 @@ async def execute(
 
 ---
 
+## Agent marker — reaching a named agent
+
+`Agent(name)` declares a handle to one compiled agent, bound to the caller
+already verified for this execution — the same identity
+[`Caller()`](identity.md) fills. The executor resolves the marker before
+`execute()` runs; nothing but a reviewed use case's own code chooses which
+agent runs or which caller it runs as.
+
+The example below is complete and runnable, uses `Caller()` alongside
+`Agent()`, and is the exact use case exercised — with no network, no model
+and no database — by
+[`tests/integration/ai/test_agent_marker_test_double.py`](https://github.com/the-reacher-data/loom-py/blob/master/tests/integration/ai/test_agent_marker_test_double.py):
+editing one without the other is a gap the next review will catch. An
+example that binds identity through a plain argument instead of `Caller()`
+would teach a forgeable pattern — a parameter with no marker is filled from
+whatever the caller supplies, and it ends up in the schema the model sees.
+
+```python
+import msgspec
+
+from loom.ai.abc import AgentHandle
+from loom.core.identity import Identity
+from loom.core.use_case import Agent, Caller, UseCase
+
+
+class SeverityAssessment(msgspec.Struct, frozen=True):
+    """The artefact's own declared output shape."""
+
+    severity: int
+
+
+class IncidentReport(msgspec.Struct, frozen=True):
+    incident_id: str
+    caller: str
+    runbook_title: str
+    severity: int
+    escalated: bool
+
+
+class TriageIncidentUseCase(UseCase[object, IncidentReport]):
+    async def execute(
+        self,
+        incident_id: str,
+        caller: Identity = Caller(),
+        triage: AgentHandle[SeverityAssessment] = Agent("incident-triage"),
+    ) -> IncidentReport:
+        obs = triage.sql("observability_readonly")             # the artefact's own granted view
+        deploys = await obs.query(
+            "select service, status from deploys where incident = :id",
+            parameters={"id": incident_id},
+        )
+
+        runbooks = triage.mcp("runbooks")                       # the artefact's own filtered view
+        runbook = await runbooks.call(
+            "search_incident",
+            {"incident_id": incident_id, "recent_deploy": deploys[0]["service"]},
+            expect=dict,
+        )
+
+        assessment = await triage.run(f"Assess {incident_id}.")  # the artefact's declared shape
+
+        return IncidentReport(
+            incident_id=incident_id,
+            caller=caller.require_subject(),
+            runbook_title=str(runbook["title"]),
+            severity=assessment.output.severity,
+            escalated=assessment.output.severity >= 4,
+        )
+```
+
+The type argument on `AgentHandle[SeverityAssessment]` — not a parameter to
+`Agent()` — is what the compiler checks at start-up against the named
+agent's own declared output. `Agent()` itself carries only the name, exactly
+like `Caller()` carries no configuration.
+
+### What the handle offers
+
+| Member | Returns | Notes |
+|---|---|---|
+| `run(prompt)` | `AgentAnswer[T]` | Decodes into the artefact's own declared output — the handle's type argument. |
+| `run(prompt, expect=X)` | `AgentAnswer[X]` | This run only; the artefact's own output check does not run for it. |
+| `run_text(prompt)` | `AgentAnswer[str]` | Open prose — no declared or overridden shape, so nothing can fail to decode. |
+| `mcp(server)` | `McpHandle` | The artefact's own filtered view of one `mcp` grant. |
+| `sql(connection)` | `SqlGrantHandle` | The artefact's own bounded view of one `sql` grant. |
+| `grants()` | `tuple[str, ...]` | Every grant name reachable through `mcp()` / `sql()` — pin a name in a test in one line. |
+
+### Three run modes
+
+```python
+assessment = await triage.run(prompt)                       # the artefact's declared shape
+plan       = await triage.run(prompt, expect=RollbackPlan)  # this run only
+summary    = await triage.run_text(f"Write it up: {facts}") # open prose, decodes nothing
+```
+
+### Two grant views, reached through the agent — never re-declared
+
+`triage.mcp("runbooks")` and `triage.sql("observability_readonly")` return
+the very same composed view — over the same shared session or connection,
+filtered or bounded by the same predicate — that the model's own toolset
+runs over. There is no second, independently configured filter a use case
+could widen: the grant is declared once, on the artefact's `mcp` / `sql`
+capability, and reached from the use case, never re-declared by it.
+
+### Testing it
+
+`loom.testing.runner.AgentHandleDouble` stands in for the handle: no
+network, model or database call is ever made, and a call the test never
+scripted fails closed with an `AssertionError` instead of silently
+succeeding with the wrong data.
+
+```python
+from loom.testing.runner import AgentHandleDouble, UseCaseTest
+
+double = AgentHandleDouble("incident-triage").on_run(SeverityAssessment(severity=5))
+double.sql("observability_readonly").on_query([{"service": "checkout", "status": "unhealthy"}])
+double.mcp("runbooks").on_call("search_incident", {"title": "checkout rollback runbook"})
+
+result = await (
+    UseCaseTest(TriageIncidentUseCase())
+    .with_caller(identity)
+    .with_agent("incident-triage", double)
+    .with_params(incident_id="INC-100")
+    .run()
+)
+```
+
+A use case declaring `Agent(name)` with no matching `.with_agent(name, ...)`
+fails closed with a `RuntimeError` naming the use case and the parameter —
+the same fail-closed default `Caller()` already has when no `.with_caller()`
+is registered.
+
+---
+
+## What the Agent() marker refuses
+
+Every refusal below raises `loom.ai.errors.AgentRunError`, whose `.code` is
+one of `loom.ai.errors.AgentRunErrorCode`, checked before any model or
+network call where the table says so. Each row is pinned by a test — follow
+the file to see the exact assertion.
+
+| Refusal | Code | Message (from the code) | What to do |
+|---|---|---|---|
+| Anonymous caller | `UNAUTHORIZED` | `agent 'incident-triage' requires an authenticated caller` | A marker-filled handle never accepts an anonymous identity, with no configuration to relax it — the caller must already be authenticated at the use case's own route. In a test, register one with `.with_caller(identity)`. See `tests/unit/ai/runtime/test_agent_handle.py::TestIdentidadAnonima::test_el_mensaje_es_el_que_muestra_use_case_dsl_md`. |
+| A cycle: the same agent already in the chain (agent names `outer`/`inner` below, as the pinning test names them) | `AGENT_CALL_CYCLE` | `agent call cycle detected: outer -> outer` | Break the cycle: an `on_output` hook or any use case an agent's run invokes must not call the same agent back. Route to a different named agent instead. See `tests/integration/ai/test_agent_call_chain.py::TestProfundidadPorDefecto::test_una_corrida_anidada_del_mismo_agente_es_un_ciclo`. |
+| A depth past `ai.max_agent_depth` | `AGENT_CALL_TOO_DEEP` | `agent call chain outer -> inner exceeds ai.max_agent_depth=1` | Raise `ai.max_agent_depth` deliberately if the nesting is intended — see [the nesting bound](../ai/overview.md#nesting-how-deep-an-agent-may-call-another) for what that costs — or remove the nested `Agent()` call. See `tests/integration/ai/test_agent_call_chain.py::TestProfundidadPorDefecto::test_una_corrida_anidada_de_otro_agente_excede_la_profundidad`. |
+| A shape override (`expect=` or `run_text`) on an artefact whose `on_output` hook declares the `output` field | `AGENT_RUN_SHAPE_WITH_HOOK` | `agent 'incident-triage' declares an output hook that reads the run's output, so this run cannot use a per-run shape; call run(prompt) for the artefact's own declared output instead` | Call `run(prompt)` with no `expect` so the hook receives the artefact's declared shape, or narrow the hook's `Input` to conversation-bookkeeping fields only (drop `output`) so any mode is accepted. See `tests/unit/ai/runtime/test_agent_handle.py::TestRechazoPorHookDeSalida::test_el_mensaje_es_el_que_muestra_use_case_dsl_md`. |
+| A tool outside the artefact's own `mcp` grant filter | `TOOL_UNKNOWN` | `mcp server 'runbooks' grants no tool named 'delete_incident'; tools this grant admits: search_incident` | Call one of the tools `handle.mcp(server).tools()` lists, or widen the artefact's `include` / `exclude` filter for that server. See `tests/unit/ai/runtime/test_grants.py::TestElFiltroDelPermisoMcp::test_el_mensaje_de_tool_fuera_del_permiso_es_el_que_muestra_use_case_dsl_md`. |
+| A tool that publishes no output schema, called through `call(..., expect=X)` | `TOOL_UNTYPED` | `tool 'legacy_lookup' of mcp server 'runbooks' publishes no output schema; call it with call_untyped() instead` | Call `call_untyped(tool, arguments)` instead, and treat the result as the server's own, undecoded JSON. See `tests/unit/ai/runtime/test_grants.py::TestLlamadaTipada::test_el_mensaje_de_tool_sin_forma_es_el_que_muestra_use_case_dsl_md`. |
+
+---
+
 ## Compute — derive and normalise fields
 
 `Compute` derives or normalises a command field before rules run. This keeps
@@ -648,3 +799,6 @@ methods stay on the protocol. Closing is the context manager's job
 | `F1 \| F2` | OR predicate — either must be present |
 | `ApplicationInvoker.invoke(UseCase, ...)` | Call another use case by type |
 | `ApplicationInvoker.entity(Model)` | CRUD facade for a model entity |
+| `Agent(name)` → `AgentHandle[T]` | Handle to a named agent, bound to the verified caller |
+| `handle.run(prompt)` / `run(prompt, expect=X)` / `run_text(prompt)` | The three run modes — declared shape, per-run shape, open text |
+| `handle.mcp(server)` / `handle.sql(connection)` | The artefact's own granted views, never re-declared |

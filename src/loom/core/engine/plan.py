@@ -56,6 +56,33 @@ class CallerBinding:
 
 
 @dataclass(frozen=True)
+class AgentBinding:
+    """One ``Agent(name)`` marker parameter declared in ``execute``.
+
+    The executor resolves *agent* against the compiled agents of this
+    deployment and injects a handle bound to this execution's verified
+    caller. Unlike :class:`CallerBinding`, several may appear in one
+    signature — a use case may reach more than one named agent.
+
+    ``annotation`` is the parameter's own resolved type hint (an
+    ``AgentHandle[...]`` generic alias in practice), carried opaquely: this
+    module never imports ``loom.ai``, so it neither inspects nor names the
+    protocol it belongs to. Only the AI-pillar startup pass — which already
+    imports both sides — reads the type argument out of it, to check it
+    against the named agent's own declared output.
+
+    Args:
+        name: Parameter name as declared in the signature.
+        agent: Agent name the marker declared.
+        annotation: Resolved annotation of the parameter.
+    """
+
+    name: str
+    agent: str
+    annotation: Any
+
+
+@dataclass(frozen=True)
 class LoadStep:
     """An entity prefetch step marked with ``LoadById`` or ``Load``.
 
@@ -145,6 +172,8 @@ class ExecutionPlan:
         input_binding: Command payload binding, or ``None`` if absent.
         caller_binding: Caller-identity binding, or ``None`` when the use case
             declares no ``Caller()`` parameter.
+        agent_bindings: ``Agent()`` marker bindings, in declaration order;
+            empty when the use case declares none.
         load_steps: Entity prefetch steps, in declaration order.
         exists_steps: Boolean existence checks, in declaration order.
         compute_steps: Compute transformations, in declaration order.
@@ -185,3 +214,4 @@ class ExecutionPlan:
     rule_steps: tuple[RuleStep, ...]
     read_only: bool = False
     caller_binding: CallerBinding | None = None
+    agent_bindings: tuple[AgentBinding, ...] = ()

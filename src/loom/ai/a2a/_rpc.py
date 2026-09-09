@@ -56,6 +56,18 @@ RUN_ERROR_DETAILS: Final[Mapping[AgentRunErrorCode, str]] = MappingProxyType(
         AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: (
             "the conversation loader exceeded its time limit"
         ),
+        AgentRunErrorCode.MCP_GRANT_UNKNOWN: "the requested MCP grant is unknown",
+        AgentRunErrorCode.SQL_GRANT_UNKNOWN: "the requested SQL grant is unknown",
+        AgentRunErrorCode.TOOL_UNKNOWN: "the requested tool is unknown",
+        AgentRunErrorCode.TOOL_UNTYPED: "the requested tool publishes no output schema",
+        AgentRunErrorCode.TOOL_RESULT_UNSTRUCTURED: ("the tool returned no structured content"),
+        AgentRunErrorCode.TOOL_DECODE_FAILED: "the tool result could not be decoded",
+        AgentRunErrorCode.TOOL_CALL_FAILED: "the tool call failed",
+        AgentRunErrorCode.AGENT_CALL_CYCLE: "the agent call graph contains a cycle",
+        AgentRunErrorCode.AGENT_CALL_TOO_DEEP: "the agent call depth limit was exceeded",
+        AgentRunErrorCode.AGENT_RUN_SHAPE_WITH_HOOK: (
+            "a per-run output shape cannot be combined with an output hook"
+        ),
     }
 )
 

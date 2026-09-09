@@ -92,9 +92,39 @@ ai:
 ```
 
 Every agent matched by `specs` is compiled. Only the agents named in
-`endpoints`, with `enabled` **and** a named `auth`, are actually mounted — an
-agent absent from `endpoints` exists in the process and is reachable by nobody.
-Exposure is always an explicit opt-in, never a default.
+`endpoints`, with `enabled` **and** a named `auth`, are mounted on the HTTP
+and A2A doors. An agent absent from `endpoints` is still reachable — from
+application code, through an
+[`Agent()` marker](../rest/use-case-dsl.md#agent-marker--reaching-a-named-agent)
+declared on a use case's own `execute` signature, bound to that use case's
+own verified caller. That is a separate door with its own default: a
+marker-filled handle always refuses an anonymous caller, with no
+`allow_anonymous` to relax it, unlike the HTTP door an operator explicitly
+opts an agent into. Exposure over the network is always an explicit opt-in,
+never a default; the code door is a distinct decision, not derived from it.
+
+### Nesting: how deep an agent may call another
+
+```yaml
+ai:
+  max_agent_depth: 1   # default
+```
+
+`max_agent_depth` bounds the longest chain of nested agent runs one task may
+open, **counting the top-level run itself**. A use case reaches a named
+agent through an
+[`Agent()` marker](../rest/use-case-dsl.md#agent-marker--reaching-a-named-agent),
+and that handle's `run` counts as one more entry in the same chain the run
+that reached the use case already opened.
+
+Defaults to `1`: the top-level run alone already consumes the whole budget,
+so an `on_output` hook — or any other use case an agent's run invokes — that
+itself declares an `Agent()` marker finds no depth left, and the whole class
+of agent-calls-agent cycles is unreachable without deliberately raising this
+value. Raising it buys deliberate nesting (a hook that escalates by asking a
+second agent, say) at the cost of a chain that can grow that much deeper
+before `AGENT_CALL_TOO_DEEP` catches a runaway one — see
+[what the marker refuses](../rest/use-case-dsl.md#what-the-agent-marker-refuses).
 
 ### Conversation memory belongs to the application
 

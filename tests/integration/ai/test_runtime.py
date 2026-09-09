@@ -683,7 +683,8 @@ class TestSesionMcpCompartida:
         with pytest.raises(asyncio.CancelledError):
             await first
 
-        assert await second == "b"
+        result = await second
+        assert result.structured == "b"
 
     async def test_no_entrelaza_las_llamadas_cuando_comparten_la_sesion(self) -> None:
         """Two concurrent runs over one session are serialised, never interleaved."""

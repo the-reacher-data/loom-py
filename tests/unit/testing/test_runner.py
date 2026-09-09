@@ -3,16 +3,19 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+import msgspec
 import pytest
 
+from loom.ai.abc import AgentHandle
 from loom.core.command import Command
 from loom.core.engine.plan import ExecutionPlan
 from loom.core.errors import NotFound
+from loom.core.identity import Identity
 from loom.core.model import LoomStruct
-from loom.core.use_case.markers import Input, LoadById
+from loom.core.use_case.markers import Agent, Caller, Input, LoadById
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
-from loom.testing.runner import UseCaseTest
+from loom.testing.runner import AgentHandleDouble, UseCaseTest
 
 # ---------------------------------------------------------------------------
 # Domain fixtures
@@ -83,6 +86,44 @@ class _MainRepoUseCase(UseCase[_Product, str]):
         if product is None:
             return "missing"
         return product.name
+
+
+class _SeverityAssessment(msgspec.Struct, frozen=True):
+    severity: int
+
+
+class _TriageUseCase(UseCase[Any, dict[str, Any]]):
+    """Mirrors the markers.md example: query, tool call, model run, branch."""
+
+    async def execute(
+        self,
+        incident_id: str,
+        caller: Identity = Caller(),
+        triage: AgentHandle[_SeverityAssessment] = Agent("incident-triage"),
+    ) -> dict[str, Any]:
+        obs = triage.sql("observability_readonly")
+        deploys = await obs.query("select * from deploys where incident = :id")
+
+        runbooks = triage.mcp("runbooks")
+        runbook = await runbooks.call("search_incident", {"incident_id": incident_id}, expect=dict)
+
+        assessment = await triage.run(f"Assess {incident_id}.")
+
+        escalate = assessment.output.severity >= 4
+        return {
+            "caller": caller.subject,
+            "deploys": deploys,
+            "runbook": runbook,
+            "severity": assessment.output.severity,
+            "escalate": escalate,
+        }
+
+
+class _NoDoubleUseCase(UseCase[Any, object]):
+    async def execute(
+        self, triage: AgentHandle[_SeverityAssessment] = Agent("incident-triage")
+    ) -> object:
+        return triage
 
 
 # ---------------------------------------------------------------------------
@@ -244,3 +285,124 @@ class TestUseCaseTestBuilder:
 
         assert result == "keyboard"
         repo.get_by_id.assert_awaited_once_with(1)
+
+
+# ---------------------------------------------------------------------------
+# Agent() marker doubles (spec 014, T401)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentMarkerFailsClosedWithoutADouble:
+    async def test_declaring_agent_with_no_double_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="incident-triage"):
+            await UseCaseTest(_NoDoubleUseCase()).with_caller(Identity(subject="ada")).run()
+
+    async def test_error_names_the_use_case_and_the_agent(self) -> None:
+        with pytest.raises(RuntimeError) as excinfo:
+            await UseCaseTest(_NoDoubleUseCase()).with_caller(Identity(subject="ada")).run()
+        message = str(excinfo.value)
+        assert "_NoDoubleUseCase" in message
+        assert "incident-triage" in message
+
+    async def test_a_use_case_with_no_marker_at_all_never_needs_a_double(self) -> None:
+        result = await UseCaseTest(_SimpleUseCase()).with_input(email="x@corp.com", name="X").run()
+        assert result == "x@corp.com"
+
+
+class TestAgentHandleDoubleRequiresNoNetworkModelOrDatabase:
+    """The closing criterion of T401: the whole example use case, doubled fully."""
+
+    async def test_the_full_example_use_case_runs_with_no_network_no_model_no_database(
+        self,
+    ) -> None:
+        triage = AgentHandleDouble("incident-triage").on_run(_SeverityAssessment(severity=5))
+        triage.sql("observability_readonly").on_query([{"service": "checkout", "status": "bad"}])
+        triage.mcp("runbooks").on_call("search_incident", {"title": "checkout runbook"})
+
+        result = await (
+            UseCaseTest(_TriageUseCase())
+            .with_caller(Identity(subject="ada"))
+            .with_agent("incident-triage", triage)
+            .with_params(incident_id="INC-1")
+            .run()
+        )
+
+        assert result == {
+            "caller": "ada",
+            "deploys": [{"service": "checkout", "status": "bad"}],
+            "runbook": {"title": "checkout runbook"},
+            "severity": 5,
+            "escalate": True,
+        }
+
+    async def test_the_double_records_the_prompt_it_was_asked(self) -> None:
+        triage = AgentHandleDouble("incident-triage").on_run(_SeverityAssessment(severity=1))
+        triage.sql("observability_readonly").on_query([])
+        triage.mcp("runbooks").on_call("search_incident", {})
+
+        await (
+            UseCaseTest(_TriageUseCase())
+            .with_caller(Identity(subject="ada"))
+            .with_agent("incident-triage", triage)
+            .with_params(incident_id="INC-2")
+            .run()
+        )
+
+        assert triage.run_calls[0].prompt == "Assess INC-2."
+        assert triage.sql("observability_readonly").calls[0].statement.startswith("select")
+        assert triage.mcp("runbooks").calls[0].tool == "search_incident"
+
+    async def test_a_below_threshold_severity_does_not_escalate(self) -> None:
+        triage = AgentHandleDouble("incident-triage").on_run(_SeverityAssessment(severity=1))
+        triage.sql("observability_readonly").on_query([])
+        triage.mcp("runbooks").on_call("search_incident", {})
+
+        result = await (
+            UseCaseTest(_TriageUseCase())
+            .with_caller(Identity(subject="ada"))
+            .with_agent("incident-triage", triage)
+            .with_params(incident_id="INC-3")
+            .run()
+        )
+
+        assert result["escalate"] is False
+
+    async def test_with_agent_returns_self_for_chaining(self) -> None:
+        runner = UseCaseTest(_NoDoubleUseCase())
+        double = AgentHandleDouble("incident-triage").on_run(_SeverityAssessment(severity=1))
+        assert runner.with_agent("incident-triage", double) is runner
+
+    async def test_run_text_double_returns_the_scripted_prose(self) -> None:
+        double = AgentHandleDouble("writer").on_run_text("the write-up")
+        answer = await double.run_text("summarise")
+        assert answer.output == "the write-up"
+        assert double.run_text_calls[0].prompt == "summarise"
+
+    async def test_a_single_scheduled_answer_serves_every_call(self) -> None:
+        double = AgentHandleDouble("writer").on_run(_SeverityAssessment(severity=2))
+        first = await double.run("first")
+        second = await double.run("second")
+        assert first.output.severity == 2
+        assert second.output.severity == 2
+        assert len(double.run_calls) == 2
+
+    async def test_an_unscripted_run_raises(self) -> None:
+        double = AgentHandleDouble("incident-triage")
+        with pytest.raises(AssertionError, match="incident-triage"):
+            await double.run("Assess INC-4.")
+
+    async def test_an_unscripted_tool_call_raises(self) -> None:
+        double = AgentHandleDouble("incident-triage")
+        with pytest.raises(AssertionError, match="search_incident"):
+            await double.mcp("runbooks").call("search_incident", {}, expect=dict)
+
+    async def test_an_unscripted_query_raises(self) -> None:
+        double = AgentHandleDouble("incident-triage")
+        with pytest.raises(AssertionError, match="observability_readonly"):
+            await double.sql("observability_readonly").query("select 1")
+
+    async def test_grants_lists_every_mcp_and_sql_name_reached(self) -> None:
+        double = AgentHandleDouble("incident-triage")
+        double.mcp("runbooks")
+        double.sql("observability_readonly")
+        assert double.grants() == ("runbooks", "observability_readonly")

@@ -13,11 +13,15 @@ from celery import Celery  # type: ignore[import-untyped]
 
 import loom.celery.bootstrap as boot
 import loom.celery.runner as _runner
+from loom.ai.abc import AgentHandle
+from loom.ai.errors import AgentCompilationError
 from loom.celery.bootstrap import WorkerBootstrapResult, bootstrap_worker
 from loom.celery.constants import TASK_JOB_PREFIX
 from loom.core.job.job import Job
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.use_case import Agent
+from loom.core.use_case.use_case import UseCase
 
 # ---------------------------------------------------------------------------
 # Jobs used in tests
@@ -48,6 +52,13 @@ class _UpperJob(Job[str]):
 
     def execute(self, text: str = "") -> str:
         return text.upper()
+
+
+class _NotifyIncidentUseCase(UseCase[object, object]):
+    """Declares an ``Agent()`` marker; no worker in this suite ever runs one."""
+
+    async def execute(self, triage: AgentHandle[dict] = Agent("triage")) -> object:
+        return triage
 
 
 # ---------------------------------------------------------------------------
@@ -210,3 +221,19 @@ class TestBootstrapWorkerJobConfigOverride:
             f"_make_job_task saw __retries__={captured_retries}; expected [3]"
         )
         assert _DoubleSyncJob.__retries__ == 3
+
+
+class TestBootstrapWorkerRejectsAgentMarkers:
+    """T402: a task worker never builds an AI runtime, so it refuses at start-up."""
+
+    def test_a_use_case_declaring_agent_aborts_bootstrap(self, worker_config: str) -> None:
+        with pytest.raises(AgentCompilationError) as excinfo:
+            bootstrap_worker(worker_config, use_cases=[_NotifyIncidentUseCase])
+
+        message = str(excinfo.value)
+        assert "_NotifyIncidentUseCase" in message
+        assert "triage" in message
+
+    def test_a_worker_with_no_agent_marker_still_boots(self, worker_config: str) -> None:
+        result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
+        assert isinstance(result, WorkerBootstrapResult)

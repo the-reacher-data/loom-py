@@ -26,12 +26,15 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 
 from loom.ai.abc import (
     AgentEvent,
+    AgentHandle,
     AgentResult,
     AgentUsage,
     Conversation,
     ErrorEvent,
     FinalEvent,
     HealthStatus,
+    McpToolCallResult,
+    McpToolInfo,
     TextDeltaEvent,
 )
 from loom.ai.compiler._plan import (
@@ -62,7 +65,7 @@ from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
 from loom.core.observability.event import LifecycleEvent
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
-from loom.core.use_case import Caller, Input, UseCase
+from loom.core.use_case import Agent, Caller, Input, UseCase
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.invoker import AppInvoker
 from loom.core.use_case.keys import use_case_key
@@ -116,7 +119,11 @@ class RecordingMcpSession:
     Args:
         label: Name used in the shared lifecycle log.
         tools: Tool names the server claims to expose.
-        results: Result returned per tool name; missing names return ``None``.
+        schemas: Names, among ``tools``, that publish an output schema; the
+            rest report none (T301).
+        results: Structured content returned per tool name; missing names
+            return ``None``. A name mapped to :data:`FAILED` reports the
+            server's own error flag instead (T302).
         list_delay_ms: Time one ``list_tools`` round trip costs, so a test can
             express a start-up budget spent on listing rather than connecting.
     """
@@ -126,27 +133,39 @@ class RecordingMcpSession:
         *,
         label: str = "stub",
         tools: Sequence[str] = ("alpha", "beta"),
+        schemas: Sequence[str] = (),
         results: Mapping[str, object] | None = None,
         list_delay_ms: int = 0,
     ) -> None:
         self.label = label
         self.tools = tuple(tools)
+        self.schemas = frozenset(schemas)
         self.results = dict(results or {})
         self.list_delay_ms = list_delay_ms
         self.calls: list[tuple[str, Mapping[str, Any]]] = []
         self.listed = 0
 
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the stub server exposes."""
+    async def list_tools(self) -> tuple[McpToolInfo, ...]:
+        """Return the tools the stub server exposes, each with its schema flag."""
         self.listed += 1
         if self.list_delay_ms:
             await asyncio.sleep(self.list_delay_ms / 1000)
-        return self.tools
+        return tuple(
+            McpToolInfo(name=name, has_output_schema=name in self.schemas) for name in self.tools
+        )
 
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
-        """Record the invocation and return the scripted result."""
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
+        """Record the invocation and return the scripted protocol-level result."""
         self.calls.append((name, dict(arguments)))
-        return self.results.get(name)
+        outcome = self.results.get(name)
+        if outcome is FAILED:
+            return McpToolCallResult(ok=False, structured=None)
+        return McpToolCallResult(ok=True, structured=outcome)
+
+
+FAILED = object()
+"""Sentinel: :attr:`RecordingMcpSession.results` maps a tool name to this to
+script an ``is_error`` result instead of a structured one (T302)."""
 
 
 class InterleavingSensitiveSession:
@@ -169,11 +188,11 @@ class InterleavingSensitiveSession:
         self.started: list[str] = []
         self.completed: list[str] = []
 
-    async def list_tools(self) -> tuple[str, ...]:
+    async def list_tools(self) -> tuple[McpToolInfo, ...]:
         """Return a fixed tool name; the poisoning test never filters."""
-        return ("echo",)
+        return (McpToolInfo(name="echo", has_output_schema=False),)
 
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
         """Echo ``arguments['token']`` back, unless two calls overlapped."""
         del name
         token = str(arguments["token"])
@@ -185,7 +204,7 @@ class InterleavingSensitiveSession:
         try:
             await asyncio.sleep(self._delay_s)
             self.completed.append(token)
-            return self._slot
+            return McpToolCallResult(ok=True, structured=self._slot)
         finally:
             self._busy = False
 
@@ -635,6 +654,7 @@ def make_ai_config(
     max_prompt_bytes: int = 65536,
     health_cache_ttl_ms: int = 20,
     remote_clients: str = "required",
+    max_agent_depth: int = 1,
 ) -> AiConfig:
     """Build an ``AiConfig`` with test-sized budgets and no model secrets."""
     return AiConfig(
@@ -650,6 +670,7 @@ def make_ai_config(
         max_prompt_bytes=max_prompt_bytes,
         health_cache_ttl_ms=health_cache_ttl_ms,
         remote_clients=remote_clients,
+        max_agent_depth=max_agent_depth,
     )
 
 
@@ -946,3 +967,166 @@ def conversation_recorder(container: LoomContainer) -> ConversationRecorder:
 def conversation_deps() -> RecordingDepsFactory:
     """Deps factory serving the hook and the loader through a real executor."""
     return RecordingDepsFactory((RecordTurn, LoadHistory))
+
+
+# ---------------------------------------------------------------------------
+# Agent() marker doubles (spec 014, PR2)
+#
+# 'AgentRuntime' and the marker resolver it feeds
+# ('loom.ai.runtime._handle.agent_marker_resolver') are deliberately absent
+# from this module, for the reason the module docstring states: importing
+# 'loom.ai.runtime' here would abort collection of every test in this
+# package on one bad import, hiding which module actually regressed. Each
+# marker test module builds its own 'AgentRuntime' and resolver, over the
+# plan and use-case doubles this section provides.
+# ---------------------------------------------------------------------------
+
+
+class RecordingScriptedEngine(ScriptedEngine):
+    """A :class:`ScriptedEngine` that also records the identity of every run.
+
+    What a marker-driven run must prove is not merely that it returns an
+    answer, but that the identity reaching the model is the one the executor
+    bound the handle to — never a worker identity, never a value read back
+    out of the caller-facing parameters. Recording it here, at the one seam
+    between the handle and the "model", is what lets a test assert on it.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.identities: list[Identity] = []
+
+    def run_stream(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+    ) -> Any:
+        self.identities.append(identity)
+        return super().run_stream(prompt, identity=identity, conversation=conversation)
+
+
+class ShapedRecordingEngine(RecordingScriptedEngine):
+    """A :class:`RecordingScriptedEngine` that also serves per-run shape overrides.
+
+    Records ``output_type`` per call to ``run_stream_shaped`` so a test can
+    tell an ``AgentHandle.run(expect=...)``/``run_text`` call apart from a
+    plain ``run(prompt)`` — the latter goes through ``run_stream`` alone,
+    never through this method (T304).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.shaped_calls: list[type[Any]] = []
+
+    def run_stream_shaped(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+        output_type: type[Any],
+    ) -> Any:
+        self.shaped_calls.append(output_type)
+        return self.run_stream(prompt, identity=identity, conversation=conversation)
+
+
+MARKER_AGENT_NAME = "triage"
+"""Agent name every marker use case below reaches through ``Agent()``."""
+
+
+class MarkerAgentUseCase(UseCase[object, dict[str, object]]):
+    """The example the spec's marker shape describes, at its simplest.
+
+    Declares both ``Caller()`` and ``Agent()``: the handle must close over
+    the same identity ``caller`` receives, both bound by the executor from
+    the one identity the transport verified for this execution.
+    """
+
+    async def execute(
+        self,
+        caller: Identity = Caller(),
+        triage: AgentHandle[dict[str, Any]] = Agent(MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        answer = await triage.run("assess this")
+        return {"caller_subject": caller.subject, "output": answer.output}
+
+
+class ShadowedIdentityParamUseCase(UseCase[object, dict[str, object]]):
+    """A primitive parameter that merely *looks* like an identity.
+
+    Regression fixture for the exact defect a reviewer found in the SQL pull
+    request: a value the caller controls through ``params`` must never reach
+    the model as if it were the verified identity. ``identity`` here is a
+    plain ``str`` — an ordinary primitive parameter with no marker — so a
+    caller may set it to anything; the handle must still run as ``caller``,
+    read only from the ``Caller()``/``Agent()`` bindings.
+    """
+
+    async def execute(
+        self,
+        identity: str,
+        caller: Identity = Caller(),
+        triage: AgentHandle[dict[str, Any]] = Agent(MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        answer = await triage.run(identity)
+        return {
+            "param_identity": identity,
+            "caller_subject": caller.subject,
+            "output": answer.output,
+        }
+
+
+OUTER_MARKER_AGENT_NAME = "outer"
+INNER_MARKER_AGENT_NAME = "inner"
+
+
+class OuterMarkerUseCase(UseCase[object, dict[str, object]]):
+    """Declares the outer agent of a nested-call scenario."""
+
+    async def execute(
+        self,
+        caller: Identity = Caller(),
+        outer: AgentHandle[dict[str, Any]] = Agent(OUTER_MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        del caller
+        answer = await outer.run("go")
+        return {"output": answer.output}
+
+
+class InnerMarkerUseCase(UseCase[object, dict[str, object]]):
+    """Declares the inner agent a nested call reaches from inside the outer run.
+
+    Stands in for an output hook or a tool's own use case invoking another
+    agent — the exact shape spec 011's rewritten paragraph (T601) describes.
+    """
+
+    async def execute(
+        self,
+        caller: Identity = Caller(),
+        inner: AgentHandle[dict[str, Any]] = Agent(INNER_MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        del caller
+        answer = await inner.run("go deeper")
+        return {"output": answer.output}
+
+
+def marker_use_case_executor(
+    *use_cases: type[Compilable],
+) -> tuple[UseCaseCompiler, RuntimeExecutor]:
+    """Compile *use_cases* and build the real executor a marker test drives.
+
+    Args:
+        use_cases: Every use case the test invokes, including the nested
+            ones an outer run's engine calls back into.
+
+    Returns:
+        The compiler (for plan inspection) and the executor, not yet bound
+        to any agent resolver — the test module binds one once its own
+        ``AgentRuntime`` exists.
+    """
+    compiler = UseCaseCompiler()
+    for use_case in use_cases:
+        compiler.compile(use_case)
+    return compiler, RuntimeExecutor(compiler)

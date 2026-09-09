@@ -36,6 +36,8 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import AGENTS_ONLY_HINT, DiscoveryResult
+from loom.core.engine.compilable import Compilable
+from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.identity import Identity
 from loom.core.introspection import (
     INTROSPECTION_STATE_ATTR,
@@ -56,8 +58,10 @@ from loom.core.sql import (
     SqlQueryService,
 )
 from loom.core.sql.config import roles_need_identity_binding
+from loom.core.use_case.agent_markers import declaring_agent_bindings
 from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.invoker import AppInvoker
+from loom.core.use_case.registry import UseCaseRegistry
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest._body import DEFAULT_MAX_BODY_BYTES, BodySizeLimitMiddleware
@@ -635,6 +639,84 @@ def _resolve_ai(
         a2a_client_factory=a2a_factory,
     )
     return _AiWiring(config=ai_cfg, runtime=runtime, plans=plans)
+
+
+def _bind_agent_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
+    """Wire the executor's ``Agent()`` marker resolver, once the AI runtime exists.
+
+    ``KernelRuntime.executor`` is built before this function can run — the AI
+    pillar it depends on is optional and resolved afterwards — so binding
+    happens here rather than at kernel construction. A no-op when no
+    ``ai:`` section is present: a use case declaring ``Agent()`` in that
+    deployment still compiles, and fails informatively at its first
+    execution instead, which is what an unresolved resolver already does.
+
+    ``SqlQueryService`` is resolved here, once, and handed to the resolver
+    rather than left for a handle to reach into the container for later:
+    it is always registered by this point (``_register_sql_service`` runs
+    before this function, spec M5), so there is nothing optional about the
+    resolution itself.
+    """
+    if ai.runtime is None:
+        return
+    # Local import: same containment rule as '_resolve_ai' — the AI pillar
+    # is optional, and this branch only runs once that section is present.
+    from loom.ai.runtime._handle import agent_marker_resolver
+
+    observability = (
+        result.container.resolve(ObservabilityRuntime)
+        if result.container.is_registered(ObservabilityRuntime)
+        else None
+    )
+    sql_query_service = result.container.resolve(SqlQueryService)
+    resolver = agent_marker_resolver(
+        ai.runtime, sql_query_service=sql_query_service, observability=observability
+    )
+    result.executor.bind_agent_resolver(resolver)
+
+
+def _verify_agent_markers(
+    use_cases: Sequence[type[Compilable]],
+    compiler: UseCaseCompiler,
+    registry: UseCaseRegistry,
+    ai: _AiWiring,
+) -> None:
+    """Abort start-up when an ``Agent()`` marker cannot be satisfied.
+
+    Runs in the slot between '_resolve_ai' and 'result.factory.verify()':
+    every compiled agent plan already exists here, whether or not an ``ai:``
+    section is present — an absent section means ``ai.plans`` is simply
+    empty, so every declared agent is reported unknown the same way a typo
+    would be. The check itself is shared with the Celery worker bootstrap
+    (T402), which calls the same :func:`~loom.ai._startup.verify_agent_markers`
+    with an always-empty ``plans_by_name``, since a task worker never builds
+    an AI runtime at all.
+
+    Args:
+        use_cases: Every use case compiled for this deployment.
+        compiler: Compiler holding the cached plan of each of them.
+        registry: Resolves a use case's registered key for the error message.
+        ai: The (possibly empty) AI wiring '_resolve_ai' built.
+
+    Raises:
+        AgentCompilationError: Aggregating one issue per unknown agent name
+            and per mismatched output type, so a single run reports every
+            problem at once.
+    """
+    declaring = declaring_agent_bindings(use_cases, compiler)
+    if not declaring:
+        # No use case declares Agent(): importing 'loom.ai' here, only to
+        # find nothing to check, would be exactly the containment leak
+        # '_resolve_ai' itself avoids for the same absent-section case
+        # (FR-050) — an app with no 'ai:' section must never pull the pillar
+        # in just because start-up ran.
+        return
+
+    # Local import: same containment rule as '_resolve_ai'.
+    from loom.ai._startup import verify_agent_markers
+
+    plans_by_name = {plan.name: plan for plan in ai.plans}
+    verify_agent_markers(declaring, registry, plans_by_name)
 
 
 def _bind_agent_surface(
@@ -1262,6 +1344,8 @@ def create_app(
         code_path=effective_code_path,
         manifest_agent_specs=discovered.agent_specs,
     )
+    _verify_agent_markers(discovered.use_cases, result.compiler, result.registry, ai)
+    _bind_agent_resolver(result, ai)
     # Last: every service a use case may inject is registered by now.
     result.factory.verify()
 

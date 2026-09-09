@@ -37,6 +37,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
+from loom.ai.abc import McpToolCallResult, McpToolInfo
 from loom.ai.compiler import CompiledMcpCapability, mcp_connection
 from loom.ai.errors import AgentCompilationError, mcp_transport_invalid, provider_not_installed
 from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
@@ -61,21 +62,42 @@ class _ToolsetSession:
     def __init__(self, toolset: MCPToolset[Any]) -> None:
         self._toolset = toolset
 
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes."""
-        return tuple(tool.name for tool in await self._toolset.list_tools())
+    async def list_tools(self) -> tuple[McpToolInfo, ...]:
+        """Return the tools the server exposes, each with its output-schema flag.
 
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
-        """Invoke one tool and return its result.
+        ``MCPToolset.list_tools`` caches its result (``cache_tools=True`` by
+        default), so a second call from
+        :class:`~loom.ai.runtime._grants.McpGrantView` costs no extra round
+        trip beyond the one start-up already pays.
+        """
+        return tuple(
+            McpToolInfo(name=tool.name, has_output_schema=tool.output_schema is not None)
+            for tool in await self._toolset.list_tools()
+        )
+
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
+        """Invoke one tool and return its protocol-level result.
+
+        Goes straight to the underlying client's ``call_tool_mcp`` rather than
+        ``MCPToolset.direct_call_tool``: the latter is written for the model's
+        own retry loop and turns an ``is_error`` result into a raised
+        ``ModelRetry``/``ToolFailed`` before the caller ever sees the flag.
+        This adapter's caller is
+        :class:`~loom.ai.runtime._grants.McpGrantView`, which must inspect
+        ``ok`` itself — before deciding whether to decode — so the raw
+        protocol result is what it needs, with neither prose-fallback mapping
+        nor an engine-facing exception in the way.
 
         Args:
             name: Tool name as the server exposes it.
             arguments: Arguments to pass to the tool.
 
         Returns:
-            The tool's result, as the client library decoded it.
+            The server's own error flag and structured content, verbatim.
         """
-        return await self._toolset.direct_call_tool(name, dict(arguments))
+        async with self._toolset:
+            result = await self._toolset.client.call_tool_mcp(name, dict(arguments))
+        return McpToolCallResult(ok=not result.is_error, structured=result.structured_content)
 
 
 def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:

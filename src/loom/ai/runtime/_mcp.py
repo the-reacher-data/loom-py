@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from loom.ai._filters import select_names
-from loom.ai.abc import McpSession
+from loom.ai.abc import McpSession, McpToolCallResult, McpToolInfo
 from loom.ai.compiler import AgentPlan, CompiledMcpCapability, mcp_connection
 from loom.ai.errors import (
     AgentCompilationIssue,
@@ -54,15 +54,15 @@ class SharedMcpSession:
         self._label = label
         self._lock = asyncio.Lock()
 
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes, serialised with every other call.
+    async def list_tools(self) -> tuple[McpToolInfo, ...]:
+        """Return the tools the server exposes, serialised with every other call.
 
         Returns:
-            Every tool name the underlying session advertises.
+            Every tool the underlying session advertises.
         """
         return await self._serialised(self._session.list_tools())
 
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
         """Invoke one tool, serialised with every other call on this session.
 
         Args:
@@ -97,15 +97,20 @@ def _discard_outcome(task: asyncio.Future[Any]) -> None:
 
 
 def _filtered_tools(
-    tools: Sequence[str], *, include: Sequence[str], exclude: Sequence[str]
+    tools: Sequence[McpToolInfo], *, include: Sequence[str], exclude: Sequence[str]
 ) -> tuple[str, ...]:
     """Apply the glob ``include`` then ``exclude`` to the tools a server offers."""
-    return select_names(tools, include=include, exclude=exclude)
+    return select_names(tuple(tool.name for tool in tools), include=include, exclude=exclude)
 
 
 @dataclass(frozen=True, slots=True)
 class FilterTarget:
-    """One declared tool filter and the shared session it must be checked against."""
+    """One declared MCP grant and the shared session its tools are listed from.
+
+    ``include``/``exclude`` are empty when the grant declares no filter; such
+    a target is still listed (see :func:`filter_targets`), just never checked
+    by :func:`filter_issues`.
+    """
 
     agent: str
     server: str
@@ -115,7 +120,14 @@ class FilterTarget:
 
 
 def filter_targets(plans: Iterable[AgentPlan]) -> tuple[FilterTarget, ...]:
-    """Return every declared MCP tool filter, in plan then declaration order."""
+    """Return one target per declared MCP capability, in plan then declaration order.
+
+    Every grant is listed once at start-up, not only the ones that declare a
+    filter: :class:`~loom.ai.runtime._grants.McpGrantView` reads this same
+    catalogue synchronously later, so a grant an ``AgentHandle`` may reach
+    through :meth:`~loom.ai.abc.AgentHandle.mcp` must have its tools listed
+    here regardless of whether it also narrows them.
+    """
     return tuple(
         FilterTarget(
             agent=plan.name,
@@ -126,24 +138,31 @@ def filter_targets(plans: Iterable[AgentPlan]) -> tuple[FilterTarget, ...]:
         )
         for plan in plans
         for capability in plan.capabilities
-        if type(capability) is CompiledMcpCapability and (capability.include or capability.exclude)
+        if type(capability) is CompiledMcpCapability
     )
 
 
 def filter_issues(
-    targets: Iterable[FilterTarget], listed: Mapping[str, tuple[str, ...]]
+    targets: Iterable[FilterTarget], listed: Mapping[str, tuple[McpToolInfo, ...]]
 ) -> list[AgentCompilationIssue]:
-    """Return one issue per filter that selects none of its server's tools."""
+    """Return one issue per declared filter that selects none of its server's tools.
+
+    A target with no declared filter is skipped here: an empty ``include``
+    already selects everything :func:`_filtered_tools` is given, so checking
+    it would only catch a server publishing zero tools at all — a different
+    failure than a filter matching nothing.
+    """
     return [
         tool_filter_matches_nothing(target.agent, target.server)
         for target in targets
-        if target.key in listed
+        if (target.include or target.exclude)
+        and target.key in listed
         and not _filtered_tools(listed[target.key], include=target.include, exclude=target.exclude)
     ]
 
 
 def listing_timeout_issues(
-    targets: Iterable[FilterTarget], listed: Mapping[str, tuple[str, ...]]
+    targets: Iterable[FilterTarget], listed: Mapping[str, tuple[McpToolInfo, ...]]
 ) -> list[AgentCompilationIssue]:
     """Name every server whose tool listing did not complete inside the budget."""
     pending: dict[str, str] = {

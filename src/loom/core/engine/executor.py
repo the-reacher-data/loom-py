@@ -145,6 +145,11 @@ class RuntimeExecutor:
         repo_resolver: Optional callable that resolves a repository instance
             from an entity model type. Used by ``Load``/``Exists`` when
             ``dependencies`` override is not passed to :meth:`execute`.
+        agent_resolver: Optional callable resolving an ``Agent()`` marker
+            parameter to a handle, given the agent's deployment name and the
+            verified caller of this execution. ``None`` until
+            :meth:`bind_agent_resolver` is called — see that method for why
+            it is bound after construction rather than passed in here.
 
     Example::
 
@@ -169,6 +174,7 @@ class RuntimeExecutor:
         logger: LoggerPort | None = None,
         metrics: MetricsAdapter | None = None,
         repo_resolver: Callable[[type[Any]], Any] | None = None,
+        agent_resolver: Callable[[str, Identity], Any] | None = None,
     ) -> None:
         self._compiler = compiler
         self._uow_factory = uow_factory
@@ -176,6 +182,30 @@ class RuntimeExecutor:
         self._logger = logger or get_logger(__name__)
         self._metrics = metrics
         self._repo_resolver = repo_resolver
+        self._agent_resolver = agent_resolver
+
+    def bind_agent_resolver(self, resolver: Callable[[str, Identity], Any]) -> None:
+        """Bind the resolver used by every ``Agent()`` marker parameter.
+
+        A separate step from construction because the resolver depends on the
+        AI runtime, and the AI pillar is optional and built later: the
+        composition root creates this executor first — so every other use
+        case can be compiled and served regardless of whether an ``ai:``
+        section exists — and wires this resolver in second, once that
+        runtime exists. A use case declaring ``Agent()`` before this is
+        called fails at its first execution with a clear error, not with a
+        missing-attribute crash.
+
+        Args:
+            resolver: Builds one agent handle from the agent's deployment
+                name and the verified caller of one execution.
+
+        Raises:
+            RuntimeError: If a resolver is already bound.
+        """
+        if self._agent_resolver is not None:
+            raise RuntimeError("RuntimeExecutor.bind_agent_resolver() called more than once")
+        self._agent_resolver = resolver
 
     async def run(
         self,
@@ -508,6 +538,7 @@ class RuntimeExecutor:
         bound: dict[str, Any] = {}
         self._bind_params(plan, inputs.params or {}, bound)
         self._bind_caller(plan, inputs.identity, bound)
+        self._bind_agents(plan, inputs.identity, bound)
         fields_set = self._build_command(plan, inputs.payload, bound)
         await self._execute_loads(
             plan, compilable, bound, inputs.dependencies, inputs.load_overrides
@@ -641,6 +672,42 @@ class RuntimeExecutor:
                 "(pass ANONYMOUS explicitly to run without a caller)."
             )
         bound[binding.name] = identity
+
+    def _bind_agents(
+        self,
+        plan: ExecutionPlan,
+        identity: Identity | None,
+        bound: dict[str, Any],
+    ) -> None:
+        """Inject one handle per ``Agent()`` marker, closed over this caller.
+
+        Requires an explicit identity for the same reason ``_bind_caller``
+        does: substituting ``ANONYMOUS`` for a missing one would turn a
+        transport bug into a silently unauthenticated agent call. An
+        explicitly anonymous identity is still accepted here — the handle
+        itself, not the executor, refuses it, and only once its ``run`` is
+        actually invoked, so the refusal happens right before the model call
+        rather than at bind time (design: an anonymous caller must be
+        refused before touching the network, not before it is even known
+        whether this execution will call ``run`` at all).
+        """
+        if not plan.agent_bindings:
+            return
+        if identity is None:
+            raise Unauthenticated(
+                f"{plan.use_case_type.__qualname__}.execute declares an Agent() "
+                "parameter but this execution carried no identity. The transport "
+                "must pass identity=... to the executor (pass ANONYMOUS explicitly "
+                "to run without a caller)."
+            )
+        if self._agent_resolver is None:
+            raise RuntimeError(
+                f"{plan.use_case_type.__qualname__}.execute declares an Agent() "
+                "parameter but no agent resolver is bound on this executor. Call "
+                "RuntimeExecutor.bind_agent_resolver() once the AI runtime exists."
+            )
+        for binding in plan.agent_bindings:
+            bound[binding.name] = self._agent_resolver(binding.agent, identity)
 
     @staticmethod
     def _coerce_param(

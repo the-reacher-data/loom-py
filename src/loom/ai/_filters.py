@@ -32,6 +32,26 @@ def matches(name: str, patterns: Sequence[str]) -> bool:
     return any(fnmatchcase(name, pattern) for pattern in patterns)
 
 
+def admits(name: str, *, include: Sequence[str], exclude: Sequence[str]) -> bool:
+    """Report whether ``name`` survives the include-then-exclude filter.
+
+    The single-name counterpart of :func:`select_names`, for a caller that
+    decides one name at a time instead of narrowing a whole list — the
+    engine's own per-tool predicate and a runtime grant view both do.
+
+    Args:
+        name: Candidate name.
+        include: Glob patterns to keep; empty means every name.
+        exclude: Glob patterns to drop, applied after ``include``.
+
+    Returns:
+        ``True`` when ``name`` is not filtered out.
+    """
+    if include and not matches(name, include):
+        return False
+    return not matches(name, exclude)
+
+
 def select_names(
     names: Sequence[str],
     *,
@@ -61,9 +81,7 @@ def select_names(
     for name in names:
         if name in seen:
             continue
-        if include and not matches(name, include):
-            continue
-        if matches(name, exclude):
+        if not admits(name, include=include, exclude=exclude):
             continue
         seen.add(name)
         selected.append(name)

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Generic, TypeVar
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import msgspec
 
+from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, McpHandle, SqlGrantHandle
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.plan import ExecutionPlan
@@ -12,6 +15,371 @@ from loom.core.repository.abc import RepoFor
 from loom.core.use_case.use_case import UseCase
 
 ResultT = TypeVar("ResultT")
+
+_DEFAULT_AGENT_USAGE = AgentUsage(input_tokens=0, output_tokens=0, requests=1, duration_ms=0)
+"""Usage stamped on a scripted answer when the test does not name one: zero
+cost, one request, so a double never claims work it did not do."""
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedRun:
+    """One call :meth:`AgentHandleDouble.run` received."""
+
+    prompt: str
+    expect: type[Any] | None
+    conversation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedRunText:
+    """One call :meth:`AgentHandleDouble.run_text` received."""
+
+    prompt: str
+    conversation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedToolCall:
+    """One call :meth:`McpHandleDouble.call` or :meth:`McpHandleDouble.call_untyped` received."""
+
+    tool: str
+    arguments: Mapping[str, Any]
+    typed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedQuery:
+    """One call :meth:`SqlGrantHandleDouble.query` received."""
+
+    statement: str
+    parameters: Mapping[str, Any] | None
+
+
+_ScriptedT = TypeVar("_ScriptedT")
+
+
+def _next_scripted(queue: list[_ScriptedT], failure: str) -> _ScriptedT:
+    """Return the next scripted value, refusing an unscripted call.
+
+    A single scheduled value is never consumed: it keeps answering every
+    call, the common case of a use case running the same grant more than
+    once. Two or more scheduled values are consumed in call order.
+    """
+    if not queue:
+        raise AssertionError(failure)
+    if len(queue) > 1:
+        return queue.pop(0)
+    return queue[0]
+
+
+class McpHandleDouble:
+    """In-memory double for :class:`~loom.ai.abc.McpHandle`.
+
+    No network call is ever made. :meth:`call` and :meth:`call_untyped`
+    return a result scripted per tool name through :meth:`on_call` /
+    :meth:`on_call_untyped`; every invocation is recorded on :attr:`calls`
+    so a test can assert what the use case asked of it.
+
+    Args:
+        server: Server name this double stands in for, named in its
+            refusal messages.
+    """
+
+    def __init__(self, server: str) -> None:
+        self._server = server
+        self._tools: tuple[str, ...] = ()
+        self._typed_results: dict[str, Any] = {}
+        self._untyped_results: dict[str, Mapping[str, Any]] = {}
+        self.calls: list[RecordedToolCall] = []
+
+    def with_tools(self, *tools: str) -> McpHandleDouble:
+        """Script the tool names :meth:`tools` returns.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._tools = tools
+        return self
+
+    def on_call(self, tool: str, result: Any) -> McpHandleDouble:
+        """Script the decoded result the next typed :meth:`call` for *tool* returns.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._typed_results[tool] = result
+        return self
+
+    def on_call_untyped(self, tool: str, result: Mapping[str, Any]) -> McpHandleDouble:
+        """Script the raw result the next :meth:`call_untyped` for *tool* returns.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._untyped_results[tool] = result
+        return self
+
+    def tools(self) -> tuple[str, ...]:
+        """Return the tool names scripted through :meth:`with_tools`."""
+        return self._tools
+
+    async def call(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        expect: type[Any],
+    ) -> Any:
+        """Record the call and return the result scripted for *tool*.
+
+        Raises:
+            AssertionError: If no result was scheduled for *tool* through
+                :meth:`on_call`.
+        """
+        del expect  # the double trusts the scripted value; it decodes nothing
+        self.calls.append(RecordedToolCall(tool=tool, arguments=arguments, typed=True))
+        if tool not in self._typed_results:
+            raise AssertionError(
+                f"mcp {self._server!r} double received call({tool!r}, ...) but no result "
+                f"was scheduled; call .on_call({tool!r}, ...) before running the use case"
+            )
+        return self._typed_results[tool]
+
+    async def call_untyped(self, tool: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Record the call and return the raw result scripted for *tool*.
+
+        Raises:
+            AssertionError: If no result was scheduled for *tool* through
+                :meth:`on_call_untyped`.
+        """
+        self.calls.append(RecordedToolCall(tool=tool, arguments=arguments, typed=False))
+        if tool not in self._untyped_results:
+            raise AssertionError(
+                f"mcp {self._server!r} double received call_untyped({tool!r}, ...) but no "
+                f"result was scheduled; call .on_call_untyped({tool!r}, ...) before running "
+                "the use case"
+            )
+        return self._untyped_results[tool]
+
+
+class SqlGrantHandleDouble:
+    """In-memory double for :class:`~loom.ai.abc.SqlGrantHandle`.
+
+    No connection is ever opened. :meth:`query` returns rows scripted
+    through :meth:`on_query`, and every call is recorded on :attr:`calls`.
+
+    Args:
+        connection: Connection name this double stands in for, named in its
+            refusal message.
+    """
+
+    def __init__(self, connection: str) -> None:
+        self._connection = connection
+        self._rows: Sequence[Mapping[str, Any]] | None = None
+        self.calls: list[RecordedQuery] = []
+
+    def on_query(self, rows: Sequence[Mapping[str, Any]]) -> SqlGrantHandleDouble:
+        """Script the rows every :meth:`query` call returns.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._rows = rows
+        return self
+
+    async def query(
+        self,
+        statement: str,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Record the call and return the rows scripted through :meth:`on_query`.
+
+        Raises:
+            AssertionError: If no rows were scheduled through :meth:`on_query`.
+        """
+        self.calls.append(RecordedQuery(statement=statement, parameters=parameters))
+        if self._rows is None:
+            raise AssertionError(
+                f"sql {self._connection!r} double received query(...) but no rows were "
+                "scheduled; call .on_query(...) before running the use case"
+            )
+        return self._rows
+
+
+class AgentHandleDouble:
+    """In-memory double for :class:`~loom.ai.abc.AgentHandle`.
+
+    Bound to a use case's parameter through :meth:`UseCaseTest.with_agent`.
+
+    Stands in for the handle a real ``Agent()`` marker resolves to: no
+    network, model or database call is ever made. Every run mode returns an
+    answer scripted through :meth:`on_run` / :meth:`on_run_text`; every
+    grant view is a further double reached through :meth:`mcp` / :meth:`sql`
+    and cached, so scheduling its answers once configures every call the use
+    case makes through it. Every call this handle itself receives is
+    recorded on :attr:`run_calls` / :attr:`run_text_calls`, so a test can
+    assert what the use case asked of it.
+
+    Args:
+        name: Agent name as the ``Agent(name)`` marker declares it, named in
+            this double's refusal messages.
+
+    Example::
+
+        triage = AgentHandleDouble("incident-triage").on_run(SeverityAssessment(severity=5))
+        result = await (
+            UseCaseTest(TriageIncidentUseCase())
+            .with_caller(identity)
+            .with_agent("incident-triage", triage)
+            .with_params(incident_id="INC-1")
+            .run()
+        )
+        assert triage.run_calls[0].prompt == "Assess INC-1."
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._run_answers: list[AgentAnswer[Any]] = []
+        self._run_text_answers: list[AgentAnswer[str]] = []
+        self._mcp: dict[str, McpHandleDouble] = {}
+        self._sql: dict[str, SqlGrantHandleDouble] = {}
+        self._declared: tuple[str, ...] | None = None
+        self.run_calls: list[RecordedRun] = []
+        self.run_text_calls: list[RecordedRunText] = []
+
+    def on_run(
+        self,
+        output: Any,
+        *,
+        usage: AgentUsage | None = None,
+        interaction_id: str | None = None,
+    ) -> AgentHandleDouble:
+        """Schedule the next :meth:`run` call's answer, declared or per-run shape alike.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._run_answers.append(
+            AgentAnswer(
+                output=output, usage=usage or _DEFAULT_AGENT_USAGE, interaction_id=interaction_id
+            )
+        )
+        return self
+
+    def on_run_text(
+        self,
+        text: str,
+        *,
+        usage: AgentUsage | None = None,
+        interaction_id: str | None = None,
+    ) -> AgentHandleDouble:
+        """Schedule the next :meth:`run_text` call's answer.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._run_text_answers.append(
+            AgentAnswer(
+                output=text, usage=usage or _DEFAULT_AGENT_USAGE, interaction_id=interaction_id
+            )
+        )
+        return self
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        expect: type[Any] | None = None,
+        conversation_id: str | None = None,
+    ) -> AgentAnswer[Any]:
+        """Record the call and return the answer scripted through :meth:`on_run`.
+
+        Raises:
+            AssertionError: If no answer was scheduled through :meth:`on_run`.
+        """
+        self.run_calls.append(
+            RecordedRun(prompt=prompt, expect=expect, conversation_id=conversation_id)
+        )
+        return _next_scripted(
+            self._run_answers,
+            f"agent {self._name!r} double received run(...) but no answer was scheduled; "
+            "call .on_run(...) before running the use case",
+        )
+
+    async def run_text(
+        self,
+        prompt: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> AgentAnswer[str]:
+        """Record the call and return the answer scripted through :meth:`on_run_text`.
+
+        Raises:
+            AssertionError: If no answer was scheduled through :meth:`on_run_text`.
+        """
+        self.run_text_calls.append(RecordedRunText(prompt=prompt, conversation_id=conversation_id))
+        return _next_scripted(
+            self._run_text_answers,
+            f"agent {self._name!r} double received run_text(...) but no answer was scheduled; "
+            "call .on_run_text(...) before running the use case",
+        )
+
+    def mcp(self, server: str) -> McpHandleDouble:
+        """Return this agent's own double for the ``mcp`` grant named *server*.
+
+        Built once and cached: repeated calls with the same name return the
+        same double.
+        """
+        return self._mcp.setdefault(server, McpHandleDouble(server))
+
+    def sql(self, connection: str) -> SqlGrantHandleDouble:
+        """Return this agent's own double for the ``sql`` grant named *connection*.
+
+        Built once and cached: repeated calls with the same name return the
+        same double.
+        """
+        return self._sql.setdefault(connection, SqlGrantHandleDouble(connection))
+
+    def with_grants(self, *names: str) -> AgentHandleDouble:
+        """Declare the grant names this double reports, and refuse the rest.
+
+        Without it the double reports what has been reached, which is not what
+        the real handle promises: there, the listing names what the artefact
+        declares, whether or not anything used it. A test that asserts a grant
+        is available would pass against the double and prove nothing about
+        production, so declaring the set here makes the two agree.
+
+        Args:
+            names: Every server and connection this agent declares.
+
+        Returns:
+            This double, for chaining.
+        """
+        self._declared = names
+        return self
+
+    def grants(self) -> tuple[str, ...]:
+        """Return the declared grant names, matching what the real handle reports.
+
+        Falls back to what has been reached when nothing was declared, so a
+        test that does not care keeps working.
+        """
+        if self._declared is not None:
+            return self._declared
+        return (*self._mcp, *self._sql)
+
+
+if TYPE_CHECKING:  # the doubles stand in for the published protocols
+
+    def _mcp_contract(double: McpHandleDouble) -> McpHandle:
+        return double
+
+    def _sql_contract(double: SqlGrantHandleDouble) -> SqlGrantHandle:
+        return double
+
+    def _agent_contract(double: AgentHandleDouble) -> AgentHandle[Any]:
+        return double
 
 
 class UseCaseTest(Generic[ResultT]):
@@ -41,6 +409,7 @@ class UseCaseTest(Generic[ResultT]):
         self._load_overrides: dict[type[Any], Any] = {}
         self._dependencies: dict[type[Any], Any] = {}
         self._identity: Identity | None = None
+        self._agent_doubles: dict[str, AgentHandleDouble] = {}
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -137,6 +506,31 @@ class UseCaseTest(Generic[ResultT]):
         self._identity = identity
         return self
 
+    def with_agent(self, name: str, double: AgentHandleDouble) -> UseCaseTest[ResultT]:
+        """Bind *double* to the ``Agent(name)`` marker parameter named *name*.
+
+        Without this call a use case declaring ``Agent(name)`` fails closed
+        when run, naming the use case and the agent — the same fail-closed
+        design :meth:`with_caller` applies to ``Caller()``, extended to the
+        whole handle: every run mode and every grant view, not only the
+        execution itself, so nothing that reaches the agent can run without
+        a network, a model or a database standing in.
+
+        Args:
+            name: Agent name exactly as the ``Agent(name)`` marker declares
+                it in the use case under test.
+            double: Pre-built :class:`AgentHandleDouble` — script its
+                answers with :meth:`~AgentHandleDouble.on_run` /
+                :meth:`~AgentHandleDouble.on_run_text` and its grant views
+                with :meth:`~AgentHandleDouble.mcp` / :meth:`~AgentHandleDouble.sql`
+                before passing it here.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._agent_doubles[name] = double
+        return self
+
     def with_main_repo(self, repo: RepoFor[Any]) -> UseCaseTest[ResultT]:
         """Inject the main repository dependency into the UseCase instance.
 
@@ -167,11 +561,19 @@ class UseCaseTest(Generic[ResultT]):
             NotFound: If a Load step finds no entity.
             loom.core.errors.Unauthenticated: If the UseCase declares
                 ``Caller()`` and no :meth:`with_caller` was set.
+            RuntimeError: If the UseCase declares ``Agent(name)`` and no
+                matching :meth:`with_agent` call registered a double for
+                *name*.
             loom.core.engine.compiler.CompilationError: If the UseCase fails
                 structural validation.
         """
         compiler = UseCaseCompiler()
         executor = RuntimeExecutor(compiler)
+        # Always bound, even with no doubles registered: a plan declaring no
+        # Agent() marker never calls it, and one that does must fail closed
+        # exactly like an unregistered Caller() does — see
+        # '_resolve_agent_double'.
+        executor.bind_agent_resolver(self._resolve_agent_double)
         return await executor.execute(  # type: ignore[no-any-return]
             self._use_case,
             params=self._params,
@@ -180,6 +582,31 @@ class UseCaseTest(Generic[ResultT]):
             load_overrides=self._load_overrides if self._load_overrides else None,
             identity=self._identity,
         )
+
+    def _resolve_agent_double(self, name: str, identity: Identity) -> AgentHandleDouble:
+        """Resolve one ``Agent(name)`` marker to its registered double, failing closed.
+
+        Args:
+            name: Agent name the marker declared.
+            identity: Verified caller of this execution; the double is not
+                identity-aware, so it is not consulted — the same caller
+                already had to pass the plan's own ``Caller()`` binding, if
+                any, to reach this point.
+
+        Raises:
+            RuntimeError: If no :meth:`with_agent` call registered a double
+                for *name*. Naming the use case and the agent, the same way
+                an unregistered ``Caller()`` fails closed today.
+        """
+        del identity
+        double = self._agent_doubles.get(name)
+        if double is None:
+            raise RuntimeError(
+                f"{type(self._use_case).__qualname__}.execute declares Agent({name!r}) but "
+                f"no double was registered; call UseCaseTest.with_agent({name!r}, ...) before "
+                ".run()."
+            )
+        return double
 
     # ------------------------------------------------------------------
     # Inspection

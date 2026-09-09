@@ -133,6 +133,11 @@ class AgentErrorCode(StrEnum):
     AGENT_SPECS_CONFLICT = "AGENT_SPECS_CONFLICT"
     AGENT_SPECS_MISSING = "AGENT_SPECS_MISSING"
     REMOTE_CLIENTS_UNKNOWN = "REMOTE_CLIENTS_UNKNOWN"
+    MAX_AGENT_DEPTH_INVALID = "MAX_AGENT_DEPTH_INVALID"
+
+    # Use-case agent markers (model-as-actor)
+    AGENT_MARKER_UNKNOWN = "AGENT_MARKER_UNKNOWN"
+    AGENT_MARKER_OUTPUT_MISMATCH = "AGENT_MARKER_OUTPUT_MISMATCH"
 
     # Compatibility
     SPEC_VERSION_DEPRECATED = "SPEC_VERSION_DEPRECATED"
@@ -1091,6 +1096,24 @@ def remote_clients_unknown(value: str, valid: Sequence[str]) -> AgentCompilation
     )
 
 
+def max_agent_depth_invalid(value: int) -> AgentCompilationIssue:
+    """The nesting bound is below the one entry every top-level run already spends.
+
+    Args:
+        value: The rejected value of ``ai.max_agent_depth``.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MAX_AGENT_DEPTH_INVALID,
+        message=(
+            f"ai.max_agent_depth: {value} is below the minimum of 1; the top-level "
+            "run itself counts as one entry in the chain, so a value below 1 refuses "
+            "every run, including the top-level one"
+        ),
+        component="ai",
+        field="ai.max_agent_depth",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Compatibility factories
 # ---------------------------------------------------------------------------
@@ -1105,6 +1128,63 @@ def spec_version_deprecated(component: str, found: int, latest: int) -> AgentCom
         ),
         component=component,
         field="spec_version",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Use-case agent marker factories
+# ---------------------------------------------------------------------------
+
+_AGENT_MARKER_FIELD_TEMPLATE: Final[str] = "parameters.{parameter}"
+"""Field-path template shared by both use-case agent marker issues."""
+
+
+def agent_marker_unknown(
+    usecase: str, parameter: str, agent: str, available: Sequence[str]
+) -> AgentCompilationIssue:
+    """A use case's :func:`~loom.core.use_case.markers.Agent` marker names an
+    agent no engine compiled.
+
+    Args:
+        usecase: Registered key of the use case declaring the marker.
+        parameter: Name of the ``execute`` parameter carrying the marker.
+        agent: Agent name the marker declared.
+        available: Names of the agents actually compiled in this deployment.
+    """
+    known = ", ".join(available) if available else "none"
+    return AgentCompilationIssue(
+        code=AgentErrorCode.AGENT_MARKER_UNKNOWN,
+        message=(
+            f"{usecase}: parameter '{parameter}' names unknown agent '{agent}'; "
+            f"compiled agents: {known}"
+        ),
+        component=usecase,
+        field=_AGENT_MARKER_FIELD_TEMPLATE.format(parameter=parameter),
+    )
+
+
+def agent_marker_output_mismatch(
+    usecase: str, parameter: str, agent: str, expected: str, declared: str
+) -> AgentCompilationIssue:
+    """A use case's ``AgentHandle`` annotation disagrees with the named
+    agent's own declared output type.
+
+    Args:
+        usecase: Registered key of the use case declaring the marker.
+        parameter: Name of the ``execute`` parameter carrying the marker.
+        agent: Agent name the marker declared.
+        expected: Output type named by the parameter's ``AgentHandle[...]``
+            annotation.
+        declared: Output type the named agent actually declares.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.AGENT_MARKER_OUTPUT_MISMATCH,
+        message=(
+            f"{usecase}: parameter '{parameter}' declares AgentHandle[{expected}] for "
+            f"agent '{agent}', but '{agent}' declares output '{declared}'"
+        ),
+        component=usecase,
+        field=_AGENT_MARKER_FIELD_TEMPLATE.format(parameter=parameter),
     )
 
 
@@ -1140,6 +1220,18 @@ class AgentRunErrorCode(StrEnum):
     HOOK_FAILED = "HOOK_FAILED"
     CONVERSATION_LOAD_FAILED = "CONVERSATION_LOAD_FAILED"
     CONVERSATION_LOAD_TIMEOUT = "CONVERSATION_LOAD_TIMEOUT"
+
+    # Agent-handle grants and calls (model-as-actor)
+    MCP_GRANT_UNKNOWN = "MCP_GRANT_UNKNOWN"
+    SQL_GRANT_UNKNOWN = "SQL_GRANT_UNKNOWN"
+    TOOL_UNKNOWN = "TOOL_UNKNOWN"
+    TOOL_UNTYPED = "TOOL_UNTYPED"
+    TOOL_RESULT_UNSTRUCTURED = "TOOL_RESULT_UNSTRUCTURED"
+    TOOL_DECODE_FAILED = "TOOL_DECODE_FAILED"
+    TOOL_CALL_FAILED = "TOOL_CALL_FAILED"
+    AGENT_CALL_CYCLE = "AGENT_CALL_CYCLE"
+    AGENT_CALL_TOO_DEEP = "AGENT_CALL_TOO_DEEP"
+    AGENT_RUN_SHAPE_WITH_HOOK = "AGENT_RUN_SHAPE_WITH_HOOK"
 
 
 class AgentRunError(Exception):
@@ -1198,6 +1290,23 @@ _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProx
         AgentRunErrorCode.HOOK_FAILED: AgentRunErrorClass.APPLICATION,
         AgentRunErrorCode.CONVERSATION_LOAD_FAILED: AgentRunErrorClass.APPLICATION,
         AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: AgentRunErrorClass.INFRASTRUCTURE,
+        # An unknown grant or tool name is a caller-code mistake, not a
+        # transient condition; a per-run type mismatch is not the model
+        # misbehaving, it is the calling code's own bug (AUTHORIZATION and
+        # APPLICATION never retry). A server that contradicts its own
+        # published schema, or a tool call that fails outright, sits beside
+        # the existing TOOL_* infrastructure codes rather than inventing a
+        # new class for one failure family.
+        AgentRunErrorCode.MCP_GRANT_UNKNOWN: AgentRunErrorClass.AUTHORIZATION,
+        AgentRunErrorCode.SQL_GRANT_UNKNOWN: AgentRunErrorClass.AUTHORIZATION,
+        AgentRunErrorCode.TOOL_UNKNOWN: AgentRunErrorClass.APPLICATION,
+        AgentRunErrorCode.TOOL_UNTYPED: AgentRunErrorClass.APPLICATION,
+        AgentRunErrorCode.TOOL_RESULT_UNSTRUCTURED: AgentRunErrorClass.INFRASTRUCTURE,
+        AgentRunErrorCode.TOOL_DECODE_FAILED: AgentRunErrorClass.INFRASTRUCTURE,
+        AgentRunErrorCode.TOOL_CALL_FAILED: AgentRunErrorClass.INFRASTRUCTURE,
+        AgentRunErrorCode.AGENT_CALL_CYCLE: AgentRunErrorClass.APPLICATION,
+        AgentRunErrorCode.AGENT_CALL_TOO_DEEP: AgentRunErrorClass.LIMIT,
+        AgentRunErrorCode.AGENT_RUN_SHAPE_WITH_HOOK: AgentRunErrorClass.APPLICATION,
     }
 )
 

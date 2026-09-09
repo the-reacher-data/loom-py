@@ -612,3 +612,30 @@ remote_clients: maybe
         assert "maybe" in message
         assert "required" in message
         assert "optional" in message
+
+
+class TestMaxAgentDepth:
+    """``ai.max_agent_depth`` below 1 would refuse every run, top-level included."""
+
+    def test_conserva_el_valor_por_defecto(self) -> None:
+        assert _config_with().max_agent_depth == 1
+
+    @pytest.mark.parametrize("depth", [1, 2, 5])
+    def test_conserva_un_valor_de_al_menos_uno(self, depth: int) -> None:
+        assert _config_with(max_agent_depth=depth).max_agent_depth == depth
+
+    @pytest.mark.parametrize("depth", [0, -1])
+    def test_falla_con_max_agent_depth_invalid_por_debajo_de_uno(self, depth: int) -> None:
+        """Zero would silently refuse the top-level run too, not only nesting."""
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(max_agent_depth=depth)
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MAX_AGENT_DEPTH_INVALID]
+
+    def test_el_mensaje_nombra_la_clave_y_el_minimo(self) -> None:
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(max_agent_depth=0)
+
+        message = excinfo.value.issues[0].message
+        assert "ai.max_agent_depth" in message
+        assert "0" in message

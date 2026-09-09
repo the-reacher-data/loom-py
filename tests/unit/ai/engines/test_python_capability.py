@@ -91,25 +91,49 @@ class FailingFactory:
 
 
 @dataclass
-class FakeMcpToolset:
-    """Stand-in for the engine's ``MCPToolset``: enterable, records direct calls.
+class _FakeProtocolResult:
+    """Stand-in for ``mcp.types.CallToolResult``: the two fields the adapter reads."""
+
+    is_error: bool = False
+    structured_content: object = None
+
+
+@dataclass
+class _FakeFastmcpClient:
+    """Stand-in for the ``fastmcp.Client`` a real ``MCPToolset`` wraps.
 
     Attributes:
-        calls: ``(tool name, arguments)`` per ``direct_call_tool``.
+        calls: ``(tool name, arguments)`` per ``call_tool_mcp``.
     """
 
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+
+    async def call_tool_mcp(self, name: str, arguments: dict[str, Any]) -> _FakeProtocolResult:
+        """Record the call the way the real client's raw method would forward it."""
+        self.calls.append((name, arguments))
+        return _FakeProtocolResult(structured_content={"tool": name})
+
+
+class FakeMcpToolset:
+    """Stand-in for the engine's ``MCPToolset``: enterable, wraps a fake client.
+
+    Attributes:
+        client: The fake client every call is forwarded to and recorded on.
+    """
+
+    def __init__(self) -> None:
+        self.client = _FakeFastmcpClient()
+
+    @property
+    def calls(self) -> list[tuple[str, dict[str, Any]]]:
+        """Calls the fake client recorded, exposed under the toolset for old assertions."""
+        return self.client.calls
 
     async def __aenter__(self) -> FakeMcpToolset:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         return None
-
-    async def direct_call_tool(self, name: str, arguments: dict[str, Any]) -> object:
-        """Record the call the way the real toolset would forward it."""
-        self.calls.append((name, arguments))
-        return {"tool": name}
 
 
 @dataclass

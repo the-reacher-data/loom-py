@@ -9,6 +9,7 @@ from loom.core.engine.compilable import Compilable
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import (
+    AgentBinding,
     CallerBinding,
     ComputeStep,
     ExecutionPlan,
@@ -22,6 +23,7 @@ from loom.core.logger import LoggerPort, get_logger
 from loom.core.use_case.markers import (
     LookupKind,
     SourceKind,
+    _AgentMarker,
     _CallerMarker,
     _ExistsMarker,
     _InputMarker,
@@ -49,6 +51,7 @@ class _SignatureBindings:
     param_bindings: list[ParamBinding] = field(default_factory=list)
     load_steps: list[LoadStep] = field(default_factory=list)
     exists_steps: list[ExistsStep] = field(default_factory=list)
+    agent_bindings: list[AgentBinding] = field(default_factory=list)
     input_binding: InputBinding | None = None
     caller_binding: CallerBinding | None = None
 
@@ -165,6 +168,7 @@ class UseCaseCompiler:
             rule_steps=rule_steps,
             read_only=bool(getattr(use_case_type, "read_only", False)),
             caller_binding=bindings.caller_binding,
+            agent_bindings=tuple(bindings.agent_bindings),
         )
         use_case_type.__execution_plan__ = plan
         return plan
@@ -214,6 +218,10 @@ class UseCaseCompiler:
 
         if isinstance(marker, _CallerMarker):
             self._collect_caller(use_case_type, name, bindings)
+            return
+
+        if isinstance(marker, _AgentMarker):
+            self._collect_agent(name, annotation, marker, bindings)
             return
 
         if isinstance(marker, _LoadByIdMarker):
@@ -271,6 +279,27 @@ class UseCaseCompiler:
             )
         bindings.caller_binding = CallerBinding(name=name)
         self._logger.info(f"[BOOT]  - Detected Caller: {name}")
+
+    def _collect_agent(
+        self,
+        name: str,
+        annotation: Any,
+        marker: _AgentMarker,
+        bindings: _SignatureBindings,
+    ) -> None:
+        """Record one ``Agent()`` marker; several may appear in one signature.
+
+        Only the parameter name, the declared agent name and the raw
+        annotation are kept here. Whether that agent exists and whether the
+        annotation's type argument matches its declared output cannot be
+        checked here: this compiler runs regardless of whether the optional
+        AI pillar is even installed, so that check happens once, in the
+        composition root, only after the AI runtime it needs has been built.
+        """
+        bindings.agent_bindings.append(
+            AgentBinding(name=name, agent=marker.name, annotation=annotation)
+        )
+        self._logger.info(f"[BOOT]  - Detected Agent: {marker.name!r} -> {name}")
 
     @staticmethod
     def _build_load_by_id_step(name: str, marker: _LoadByIdMarker[Any]) -> LoadStep:

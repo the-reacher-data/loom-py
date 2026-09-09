@@ -27,6 +27,7 @@ from loom.ai.errors import (
     a2a_url_invalid,
     endpoint_auth_missing,
     inference_target_incomplete,
+    max_agent_depth_invalid,
     mcp_auth_conflict,
     mcp_auth_strategy_unknown,
     mcp_credentials_inline,
@@ -358,13 +359,25 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         max_concurrent_runs: Per-worker run limit (FR-033a).
         max_prompt_bytes: Enforced while reading the request body.
         health_cache_ttl_ms: Refresh period of the health probe.
+        max_agent_depth: Longest chain of nested agent runs one task may
+            open, counting the top-level run itself. A use case reaches a
+            named agent through an ``Agent()`` marker parameter, and that
+            handle's ``run`` counts as one more entry in the same chain the
+            run that reached the use case already opened. Defaults to ``1``,
+            under which the top-level run alone already consumes the whole
+            budget: an output hook, or any other use case an agent's run
+            invokes, that itself declares an ``Agent()`` marker finds no
+            depth left, and the whole class of agent-calls-agent cycles is
+            unreachable without deliberately raising this value.
 
     Raises:
         AgentCompilationError: Aggregating one issue per invalid model binding
             (incomplete provider settings, literal secret in
             ``credentials_ref``), per unsafe remote server or agent (bad URL,
             inline credentials, out-of-range timeout), per endpoint without
-            a named ``auth``, and for an unknown ``remote_clients`` mode.
+            a named ``auth``, for an unknown ``remote_clients`` mode, and for
+            a ``max_agent_depth`` below 1 — which would refuse every run,
+            including the top-level one.
     """
 
     engine: str
@@ -380,6 +393,7 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     max_concurrent_runs: int = 8
     max_prompt_bytes: int = 65536
     health_cache_ttl_ms: int = 5000
+    max_agent_depth: int = 1
 
     def __post_init__(self) -> None:
         issues: list[AgentCompilationIssue] = []
@@ -392,6 +406,8 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
                 issues.append(endpoint_auth_missing(name))
         if self.remote_clients not in _REMOTE_CLIENTS_MODES:
             issues.append(remote_clients_unknown(self.remote_clients, _REMOTE_CLIENTS_MODES))
+        if self.max_agent_depth < 1:
+            issues.append(max_agent_depth_invalid(self.max_agent_depth))
         if issues:
             raise AgentCompilationError(issues)
 
