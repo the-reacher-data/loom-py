@@ -16,7 +16,6 @@ from typing import Any
 import msgspec
 
 from loom.ai.compiler._plan import CompiledOutput
-from loom.ai.compiler._symbols import import_symbol
 from loom.ai.declarative import JsonSchemaOutput, OutputSpec, TypeRefOutput
 from loom.ai.errors import (
     AgentCompilationIssue,
@@ -24,6 +23,7 @@ from loom.ai.errors import (
     output_type_ref_unresolvable,
     output_type_ref_unsupported,
 )
+from loom.core.symbols import import_symbol
 
 _CompileResult = tuple[CompiledOutput | None, list[AgentCompilationIssue]]
 

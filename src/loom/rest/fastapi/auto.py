@@ -35,6 +35,10 @@ from loom.core.discovery import (
     ManifestDiscoveryEngine,
     ModulesDiscoveryEngine,
 )
+from loom.core.discovery._utils import (
+    collect_use_cases_from_interfaces,
+    infer_model_from_use_case,
+)
 from loom.core.discovery.base import AGENTS_ONLY_HINT, DiscoveryResult
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
@@ -78,6 +82,14 @@ from loom.rest.autocrud import (
     crud_op_of,
     registered_repository_type,
     supported_crud_ops,
+)
+from loom.rest.compiler import RouteSources
+from loom.rest.config import (
+    DisableRouteConfig,
+    RestInterfaceConfig,
+    build_interfaces_from_config,
+    validate_disable_routes_config,
+    validate_interfaces_config,
 )
 from loom.rest.cors import CorsConfig
 from loom.rest.fastapi._exclusions import verify_exclusion_paths
@@ -149,6 +161,13 @@ class _RestConfig(msgspec.Struct, kw_only=True):
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     auth: _RestAuthConfig = msgspec.field(default_factory=_RestAuthConfig)
     cors: CorsConfig | None = None
+    # Endpoints declared without Python (loom.rest.config); converted into
+    # the same RestInterface objects a Python subclass produces and handed to
+    # the same compiler — see _fold_config_interfaces and create_fastapi_app.
+    interfaces: dict[str, RestInterfaceConfig] = msgspec.field(default_factory=dict)
+    # Subtractive per-environment overlay: every entry must match a mounted
+    # route, or startup aborts (see RestInterfaceCompiler.compile_sources).
+    disable_routes: tuple[DisableRouteConfig, ...] = ()
 
 
 class _AppConfig(msgspec.Struct, kw_only=True):
@@ -281,8 +300,14 @@ def _build_bootstrap(
     app_cfg: _AppConfig,
     ctx: ConfigContext,
     metrics: Any | None = None,
-) -> tuple[KernelRuntime, PersistenceWiring, DiscoveryResult]:
+    config_interfaces: tuple[type[RestInterface[Any]], ...] = (),
+) -> tuple[KernelRuntime, PersistenceWiring, DiscoveryResult, tuple[type[RestInterface[Any]], ...]]:
     discovered = _discover_components(app_cfg)
+    # Captured before folding in config_interfaces: the explicit Python-only
+    # set create_app needs to build RouteSources, instead of recovering it
+    # afterwards from discovered.interfaces by index arithmetic.
+    python_interfaces = discovered.interfaces
+    discovered = _fold_config_interfaces(discovered, config_interfaces)
     persistence_cfg = _load_persistence_config(ctx)
     # Runs before the backend allocates resources (e.g. an engine): resolving
     # persistence is what creates them.
@@ -297,7 +322,50 @@ def _build_bootstrap(
         metrics=metrics,
         extra_modules=(cache_module_for(ctx),),
     )
-    return result, wiring, discovered
+    return result, wiring, discovered, python_interfaces
+
+
+def _fold_config_interfaces(
+    discovered: DiscoveryResult,
+    config_interfaces: tuple[type[RestInterface[Any]], ...],
+) -> DiscoveryResult:
+    """Extend discovery with interfaces declared in ``app.rest.interfaces``.
+
+    Folded in right after discovery so every later step — CRUD gating, model
+    registration, use-case compilation — treats a config interface exactly
+    like a Python one.  Additive only: a use case or model discovery already
+    found is never duplicated, so a use case reached by both a Python route
+    and a manifest/module scan still compiles once.
+
+    Args:
+        discovered: Result of the configured discovery engine.
+        config_interfaces: Interfaces built from ``app.rest.interfaces``.
+
+    Returns:
+        *discovered*, unchanged when ``config_interfaces`` is empty, else
+        with its ``models``, ``use_cases`` and ``interfaces`` extended.
+    """
+    if not config_interfaces:
+        return discovered
+    known_use_cases = set(discovered.use_cases)
+    new_use_cases = [
+        use_case
+        for use_case in collect_use_cases_from_interfaces(list(config_interfaces))
+        if use_case not in known_use_cases
+    ]
+    models = list(discovered.models)
+    known_models = set(models)
+    for use_case in new_use_cases:
+        model = infer_model_from_use_case(use_case)
+        if model is not None and model not in known_models:
+            models.append(model)
+            known_models.add(model)
+    return dataclasses.replace(
+        discovered,
+        models=tuple(models),
+        use_cases=discovered.use_cases + tuple(new_use_cases),
+        interfaces=discovered.interfaces + config_interfaces,
+    )
 
 
 def _reject_autocrud_without_model(discovered: DiscoveryResult) -> None:
@@ -1217,6 +1285,37 @@ def _mount_metrics(
     app.add_api_route(f"{path}/", _scrape_trailing_slash, methods=["GET"], include_in_schema=False)
 
 
+def _section_app_config(ctx: ConfigContext) -> _AppConfig:
+    """Decode ``app``, naming the interface behind an unknown ``app.rest`` key.
+
+    Validates ``app.rest.interfaces`` and ``app.rest.disable_routes`` against
+    their raw, not-yet-decoded mapping first, since a ``dict``-keyed value
+    (an interface name) is not information ``msgspec`` can recover once
+    conversion to :class:`~loom.rest.config.RestInterfaceConfig` has already
+    failed. Every other section of ``app`` decodes exactly as
+    :func:`~loom.core.config.loader.section` already does — this only adds a
+    check ahead of it for this one section.
+
+    Args:
+        ctx: Config context built from the supplied YAML files.
+
+    Returns:
+        The decoded :class:`_AppConfig`.
+
+    Raises:
+        RestInterfaceConfigError: If an interface, route, or disable-routes
+            entry uses a key its config struct does not declare.
+        ConfigError: If decoding fails for any other reason.
+    """
+    raw_interfaces = ctx.section_or_default("app.rest.interfaces", dict[str, dict[str, Any]], {})
+    validate_interfaces_config(raw_interfaces)
+    raw_disable_routes = ctx.section_or_default(
+        "app.rest.disable_routes", tuple[dict[str, Any], ...], ()
+    )
+    validate_disable_routes_config(raw_disable_routes)
+    return ctx.section(ConfigKey.APP, _AppConfig)
+
+
 def create_app(
     *config_paths: str,
     code_path: str | None = None,
@@ -1303,7 +1402,7 @@ def create_app(
         raise ConfigError("create_app requires at least one config file path.")
 
     ctx = ConfigContext.from_yaml(*config_paths, resolvers=with_default_resolvers(resolvers))
-    app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
+    app_cfg = _section_app_config(ctx)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
     metrics_cfg = observability_cfg.prometheus
@@ -1323,10 +1422,16 @@ def create_app(
 
     metrics_adapter = _build_metrics_adapter(metrics_cfg, metrics_registry)
 
-    result, wiring, discovered = _build_bootstrap(
+    # Built ahead of _build_bootstrap so its use cases join discovery (CRUD
+    # gating, model registration, kernel compilation) exactly like a
+    # Python-discovered interface's; discovered.interfaces gains them right
+    # after, in this same, deterministic Python-then-config order.
+    config_interfaces = build_interfaces_from_config(app_cfg.rest.interfaces)
+    result, wiring, discovered, python_interfaces = _build_bootstrap(
         app_cfg,
         ctx,
         metrics=metrics_adapter,
+        config_interfaces=config_interfaces,
     )
     _configure_job_service(ctx, result, observability_runtime)
     _register_sql_collaborators(result.container, sql, observability_runtime)
@@ -1365,9 +1470,14 @@ def create_app(
             await stack.enter_async_context(wiring.lifespan_init())
             yield
 
+    route_sources = RouteSources(
+        python=python_interfaces,
+        config=config_interfaces,
+        disabled=tuple((d.method, d.path) for d in app_cfg.rest.disable_routes),
+    )
     app = create_fastapi_app(
         result,
-        interfaces=tuple(discovered.interfaces),
+        route_sources,
         observability_runtime=observability_runtime,
         title=app_cfg.rest.title,
         version=app_cfg.rest.version,

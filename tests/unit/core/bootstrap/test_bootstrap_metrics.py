@@ -43,6 +43,7 @@ class TestCreateFastapiAppWiresMetrics:
         """bootstrap_app must register RuntimeExecutor with the metrics adapter."""
         pytest.importorskip("fastapi")
 
+        from loom.rest.compiler import RouteSources
         from loom.rest.fastapi.app import create_fastapi_app
         from loom.rest.model import RestInterface, RestRoute
 
@@ -63,12 +64,13 @@ class TestCreateFastapiAppWiresMetrics:
 
         executor = result.container.resolve(RuntimeExecutor)
         assert executor._metrics is adapter
-        app = create_fastapi_app(result, interfaces=[_Iface])
+        app = create_fastapi_app(result, RouteSources(python=[_Iface]))
         assert app is not None
 
     def test_reuses_registered_executor_when_present(self) -> None:
         pytest.importorskip("fastapi")
 
+        from loom.rest.compiler import RouteSources
         from loom.rest.fastapi.app import create_fastapi_app
         from loom.rest.model import RestInterface, RestRoute
 
@@ -79,6 +81,6 @@ class TestCreateFastapiAppWiresMetrics:
             prefix = "/test"
             routes = (RestRoute(use_case=_SimpleUseCase, method="GET", path="/"),)
 
-        app = create_fastapi_app(result, interfaces=[_Iface])
+        app = create_fastapi_app(result, RouteSources(python=[_Iface]))
         assert app is not None
         assert result.container.resolve(RuntimeExecutor) is shared_executor

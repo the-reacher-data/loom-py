@@ -265,3 +265,64 @@ class TestFastAPIKwargs:
         )
         schema = client.get("/openapi.json").json()
         assert schema["info"]["title"] == "My Test API"
+
+
+# ---------------------------------------------------------------------------
+# config_interfaces and disable_routes forwarding (H7)
+# ---------------------------------------------------------------------------
+
+
+class ConfigStyleTagInterface(RestInterface[Tag]):
+    """Stands in for an interface built by ``build_interfaces_from_config``.
+
+    The harness treats a config-declared interface no differently from a
+    Python one at this point in the pipeline — both are plain
+    ``RestInterface`` subclasses — so this fixture exercises the same code
+    path without needing a real YAML file.
+    """
+
+    prefix = "/tags"
+    routes = (RestRoute(use_case=GetTagUseCase, method="GET", path="/{tag_id}"),)
+
+
+class TestConfigInterfacesForwarding:
+    def test_a_config_declared_interface_is_reachable(self) -> None:
+        repo: InMemoryRepository[Tag] = InMemoryRepository(Tag)
+        repo.seed(Tag(id=1, label="python"))
+
+        harness = HttpTestHarness()
+        harness.inject_repo(Tag, repo)
+        client = harness.build_app(interfaces=[], config_interfaces=[ConfigStyleTagInterface])
+
+        resp = client.get("/tags/1")
+        assert resp.status_code == 200
+        assert resp.json()["label"] == "python"
+
+    def test_python_and_config_interfaces_coexist(self) -> None:
+        product_repo: InMemoryRepository[Product] = InMemoryRepository(Product)
+        product_repo.seed(Product(id=1, name="Widget"))
+        tag_repo: InMemoryRepository[Tag] = InMemoryRepository(Tag)
+        tag_repo.seed(Tag(id=1, label="python"))
+
+        harness = HttpTestHarness()
+        harness.inject_repo(Product, product_repo)
+        harness.inject_repo(Tag, tag_repo)
+        client = harness.build_app(
+            interfaces=[ProductInterface], config_interfaces=[ConfigStyleTagInterface]
+        )
+
+        assert client.get("/products/1").json()["name"] == "Widget"
+        assert client.get("/tags/1").json()["label"] == "python"
+
+
+class TestDisableRoutesForwarding:
+    def test_a_disabled_route_answers_404(self) -> None:
+        harness = HttpTestHarness()
+        harness.inject_repo(Product, InMemoryRepository(Product))
+        client = harness.build_app(
+            interfaces=[ProductInterface],
+            disable_routes=[("GET", "/products/{product_id}")],
+        )
+
+        assert client.get("/products/1").status_code == 404
+        assert client.post("/products/", json={"name": "still-here"}).status_code == 201

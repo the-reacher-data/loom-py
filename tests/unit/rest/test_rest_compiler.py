@@ -8,7 +8,7 @@ import pytest
 
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.use_case.use_case import UseCase
-from loom.rest.compiler import InterfaceCompilationError, RestInterfaceCompiler
+from loom.rest.compiler import InterfaceCompilationError, RestInterfaceCompiler, RouteSources
 from loom.rest.model import PaginationMode, RestApiDefaults, RestInterface, RestRoute
 
 
@@ -394,3 +394,190 @@ class TestReadOnly:
     ) -> None:
         plan = use_case_compiler.compile(GetUserUseCase)
         assert plan.read_only is False
+
+
+class TestCompileSources:
+    """``compile_sources`` — Python-then-config merge, collision, disablement."""
+
+    def test_python_interfaces_compile_before_config_ones(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        class ConfigIFace(RestInterface[str]):
+            prefix = "/customers"
+            routes = (RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),)
+
+        result = rest_compiler.compile_sources(RouteSources(python=[PyIFace], config=[ConfigIFace]))
+        assert [r.full_path for r in result] == ["/users/", "/customers/{user_id}"]
+
+    def test_collision_between_origins_names_both(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        class ConfigIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(RouteSources(python=[PyIFace], config=[ConfigIFace]))
+        message = str(excinfo.value)
+        assert "Python interface" in message
+        assert "app.rest.interfaces entry" in message
+        assert "PyIFace" in message
+        assert "ConfigIFace" in message
+
+    def test_collision_between_two_python_interfaces_also_aborts(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """Shared collision tracking also catches two same-origin interfaces.
+
+        Not asked for directly, but a byproduct of tracking every route in
+        one dict regardless of origin: two Python interfaces mounting the
+        same (method, path) used to shadow silently at the FastAPI layer.
+        """
+
+        class FirstIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        class SecondIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
+
+        with pytest.raises(InterfaceCompilationError, match="declared twice"):
+            rest_compiler.compile_sources(RouteSources(python=[FirstIFace, SecondIFace]))
+
+    def test_disable_routes_removes_the_named_route(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (
+                RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),
+                RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),
+            )
+
+        result = rest_compiler.compile_sources(
+            RouteSources(python=[PyIFace], disabled=[("GET", "/users/{user_id}")])
+        )
+        assert [r.full_path for r in result] == ["/users/"]
+
+    def test_disable_routes_matching_nothing_raises(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        with pytest.raises(
+            InterfaceCompilationError, match="matches no route declared by a Python interface"
+        ):
+            rest_compiler.compile_sources(
+                RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
+            )
+
+    def test_disabling_a_python_route_lets_config_redeclare_it(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """H1: disable the Python route, redeclare the same path in config — no collision."""
+
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="GET", path="/{user_id}"),)
+
+        class ConfigIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (
+                RestRoute(
+                    use_case=GetUserUseCase, method="GET", path="/{user_id}", status_code=299
+                ),
+            )
+
+        result = rest_compiler.compile_sources(
+            RouteSources(
+                python=[PyIFace], config=[ConfigIFace], disabled=[("GET", "/users/{user_id}")]
+            )
+        )
+
+        assert len(result) == 1
+        assert result[0].interface_name.endswith("ConfigIFace")
+        assert result[0].route.status_code == 299
+
+    def test_disabling_a_config_route_is_refused(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """disable_routes only targets Python-declared routes, never config ones."""
+
+        class ConfigIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),)
+
+        with pytest.raises(
+            InterfaceCompilationError, match="matches no route declared by a Python interface"
+        ):
+            rest_compiler.compile_sources(
+                RouteSources(config=[ConfigIFace], disabled=[("GET", "/users/{user_id}")])
+            )
+
+    def test_same_origin_collision_advice_has_no_python_disable_instruction(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """H2: two Python interfaces colliding get generic advice, not disable-and-redeclare."""
+
+        class FirstIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        class SecondIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(RouteSources(python=[FirstIFace, SecondIFace]))
+        message = str(excinfo.value)
+        assert "disable the Python route" not in message
+        assert "remove the duplicate declaration" in message
+
+    def test_config_vs_config_collision_advice_has_no_python_disable_instruction(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """H2: two config interfaces collide — generic advice, no Python route here."""
+
+        class FirstConfigIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        class SecondConfigIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(
+                RouteSources(config=[FirstConfigIFace, SecondConfigIFace])
+            )
+        message = str(excinfo.value)
+        assert "disable the Python route" not in message
+        assert "remove the duplicate declaration" in message
+
+    def test_python_vs_config_collision_keeps_the_disable_and_redeclare_advice(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """H2: the mixed-origin case keeps the specific advice — a Python route exists."""
+
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        class ConfigIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(RouteSources(python=[PyIFace], config=[ConfigIFace]))
+        assert "disable the Python route" in str(excinfo.value)

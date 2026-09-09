@@ -26,6 +26,7 @@ from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registra
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.rest.autocrud import build_auto_routes
+from loom.rest.compiler import RouteSources
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.model import RestInterface, RestRoute
 from tests.integration.support.logical_repo_fixtures import (
@@ -128,7 +129,7 @@ def _build_app(db_path: Path) -> FastAPI:
 
     return create_fastapi_app(
         result,
-        interfaces=(AutoProductInterface,),
+        RouteSources(python=(AutoProductInterface,)),
         lifespan=lifespan,
     )
 
@@ -167,7 +168,7 @@ def _build_logical_app(db_path: Path) -> FastAPI:
 
     return create_fastapi_app(
         result,
-        interfaces=(TaskViewInterface,),
+        RouteSources(python=(TaskViewInterface,)),
         lifespan=lifespan,
     )
 

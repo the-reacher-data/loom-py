@@ -78,8 +78,9 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
         app_cfg: Any,
         ctx: Any,
         metrics: Any | None = None,
-    ) -> tuple[Any, Any, Any]:
-        del app_cfg, ctx, metrics
+        config_interfaces: Any = (),
+    ) -> tuple[Any, Any, Any, Any]:
+        del app_cfg, ctx, metrics, config_interfaces
         result = SimpleNamespace(
             # create_app now verifies every compiled plan's Agent() markers
             # (spec 014, T202) before it registers the agent resolver, so the
@@ -98,13 +99,14 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
             yield
 
         wiring = SimpleNamespace(lifespan_init=_lifespan, readiness=None)
+        python_interfaces = (type("DummyRestInterface", (), {}),)
         discovered = SimpleNamespace(
             use_cases=(object(),),
-            interfaces=(type("DummyRestInterface", (), {}),),
+            interfaces=python_interfaces,
             models=(object(),),
             agent_specs=(),
         )
-        return result, wiring, discovered
+        return result, wiring, discovered, python_interfaces
 
     def _fake_configure_job_service(
         raw_cfg: Any, result: Any, observability_runtime: ObservabilityRuntime | None
@@ -113,12 +115,12 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
 
     def _fake_create_fastapi_app(
         result: Any,
-        interfaces: Any,
+        routes: Any,
         *,
         observability_runtime: ObservabilityRuntime | None = None,
         **kwargs: Any,
     ) -> FastAPI:
-        del result, interfaces, kwargs
+        del result, routes, kwargs
         captured["runtime"] = observability_runtime
         return FastAPI()
 

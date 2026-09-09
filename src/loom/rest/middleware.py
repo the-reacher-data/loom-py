@@ -57,7 +57,7 @@ class TraceIdMiddleware:
 
         from loom.rest.middleware import TraceIdMiddleware
 
-        app = create_fastapi_app(result, interfaces=[...])
+        app = create_fastapi_app(result, RouteSources(python=[...]))
         app.add_middleware(TraceIdMiddleware)
 
     Example — plain ASGI composition::

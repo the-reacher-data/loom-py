@@ -27,6 +27,7 @@ from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.use_case.use_case import UseCase
+from loom.rest.compiler import RouteSources
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.model import RestInterface
 from loom.testing.golden import _ErrorProxy
@@ -148,12 +149,16 @@ class HttpTestHarness:
     def build_app(
         self,
         interfaces: Sequence[type[RestInterface[Any]]],
+        *,
+        config_interfaces: Sequence[type[RestInterface[Any]]] = (),
+        disable_routes: Sequence[tuple[str, str]] = (),
         **fastapi_kwargs: Any,
     ) -> TestClient:
         """Build a ``TestClient`` from REST interface declarations.
 
-        Extracts use cases from the interface route declarations, bootstraps
-        the application with the injected fake repositories, and returns a
+        Extracts use cases from every interface's route declarations
+        (Python-declared and config-declared alike), bootstraps the
+        application with the injected fake repositories, and returns a
         :class:`~fastapi.testclient.TestClient` ready for HTTP assertions.
 
         The client is configured with ``raise_server_exceptions=False`` so
@@ -161,9 +166,15 @@ class HttpTestHarness:
         of being re-raised in the test.
 
         Args:
-            interfaces: ``RestInterface`` subclasses whose routes should be
-                exposed.  Use cases are derived automatically from their
-                ``routes`` declarations.
+            interfaces: Python-declared ``RestInterface`` subclasses whose
+                routes should be exposed.
+            config_interfaces: ``RestInterface`` subclasses built from
+                ``app.rest.interfaces`` (see
+                :func:`~loom.rest.config.build_interfaces_from_config`),
+                exercised the same way a Python-declared interface is.
+            disable_routes: ``(method, full_path)`` pairs to drop from the
+                routes declared by *interfaces* — forwarded to
+                :func:`~loom.rest.fastapi.app.create_fastapi_app` unchanged.
             **fastapi_kwargs: Forwarded to the ``FastAPI`` constructor
                 (e.g. ``title``, ``version``).
 
@@ -176,13 +187,18 @@ class HttpTestHarness:
             resp = client.post("/products/", json={"name": "Widget"})
             assert resp.status_code == 201
         """
+        all_interfaces = (*interfaces, *config_interfaces)
         use_cases: list[type[UseCase[Any, Any]]] = list(
-            dict.fromkeys(route.use_case for iface in interfaces for route in iface.routes)
+            dict.fromkeys(route.use_case for iface in all_interfaces for route in iface.routes)
         )
         result = bootstrap_app(
             config=_NullConfig(),
             use_cases=use_cases,
             modules=[self._build_module()],
         )
-        app = create_fastapi_app(result, interfaces=interfaces, **fastapi_kwargs)
+        app = create_fastapi_app(
+            result,
+            RouteSources(python=interfaces, config=config_interfaces, disabled=disable_routes),
+            **fastapi_kwargs,
+        )
         return TestClient(app, raise_server_exceptions=False)

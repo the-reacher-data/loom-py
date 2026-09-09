@@ -18,7 +18,7 @@ Usage::
     )
     app = create_fastapi_app(
         result,
-        interfaces=[OrderRestInterface],
+        RouteSources(python=[OrderRestInterface]),
         observability_runtime=ObservabilityRuntime.noop(),
         title="Orders API",
         version="1.0.0",
@@ -35,10 +35,10 @@ from fastapi import FastAPI
 from loom.core.bootstrap.bootstrap import BootstrapResult
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.rest.compiler import RestInterfaceCompiler
+from loom.rest.compiler import RestInterfaceCompiler, RouteSources
 from loom.rest.fastapi._errors import register_error_handlers
 from loom.rest.fastapi.router_runtime import bind_interfaces
-from loom.rest.model import RestApiDefaults, RestInterface
+from loom.rest.model import RestApiDefaults
 
 # Type alias for ASGI middleware classes accepted by FastAPI.add_middleware.
 _MiddlewareClass = Any
@@ -56,7 +56,7 @@ def _resolve_executor(result: BootstrapResult) -> RuntimeExecutor:
 
 def create_fastapi_app(
     result: BootstrapResult,
-    interfaces: Sequence[type[RestInterface[Any]]],
+    routes: RouteSources,
     *,
     observability_runtime: ObservabilityRuntime | None = None,
     middleware: Sequence[_MiddlewareClass] = (),
@@ -77,8 +77,15 @@ def create_fastapi_app(
     Args:
         result: Fully initialised :class:`~loom.core.bootstrap.bootstrap.BootstrapResult`
             from :func:`~loom.core.bootstrap.bootstrap.bootstrap_app`.
-        interfaces: ``RestInterface`` subclasses declaring which endpoints to
-            expose.  Compiled in declaration order.
+        routes: Which interfaces to mount and from which origin — see
+            :class:`~loom.rest.compiler.RouteSources`. ``routes.config``
+            compiles after ``routes.python``, deterministically; a
+            ``(method, path)`` collision between the two aborts naming both
+            — neither side takes precedence. ``routes.disabled`` is applied
+            to ``routes.python`` before the merge, so a disabled Python
+            route can be redeclared in ``routes.config`` without colliding
+            with itself; an entry matching no Python-declared route aborts
+            startup instead of doing nothing.
         observability_runtime: Shared runtime used to emit lifecycle events
             around each request.
         middleware: ASGI middleware classes to register on the application.
@@ -91,7 +98,7 @@ def create_fastapi_app(
 
                 app = create_fastapi_app(
                     result,
-                    interfaces=[...],
+                    RouteSources(python=[...]),
                     observability_runtime=ObservabilityRuntime.noop(),
                     middleware=[TraceIdMiddleware, PrometheusMiddleware],
                 )
@@ -112,7 +119,7 @@ def create_fastapi_app(
 
         app = create_fastapi_app(
             result,
-            interfaces=[UserRestInterface, OrderRestInterface],
+            RouteSources(python=[UserRestInterface, OrderRestInterface]),
             defaults=RestApiDefaults(pagination_mode=PaginationMode.CURSOR),
             observability_runtime=ObservabilityRuntime.noop(),
             title="My API",
@@ -132,9 +139,7 @@ def create_fastapi_app(
     )
     executor = _resolve_executor(result)
 
-    all_routes = []
-    for iface in interfaces:
-        all_routes.extend(interface_compiler.compile(iface))
+    all_routes = interface_compiler.compile_sources(routes)
 
     component_registry = bind_interfaces(
         app,

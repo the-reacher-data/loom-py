@@ -28,7 +28,12 @@ from loom.core.repository.abc.query import FilterOp, PaginationMode, QuerySpec
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.markers import Exists, Input
 from loom.core.use_case.use_case import UseCase
-from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
+from loom.rest.compiler import (
+    CompiledRoute,
+    InterfaceCompilationError,
+    RestInterfaceCompiler,
+    RouteSources,
+)
 from loom.rest.fastapi.app import _register_openapi_components, create_fastapi_app
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface, RestRoute
@@ -642,7 +647,7 @@ def test_create_fastapi_app_returns_fastapi_instance() -> None:
     result = _bootstrap(PingUseCase)
     app = create_fastapi_app(
         result,
-        interfaces=[IFace],
+        routes=RouteSources(python=[IFace]),
         observability_runtime=ObservabilityRuntime.noop(),
     )
     assert isinstance(app, FastAPI)
@@ -658,7 +663,7 @@ def test_create_fastapi_app_emits_use_case_span() -> None:
     result = _bootstrap(PingUseCase)
     app = create_fastapi_app(
         result,
-        interfaces=[IFace],
+        routes=RouteSources(python=[IFace]),
         observability_runtime=runtime,
     )
     client = TestClient(app)
@@ -711,7 +716,7 @@ def test_use_case_span_nests_under_the_request_span_of_a_host_sdk() -> None:
     result = _bootstrap(PingUseCase)
     app = create_fastapi_app(
         result,
-        interfaces=[IFace],
+        routes=RouteSources(python=[IFace]),
         observability_runtime=ObservabilityRuntime(
             [], tracer=loom_provider.get_tracer("loom.rest")
         ),
@@ -743,7 +748,7 @@ def test_create_fastapi_app_routes_work() -> None:
     result = _bootstrap(PingUseCase)
     app = create_fastapi_app(
         result,
-        interfaces=[IFace],
+        routes=RouteSources(python=[IFace]),
         observability_runtime=ObservabilityRuntime.noop(),
     )
     client = TestClient(app)
@@ -758,7 +763,7 @@ def test_create_fastapi_app_accepts_fastapi_kwargs() -> None:
     result = _bootstrap(PingUseCase)
     app = create_fastapi_app(
         result,
-        interfaces=[IFace],
+        routes=RouteSources(python=[IFace]),
         observability_runtime=ObservabilityRuntime.noop(),
         title="My API",
         version="2.0.0",
@@ -779,7 +784,7 @@ def test_create_fastapi_app_multiple_interfaces() -> None:
     result = _bootstrap(PingUseCase, ItemUseCase)
     app = create_fastapi_app(
         result,
-        interfaces=[PingIFace, ItemIFace],
+        routes=RouteSources(python=[PingIFace, ItemIFace]),
         observability_runtime=ObservabilityRuntime.noop(),
     )
     client = TestClient(app)
@@ -798,7 +803,7 @@ def test_create_fastapi_app_uncompiled_use_case_raises() -> None:
     with pytest.raises(InterfaceCompilationError, match="not been compiled"):
         create_fastapi_app(
             result,
-            interfaces=[IFace],
+            routes=RouteSources(python=[IFace]),
             observability_runtime=observability_runtime,
         )
 
@@ -814,7 +819,7 @@ def test_create_fastapi_app_accepts_defaults() -> None:
     defaults = RestApiDefaults(pagination_mode=PaginationMode.CURSOR)
     app = create_fastapi_app(
         result,
-        interfaces=[IFace],
+        routes=RouteSources(python=[IFace]),
         observability_runtime=ObservabilityRuntime.noop(),
         defaults=defaults,
     )
@@ -847,7 +852,7 @@ def test_create_fastapi_app_exists_marker_uses_registered_repository() -> None:
     )
     app = create_fastapi_app(
         result,
-        interfaces=[_UsersIFace],
+        routes=RouteSources(python=[_UsersIFace]),
         observability_runtime=ObservabilityRuntime.noop(),
     )
     client = TestClient(app)
