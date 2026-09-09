@@ -43,6 +43,8 @@ from tests.integration.ai.conftest import (
     make_mcp_capability,
     make_mcp_servers,
     make_plan,
+    make_sql_capability,
+    make_sql_config,
     mcp_client_factory,
 )
 
@@ -684,6 +686,55 @@ class TestGrantsPublicados:
 
         async with runtime:
             assert handle.grants() == (_RUNBOOKS_SERVER,)
+
+    async def test_grants_agrupa_los_servidores_antes_que_las_conexiones(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """El orden es agrupado, no intercalado, aunque el artefacto los alterne.
+
+        El artefacto declara mcp, sql, mcp: si el listado siguiera el orden de
+        declaración saldrian intercalados. Salen agrupados, que es lo que el
+        contrato publico promete y lo que hace que un servidor y una conexion
+        con el mismo nombre sigan distinguiendose por posicion.
+        """
+        second = "playbooks"
+        provider = CountingEngineProvider(engines={_AGENT_NAME: _OneShotEngine()})  # type: ignore[dict-item]
+        sessions = {
+            name: StubMcpClient(
+                label=name,
+                session=RecordingMcpSession(label=name, tools=("search",)),
+                log=[],
+            )
+            for name in (_RUNBOOKS_SERVER, second)
+        }
+        runtime = AgentRuntime(
+            plans=[
+                make_plan(
+                    _AGENT_NAME,
+                    capabilities=(
+                        make_mcp_capability(_RUNBOOKS_SERVER),
+                        make_sql_capability("analytics"),
+                        make_mcp_capability(second),
+                    ),
+                )
+            ],
+            config=make_ai_config(mcp_servers=make_mcp_servers(_RUNBOOKS_SERVER, second)),
+            sql_config=make_sql_config("analytics"),
+            engine_provider=provider,  # type: ignore[arg-type]
+            deps=deps,
+            container=container,
+            mcp_client_factory=mcp_client_factory(sessions),  # type: ignore[arg-type]
+        )
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            assert handle.grants() == (_RUNBOOKS_SERVER, second, "analytics")
 
 
 class TestElResolverDeMarcadores:

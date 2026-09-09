@@ -14,9 +14,9 @@ never a second filter:
   second filter.
 * :class:`SqlGrantView` runs under the grant's own row and byte bounds, with
   roles resolved from the verified caller through
-  :func:`~loom.core.sql.roles.resolve_query_roles` — the same call the
-  model's own ``sql`` capability and :class:`~loom.core.sql.caller_bound.CallerBoundSql`
-  make, with ``roles_bound=True`` and no caller-supplied role.
+  :func:`~loom.ai._roles.bound_query_roles` — the one place that binding
+  lives, called by the model's own ``sql`` capability too, with no
+  caller-supplied role.
 
 Both bound one call by the plan's own ``tool_timeout_ms``, inside a span —
 the neutral counterpart of
@@ -77,8 +77,7 @@ class McpGrant:
 class AgentGrants:
     """Every ``mcp``/``sql`` grant one agent was compiled with, resolved once.
 
-    Built once per plan at start-up by
-    :meth:`~loom.ai.runtime.AgentRuntime.grants`, so a marker-driven run
+    Built once per plan when the runtime is entered, so a marker-driven run
     never repeats the linear scan over ``plan.capabilities`` that finding
     one grant, or one policy, would otherwise cost on every call.
 
@@ -106,9 +105,12 @@ class AgentGrants:
     def names(self) -> tuple[str, ...]:
         """Every ``mcp`` server and ``sql`` connection this agent declares.
 
-        Declaration order across both kinds — the shape
-        :meth:`~loom.ai.abc.AgentHandle.grants` returns — computed rather
-        than stored, so the two underlying lists cannot drift apart from it.
+        Every ``mcp`` server first, then every ``sql`` connection, each group
+        in declaration order. Grouped rather than interleaved so a server and a
+        connection sharing a name stay distinguishable by position, which a
+        single interleaved list cannot promise. This is the shape
+        :meth:`~loom.ai.abc.AgentHandle.grants` returns, computed rather than
+        stored, so the two underlying lists cannot drift apart from it.
         """
         return (*self.mcp_names, *self.sql)
 

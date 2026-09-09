@@ -453,7 +453,8 @@ class AgentHandle(Protocol[AnswerT]):
 
         Returns:
             Every ``mcp`` server name and ``sql`` connection name the
-            artefact declares, in declaration order.
+            artefact declares: every server first, then every connection,
+            each group in declaration order.
         """
         ...
 

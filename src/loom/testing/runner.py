@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import msgspec
 
-from loom.ai.abc import AgentAnswer, AgentUsage
+from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, McpHandle, SqlGrantHandle
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.plan import ExecutionPlan
@@ -244,6 +244,7 @@ class AgentHandleDouble:
         self._run_text_answers: list[AgentAnswer[str]] = []
         self._mcp: dict[str, McpHandleDouble] = {}
         self._sql: dict[str, SqlGrantHandleDouble] = {}
+        self._declared: tuple[str, ...] | None = None
         self.run_calls: list[RecordedRun] = []
         self.run_text_calls: list[RecordedRunText] = []
 
@@ -340,9 +341,45 @@ class AgentHandleDouble:
         """
         return self._sql.setdefault(connection, SqlGrantHandleDouble(connection))
 
+    def with_grants(self, *names: str) -> AgentHandleDouble:
+        """Declare the grant names this double reports, and refuse the rest.
+
+        Without it the double reports what has been reached, which is not what
+        the real handle promises: there, the listing names what the artefact
+        declares, whether or not anything used it. A test that asserts a grant
+        is available would pass against the double and prove nothing about
+        production, so declaring the set here makes the two agree.
+
+        Args:
+            names: Every server and connection this agent declares.
+
+        Returns:
+            This double, for chaining.
+        """
+        self._declared = names
+        return self
+
     def grants(self) -> tuple[str, ...]:
-        """Return every grant name reached so far through :meth:`mcp` and :meth:`sql`."""
+        """Return the declared grant names, matching what the real handle reports.
+
+        Falls back to what has been reached when nothing was declared, so a
+        test that does not care keeps working.
+        """
+        if self._declared is not None:
+            return self._declared
         return (*self._mcp, *self._sql)
+
+
+if TYPE_CHECKING:  # the doubles stand in for the published protocols
+
+    def _mcp_contract(double: McpHandleDouble) -> McpHandle:
+        return double
+
+    def _sql_contract(double: SqlGrantHandleDouble) -> SqlGrantHandle:
+        return double
+
+    def _agent_contract(double: AgentHandleDouble) -> AgentHandle[Any]:
+        return double
 
 
 class UseCaseTest(Generic[ResultT]):
