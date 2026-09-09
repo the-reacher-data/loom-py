@@ -127,9 +127,7 @@ class AppInvoker:
             bound = invoker.for_identity(caller)
             await bound.invoke(ReadInvoice, params={"id": 7})
         """
-        # ``replace`` over an explicit constructor: it cannot fall out of step when a
-        # field is added, and the copy is 0.3 us slower. Sonar's narrowing suggestion
-        # here is a false positive, and mypy rejects the cast it asks for.
+        # ``replace`` copies fields added later; the cast Sonar asks for fails mypy.
         return replace(self, identity=identity)
 
     async def invoke(
