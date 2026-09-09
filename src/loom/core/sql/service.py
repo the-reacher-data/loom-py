@@ -29,15 +29,23 @@ class SqlQueryService:
     before the executor is ever touched. A rejected role never reaches the
     backend.
 
+    This is the **unbound** path: the roles are an argument, so the code
+    writing the call chooses them, bounded only by the connection allowlist.
+    That is correct for system work with no caller — a scheduled job, a
+    migration, a health probe. Work done on behalf of a caller uses
+    :class:`~loom.core.sql.caller_bound.CallerBoundSql`, which derives the
+    roles from the verified identity and accepts no ``roles`` argument.
+
     Args:
         executors: Backend executor per connection name.
         config: Parsed ``sql:`` section with the named connections.
 
-    Example::
+    Example — system work with no caller, running as the connection's own
+    ``default_role``::
 
         service = SqlQueryService(executors=executors, config=sql_config)
         result = await service.execute(
-            "SELECT * FROM sales", connection="analytics", roles=["role_viz_reader"]
+            "SELECT count() FROM sales", connection="analytics"
         )
     """
 
@@ -68,6 +76,9 @@ class SqlQueryService:
             roles: Caller roles, each validated against the connection
                 allowlist; the query runs with the union of their privileges.
                 Empty or ``None`` falls back to the connection ``default_role``.
+                They are not checked against any caller: when the query is run
+                on behalf of one, use
+                :class:`~loom.core.sql.caller_bound.CallerBoundSql`.
             connection: Name of the configured connection to use.
             parameters: Values bound server-side by the backend.
             limit: Requested row limit; clamped to the connection ``max_limit``

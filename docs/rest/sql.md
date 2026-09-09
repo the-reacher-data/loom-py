@@ -108,41 +108,67 @@ serve different purposes (interactive queries vs. pipelines). Share the DSN thro
 single environment variable if both point at the same cluster.
 ```
 
-### Use the service from a use case
+### Query from a use case, as the caller
 
-`SqlQueryService` is always registered in the container (APPLICATION scope) and is
+Two collaborators are always registered in the container (APPLICATION scope) and are
 injected by constructor, like any other service:
 
+| Collaborator | Roles come from | Use it for |
+|--------------|-----------------|------------|
+| `CallerBoundSql` | The verified identity ∩ `allowed_roles` | Anything done **on behalf of a caller** — the default |
+| `SqlQueryService` | A `roles` argument written by the calling code | System work with **no caller**: a scheduled job, a migration, a health probe |
+
+`CallerBoundSql` is the default because it is the only one whose privileges are decided
+by the caller's own entitlements. It has no `roles` parameter in any form:
+
 ```python
-from loom.core.sql import SqlQueryService
+from loom.core.identity import Identity
+from loom.core.sql import CallerBoundSql
+from loom.core.use_case.markers import Caller
 from loom.core.use_case.use_case import UseCase
 
 
 class TopProductsUseCase(UseCase[Product, dict]):
-    def __init__(self, sql: SqlQueryService) -> None:
+    def __init__(self, sql: CallerBoundSql) -> None:
         self._sql = sql
 
-    async def execute(self, **kwargs) -> dict:
+    async def execute(self, identity: Identity = Caller()) -> dict:
         result = await self._sql.execute(
             "SELECT product, sum(amount) AS total FROM sales "
             "WHERE day >= {start:Date} GROUP BY product ORDER BY total DESC",
             connection="analytics",
-            roles=["role_viz_reader"],
+            identity=identity,
             parameters={"start": "2026-01-01"},
             limit=100,
         )
         return {"rows": result.rows, "has_more": result.has_more}
 ```
 
+```{warning}
+The identity **must** be declared with `Caller()`. That marker is what makes the
+executor inject the identity the transport verified. Written without it —
+`async def execute(self, identity: Identity)` — it is an ordinary primitive parameter,
+which the compiler binds from the `params` the calling code supplies: the caller then
+picks its own identity, and with it the roles. On the agent path those `params` are
+tool arguments the **model** writes, and `identity` would appear in the tool schema.
+A query bound to a forged identity is not bound at all.
+```
+
+A caller holding no allowlisted role for that connection is refused with
+`RolesNotBoundError` before the backend is touched — never run as `default_role`. So is
+a connection with an empty `allowed_roles`: its only role is the shared one, which is
+derived from nobody. Use `SqlQueryService` for that unbound work.
+
 Parameters are always bound **server-side** (`{name:Type}` placeholders) — never
 interpolated into the SQL string.
 
 ```{note}
-`roles` takes a sequence: a query may carry several roles and runs with the **union**
-of their privileges. Each one is validated against `allowed_roles`; a single rejected
-role refuses the whole call instead of silently narrowing it. Used directly from a use
-case, the service applies no identity binding — that lives at the REST edge, and the
-allowlist remains the barrier.
+`SqlQueryService.roles` takes a sequence: a query may carry several roles and runs with
+the **union** of their privileges. Each one is validated against `allowed_roles`; a
+single rejected role refuses the whole call instead of silently narrowing it. That
+service applies **no identity binding**: the roles are whatever the calling code wrote,
+bounded only by the allowlist. Identity binding is what `CallerBoundSql` and the REST
+edge add on top.
 ```
 
 ---
@@ -348,6 +374,10 @@ claim — would be accepted and could name your ClickHouse roles.
 
 **4. Auditability.** Each request emits a span labelled with the effective `roles` and
 the caller `subject`; denials are logged at WARNING with connection, subject and cause.
+`CallerBoundSql` opens a span of its own for every query it accepts, carrying the same
+`roles`, `subject` and `mechanism` labels. It is a different span from the endpoint's,
+under a narrower scope and its own name, so a use case acting on behalf of a caller is
+auditable on the same terms rather than through the same record.
 
 **Where this comes from.** Measured on ClickHouse 25.3 with a single credential and
 only the `role` parameter changed: the default role returned 497 `ACCESS_DENIED`, while
@@ -374,7 +404,13 @@ against typos and role injection. It cannot distinguish callers: the connection 
 holds every allowlisted role by design. Identity separation exists only because the
 framework applies the intersection above.
 
-**4. `allowed_roles` should list composite roles**, one per exposed profile, not
+**4. The unbound path is still reachable.** `SqlQueryService` remains registered, and
+its `roles` argument is bound to nobody: a use case that injects it queries with any
+allowlisted role, whatever its caller holds. That is the point — system work has no
+caller — but nothing stops it being injected where `CallerBoundSql` belongs. Treat the
+choice as a review item: inside a request or an agent tool, the bound one is the answer.
+
+**5. `allowed_roles` should list composite roles**, one per exposed profile, not
 individual data roles — so the union any caller can reach matches a declared profile.
 
 ```yaml
