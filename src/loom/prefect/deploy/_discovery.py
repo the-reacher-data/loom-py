@@ -104,7 +104,7 @@ def _with_recorded_env(plan: _DeploymentPlan, config_uri: str) -> _DeploymentPla
     """Record the declaration file under ``job_variables.env`` for the worker."""
     user_env = plan.job_variables.get("env") or {}
     env = {**user_env, LOOM_ETL_CONFIG: config_uri}
-    # Sonar asks to narrow ``replace``'s return; mypy rejects the cast as redundant.
+    # ``replace`` copies fields added later; the cast Sonar asks for fails mypy.
     return replace(plan, job_variables={**plan.job_variables, "env": env})
 
 
