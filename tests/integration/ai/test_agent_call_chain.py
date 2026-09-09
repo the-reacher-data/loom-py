@@ -116,6 +116,12 @@ class TestProfundidadPorDefecto:
             with pytest.raises(AgentRunError) as excinfo:
                 await runtime.run(_INNER, "hola", identity=identity)
             assert excinfo.value.code is AgentRunErrorCode.AGENT_CALL_TOO_DEEP
+            # Pins the exact message docs/rest/use-case-dsl.md quotes for
+            # AGENT_CALL_TOO_DEEP; edit one without the other and this is the
+            # gap the next review catches.
+            assert str(excinfo.value) == (
+                "agent call chain outer -> inner exceeds ai.max_agent_depth=1"
+            )
 
         runtime = _runtime(max_agent_depth=1, outer_callback=_nest, deps=deps, container=container)
         async with runtime:
@@ -134,6 +140,9 @@ class TestProfundidadPorDefecto:
                 await runtime.run(_OUTER, "hola", identity=identity)
             assert excinfo.value.code is AgentRunErrorCode.AGENT_CALL_CYCLE
             assert _OUTER in str(excinfo.value)
+            # Pins the exact message docs/rest/use-case-dsl.md quotes for
+            # AGENT_CALL_CYCLE.
+            assert str(excinfo.value) == "agent call cycle detected: outer -> outer"
 
         runtime = _runtime(max_agent_depth=5, outer_callback=_nest, deps=deps, container=container)
         async with runtime:

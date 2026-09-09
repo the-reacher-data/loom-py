@@ -164,6 +164,29 @@ class TestIdentidadAnonima:
 
         assert excinfo.value.code is AgentRunErrorCode.UNAUTHORIZED
 
+    async def test_el_mensaje_es_el_que_muestra_use_case_dsl_md(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for ``UNAUTHORIZED``.
+
+        Edit one without the other and this test is the gap the next review
+        catches.
+        """
+        runtime = await _agent_runtime(deps, container)
+        # The anonymous refusal runs before the runtime is ever asked to run
+        # this name, so a name absent from the runtime's own plans is fine
+        # here — it matches the agent name ``markers.md`` and the example
+        # in ``docs/rest/use-case-dsl.md`` both use.
+        handle = _BoundAgentHandle(
+            name="incident-triage", runtime=runtime, identity=ANONYMOUS, observability=None
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                await handle.run("hola")
+
+        assert str(excinfo.value) == "agent 'incident-triage' requires an authenticated caller"
+
     async def test_un_llamante_anonimo_nunca_llega_al_modelo(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
@@ -397,6 +420,38 @@ class TestRechazoPorHookDeSalida:
         assert excinfo.value.code is AgentRunErrorCode.AGENT_RUN_SHAPE_WITH_HOOK
         assert engine.shaped_calls == []
         assert engine.run_stream_calls == 0
+
+    async def test_el_mensaje_es_el_que_muestra_use_case_dsl_md(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for
+        ``AGENT_RUN_SHAPE_WITH_HOOK``, under the same agent name the page's
+        example uses.
+        """
+        agent_name = "incident-triage"
+        engine = _ShapedEngine()
+        provider = CountingEngineProvider(engines={agent_name: engine})  # type: ignore[dict-item]
+        plan = conversational_plan(agent_name, hook=True)
+        runtime = AgentRuntime(
+            plans=[plan],
+            config=make_ai_config(),
+            engine_provider=provider,  # type: ignore[arg-type]
+            deps=RecordingDepsFactory((RecordTurn,)),  # type: ignore[arg-type]
+            container=container,
+        )
+        handle = _BoundAgentHandle(
+            name=agent_name, runtime=runtime, identity=_AUTHENTICATED, observability=None
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                await handle.run("hola", expect=dict)
+
+        assert str(excinfo.value) == (
+            "agent 'incident-triage' declares an output hook that reads the run's "
+            "output, so this run cannot use a per-run shape; call run(prompt) for "
+            "the artefact's own declared output instead"
+        )
 
     async def test_run_text_se_rechaza_cuando_el_hook_declara_output(
         self, deps: StubDepsFactory, container: LoomContainer

@@ -88,6 +88,31 @@ class TestElFiltroDelPermisoMcp:
         assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
         assert session.calls == []
 
+    async def test_el_mensaje_de_tool_fuera_del_permiso_es_el_que_muestra_use_case_dsl_md(
+        self,
+    ) -> None:
+        """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for ``TOOL_UNKNOWN``.
+
+        Edit one without the other and this test is the gap the next review
+        catches.
+        """
+        capability = make_mcp_capability(server="runbooks", include=("search_incident",))
+        catalogue = (
+            McpToolInfo(name="search_incident", has_output_schema=True),
+            McpToolInfo(name="delete_incident", has_output_schema=True),
+        )
+        session = FakeSession(tools=catalogue)
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        with pytest.raises(AgentRunError) as excinfo:
+            await view.call_untyped("delete_incident", {})
+
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
+        assert str(excinfo.value) == (
+            "mcp server 'runbooks' grants no tool named 'delete_incident'; "
+            "tools this grant admits: search_incident"
+        )
+
     def test_tools_solo_lista_lo_que_el_filtro_admite(self) -> None:
         capability = make_mcp_capability(include=("read_*",))
         catalogue = (
@@ -128,6 +153,22 @@ class TestLlamadaTipada:
 
         assert excinfo.value.code is AgentRunErrorCode.TOOL_UNTYPED
         assert session.calls == []
+
+    async def test_el_mensaje_de_tool_sin_forma_es_el_que_muestra_use_case_dsl_md(self) -> None:
+        """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for ``TOOL_UNTYPED``."""
+        capability = make_mcp_capability(server="runbooks")
+        catalogue = (McpToolInfo(name="legacy_lookup", has_output_schema=False),)
+        session = FakeSession(tools=catalogue)
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        with pytest.raises(AgentRunError) as excinfo:
+            await view.call("legacy_lookup", {}, expect=_Severity)
+
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_UNTYPED
+        assert str(excinfo.value) == (
+            "tool 'legacy_lookup' of mcp server 'runbooks' publishes no output "
+            "schema; call it with call_untyped() instead"
+        )
 
     async def test_sin_contenido_estructurado_se_rechaza_como_no_estructurado(self) -> None:
         capability = make_mcp_capability()

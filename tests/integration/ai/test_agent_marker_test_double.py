@@ -9,6 +9,10 @@ by a real ``RuntimeExecutor``, with the ``Agent()`` marker resolved to an
 :class:`~loom.testing.runner.AgentHandleDouble` instead of a real
 ``AgentRuntime``. Nothing here imports ``loom.ai.runtime``, opens a socket, or
 touches a database — the double is the entire "engine" this test exercises.
+
+This is also the example ``docs/rest/use-case-dsl.md`` (section "Agent marker
+— reaching a named agent") shows verbatim: editing one without the other is a
+gap the next review will catch.
 """
 
 from __future__ import annotations
