@@ -55,6 +55,32 @@ class _CallerMarker:
     __slots__ = ()
 
 
+class _AgentMarker:
+    """Marks a parameter as a named agent handle bound to the verified caller.
+
+    Carries only the agent's name — no configuration and no output type, like
+    ``_InputMarker`` and ``_CallerMarker``.  The output type lives on the
+    parameter's ``AgentHandle[...]`` annotation, not here: this class must
+    never import :mod:`loom.ai`, since that would let a domain-level use-case
+    module pull in the AI pillar at import time. The executor resolves the
+    name against the compiled agents and hands back a handle typed by the
+    annotation the compiler already inspects.
+
+    Example::
+
+        async def execute(
+            self,
+            caller: Identity = Caller(),
+            triage: AgentHandle[SeverityAssessment] = Agent("incident-triage"),
+        ) -> IncidentReport: ...
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
 class _LoadByIdMarker(Generic[EntityT]):
     """Marks a parameter as a prefetched entity loaded by id.
 
@@ -173,6 +199,37 @@ def Caller() -> Any:
             return await self._reports.for_owner(caller.require_subject(), query)
     """
     return _CallerMarker()
+
+
+def Agent(name: str) -> Any:
+    """Factory returning the runtime marker for a named agent handle parameter.
+
+    The executor resolves *name* against the agents compiled for this
+    deployment and injects an ``AgentHandle`` bound to this execution's
+    verified caller — the only way a use case reaches an agent (constructor
+    injection is not offered for this resource). The output type the handle
+    carries is read from the parameter's own ``AgentHandle[...]`` annotation,
+    never from this factory, and is checked at start-up against the named
+    agent's declared output.
+
+    Returned value is intentionally typed as ``Any`` in overloads to avoid
+    ``mypy`` default-argument incompatibility in signatures like:
+    ``triage: AgentHandle[SeverityAssessment] = Agent("incident-triage")``.
+
+    Args:
+        name: Name of a compiled agent, as declared by its artifact.
+
+    Example::
+
+        async def execute(
+            self,
+            caller: Identity = Caller(),
+            triage: AgentHandle[SeverityAssessment] = Agent("incident-triage"),
+        ) -> IncidentReport:
+            assessment = await triage.run("Assess this incident.")
+            ...
+    """
+    return _AgentMarker(name)
 
 
 def LoadById(

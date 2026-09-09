@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from loom.core.use_case.markers import Exists, Input, Load, LoadById, OnMissing, SourceKind
+from loom.core.use_case.markers import Agent, Exists, Input, Load, LoadById, OnMissing, SourceKind
 
 
 class FakeEntity:
@@ -13,6 +13,18 @@ class TestInput:
     def test_has_no_extra_attributes(self) -> None:
         marker = Input()
         assert type(marker).__slots__ == ()
+
+
+class TestAgent:
+    def test_stores_the_agent_name(self) -> None:
+        marker = Agent("incident-triage")
+
+        assert marker.name == "incident-triage"
+
+    def test_has_no_extra_attributes(self) -> None:
+        marker = Agent("incident-triage")
+
+        assert type(marker).__slots__ == ("name",)
 
 
 class TestLoad:

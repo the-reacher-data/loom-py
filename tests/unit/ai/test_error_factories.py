@@ -19,6 +19,8 @@ from loom.ai.errors import (
     INVOKER_MISSING_REASON,
     AgentErrorCode,
     a2a_agent_unreachable,
+    agent_marker_output_mismatch,
+    agent_marker_unknown,
     conversation_input_unsatisfied,
     conversation_invoker_missing,
     conversation_usecase_also_granted,
@@ -196,3 +198,41 @@ def test_mcp_transport_invalid_nombra_el_componente_y_lleva_la_razon() -> None:
     assert issue.field == "transport"
     assert "ai.mcp_servers.search" in issue.message
     assert "transport 'ws' is not supported" in issue.message
+
+
+def test_agent_marker_unknown_apunta_al_parametro_del_use_case() -> None:
+    """The offending field is the parameter, not the use case or the agent."""
+    issue = agent_marker_unknown(
+        "incidents.report", "triage", "incident-triage", ["escalation-bot"]
+    )
+
+    assert issue.code is AgentErrorCode.AGENT_MARKER_UNKNOWN
+    assert issue.component == "incidents.report"
+    assert issue.field == "parameters.triage"
+    assert "incident-triage" in issue.message
+    assert "escalation-bot" in issue.message
+
+
+def test_agent_marker_unknown_declara_ninguno_cuando_no_hay_agentes_compilados() -> None:
+    """An empty deployment still produces a readable message."""
+    issue = agent_marker_unknown("incidents.report", "triage", "incident-triage", [])
+
+    assert "none" in issue.message
+
+
+def test_agent_marker_output_mismatch_lleva_lo_esperado_y_lo_declarado() -> None:
+    """Both the annotation's type and the agent's own declared type appear."""
+    issue = agent_marker_output_mismatch(
+        "incidents.report",
+        "triage",
+        "incident-triage",
+        "SeverityAssessment",
+        "TriageVerdict",
+    )
+
+    assert issue.code is AgentErrorCode.AGENT_MARKER_OUTPUT_MISMATCH
+    assert issue.component == "incidents.report"
+    assert issue.field == "parameters.triage"
+    assert "SeverityAssessment" in issue.message
+    assert "TriageVerdict" in issue.message
+    assert "incident-triage" in issue.message

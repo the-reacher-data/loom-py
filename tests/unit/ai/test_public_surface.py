@@ -45,6 +45,10 @@ _REQUIRED_EXPORTS = frozenset(
         "ToolsetContext",
         "McpSession",
         "DepsFactory",
+        "AgentAnswer",
+        "AgentHandle",
+        "McpHandle",
+        "SqlGrantHandle",
     }
 )
 

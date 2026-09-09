@@ -16,10 +16,10 @@ artifact format they serve is not.  See :mod:`loom.ai` for the distinction.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from decimal import Decimal
-from typing import Any, ClassVar, Final, Literal, Protocol, TypeAlias
+from typing import Any, ClassVar, Final, Generic, Literal, Protocol, TypeAlias, TypeVar, overload
 
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
@@ -29,6 +29,17 @@ from loom.core.model import LoomFrozenStruct
 
 CONVERSATION_ID_MAX_LENGTH: Final[int] = 128
 """Longest ``conversation_id`` a run accepts; the value itself is opaque."""
+
+AnswerT = TypeVar("AnswerT")
+"""Output type of an :class:`AgentHandle`, carried by the annotation on the
+use-case parameter it fills — never by the marker that fills it."""
+
+ExpectedT = TypeVar("ExpectedT")
+"""Per-run output type passed to :meth:`AgentHandle.run` through ``expect``,
+independent of the handle's own :data:`AnswerT`."""
+
+ToolResultT = TypeVar("ToolResultT")
+"""Decoded type of a single :meth:`McpHandle.call`."""
 
 
 class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -123,6 +134,315 @@ class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
     interaction_id: str | None = None
     hook_result: object | None = None
     messages: bytes | None = None
+
+
+class AgentAnswer(LoomFrozenStruct, Generic[AnswerT], frozen=True, kw_only=True):
+    """Outcome of one run reached through an :class:`AgentHandle`.
+
+    Carries this run's answer and this run's own accounting, and nothing
+    else: ``usage`` is scoped to the single call that produced this answer
+    and is never merged with the usage of another call the same handle made,
+    or of the parent run that reached this agent in the first place. A use
+    case that runs the same handle three times gets three independent
+    ``AgentAnswer`` values with three independent ``usage`` fields; summing
+    them, if a caller wants a total, is the caller's own arithmetic.
+
+    Attributes:
+        output: Decoded answer of this run — the artefact's declared output
+            shape by default, or the type passed as ``expect`` when the run
+            overrode it for this call only.
+        usage: Resource accounting of this run only.
+        interaction_id: Identifier the runtime minted for this run.
+    """
+
+    output: AnswerT
+    usage: AgentUsage
+    interaction_id: str | None = None
+
+
+class McpHandle(Protocol):
+    """One artefact's own filtered view of one of its ``mcp`` grants.
+
+    Not a second, independently configured filter: this is the very same
+    composed view — over the same shared session, built by the same
+    include/exclude predicate — that the model's own toolset runs over.
+    There is no wider filter this handle could reach, because no second
+    filter exists to diverge towards. Authentication, timeout, span and
+    expiry are the same guard with the same numbers the model's own calls
+    use, because they come from the same plan.
+    """
+
+    def tools(self) -> tuple[str, ...]:
+        """Return the tool names visible through this grant's own filter.
+
+        Returns:
+            Tool names already narrowed by the artefact's declared
+            include/exclude filter for this server.
+        """
+        ...
+
+    async def call(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        expect: type[ToolResultT],
+    ) -> ToolResultT:
+        """Call *tool* and decode its structured result into *expect*.
+
+        Two methods exist here instead of one method with an optional
+        ``expect`` — this one and :meth:`call_untyped` — because an optional
+        argument would govern two different behaviours from one parameter,
+        which this framework's rules on multi-behaviour flags forbid, and it
+        would turn the unshaped path into an omission instead of a decision.
+        Typed is what this method commits to; the unshaped path is the
+        separately named, deliberate exception.
+
+        Loom does not compare ``expect`` against the tool's published output
+        schema — that comparison is JSON Schema subsumption, whose verdict
+        would only be approximate. Decoding the structured result into
+        ``expect`` is the check, and it is exact: a mismatch names the field
+        and the type that did not fit.
+
+        Args:
+            tool: Tool name, as returned by :meth:`tools`.
+            arguments: Arguments passed to the tool call.
+            expect: Type the tool's structured result is decoded into. The
+                tool must publish an output schema; one that does not is
+                refused before any network call.
+
+        Returns:
+            The decoded result.
+
+        Raises:
+            AgentRunError: With a code naming why the call did not produce a
+                decoded ``expect`` — the tool is outside this grant's filter,
+                the tool publishes no output schema, the tool reported a
+                failure, the server returned no structured content despite
+                publishing a schema, or the structured content did not
+                decode into ``expect``.
+        """
+        ...
+
+    async def call_untyped(self, tool: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Call *tool* and return the server's own result, undecoded.
+
+        The deliberate exception to :meth:`call`'s typed default — for a
+        tool that never publishes an output schema, or for a caller who
+        genuinely wants the server's own shape. ``Mapping[str, Any]`` is
+        admissible here specifically because this signature has nowhere to
+        put a type parameter; it is not a general-purpose escape hatch.
+
+        Args:
+            tool: Tool name, as returned by :meth:`tools`.
+            arguments: Arguments passed to the tool call.
+
+        Returns:
+            The server's own structured result, unvalidated and undecoded.
+
+        Raises:
+            AgentRunError: With a code naming why the call failed — the tool
+                is outside this grant's filter, or the tool reported a
+                failure.
+        """
+        ...
+
+
+class SqlGrantHandle(Protocol):
+    """One artefact's own bounded view of one of its ``sql`` grants.
+
+    Queries the same read-only connection under the same row and byte
+    bounds, and the same plan timeout, that the artefact's own ``sql``
+    capability enforces for the model — the granted view, not a second one a
+    use case could widen.
+    """
+
+    async def query(
+        self,
+        statement: str,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Run a read-only statement bounded by this grant's own limits.
+
+        Args:
+            statement: SQL statement to run against the granted connection.
+            parameters: Server-side bound parameters, when the statement
+                uses them.
+
+        Returns:
+            Result rows, each as a column-name-to-value mapping, truncated
+            to this grant's row and byte bounds.
+
+        Raises:
+            AgentRunError: With a code naming why the query did not run —
+                the connection is outside this artefact's grants, or the
+                grant's own bounds rejected the result.
+        """
+        ...
+
+
+class AgentHandle(Protocol[AnswerT]):
+    """A named agent reached from another use case, bound to this run's caller.
+
+    Filled by the executor when a use case declares one in its ``execute``
+    signature through :func:`loom.core.use_case.markers.Agent`, and never
+    constructed directly. The type argument this Protocol carries —
+    ``AgentHandle[SeverityAssessment]`` on the parameter's annotation — is
+    what the compiler checks against the named agent's own declared output
+    at start-up; :func:`Agent` itself returns an untyped value, for the same
+    reason every other marker in this vocabulary does.
+
+    Exactly three arguments cross this boundary on a per-run basis: the
+    prompt, the shape of the answer, and which conversation it continues.
+    Nothing else does. What the agent may reach, what it may cost and which
+    model serves it are decided once — by the artefact and by deployment
+    configuration — and stay there; a per-run argument that changed any of
+    them would be a second place the same policy could drift.
+    """
+
+    @overload
+    async def run(
+        self,
+        prompt: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> AgentAnswer[AnswerT]: ...
+
+    @overload
+    async def run(
+        self,
+        prompt: str,
+        *,
+        expect: type[ExpectedT],
+        conversation_id: str | None = None,
+    ) -> AgentAnswer[ExpectedT]: ...
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        expect: type[ExpectedT] | None = None,
+        conversation_id: str | None = None,
+    ) -> AgentAnswer[AnswerT] | AgentAnswer[ExpectedT]:
+        """Run the agent once and decode its answer.
+
+        Without ``expect``, the answer is decoded into the artefact's own
+        declared output shape — this handle's type argument. With
+        ``expect``, that declared shape is a default rather than a ceiling:
+        this run only is decoded into ``expect`` instead. The override
+        applies to this call and nothing else; it is never merged with the
+        artefact's declared shape and never carries over to the handle's
+        next call.
+
+        The artefact's own output check — the retry loop that asks the model
+        to correct a violation of its declared schema — does not run when
+        ``expect`` overrides the shape. That is forced, not chosen: the
+        check is compiled against the declared schema, so handing it another
+        shape would either fail inside the engine's own retry loop or invent
+        a verdict loom has no basis for. Validating an overridden shape is
+        the calling code's job instead, and it is better placed there:
+        holding a typed answer, calling code can act on a bad verdict — for
+        example asking again in a loop it controls — rather than only
+        reporting one.
+
+        Permissions never travel through this call. What the agent may
+        reach comes from the artefact's own grants and from the identity
+        already bound to this handle; ``expect`` changes what comes back,
+        never what the agent is allowed to do.
+
+        Args:
+            prompt: Prompt for this run.
+            expect: When given, decode this run's answer into this type
+                instead of the artefact's declared output. Applies to this
+                run only.
+            conversation_id: Identifier of the conversation this run
+                continues; ``None`` runs single-shot.
+
+        Returns:
+            The decoded answer, this run's own usage and its interaction id.
+
+        Raises:
+            AgentRunError: With ``AGENT_RUN_SHAPE_WITH_HOOK`` when ``expect``
+                is given and the artefact's output hook command declares the
+                output field — refused before the model is called, since the
+                hook could not be handed an answer shaped by ``expect``.
+        """
+        ...
+
+    async def run_text(
+        self,
+        prompt: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> AgentAnswer[str]:
+        """Run the agent for open prose, with no output shape at all.
+
+        Distinct from ``run(prompt, expect=str)`` rather than a third
+        overload of it: this mode decodes nothing, so it has no decode
+        failures, runs no output check, and never interacts with the
+        pinned-output-mode refusal, because there is no declared shape for
+        anything to conflict with. The name states the form — open text —
+        not the author's intent, because the form is the only part loom
+        knows.
+
+        Args:
+            prompt: Prompt for this run.
+            conversation_id: Identifier of the conversation this run
+                continues; ``None`` runs single-shot.
+
+        Returns:
+            The model's own prose, this run's usage and its interaction id.
+        """
+        ...
+
+    def mcp(self, server: str) -> McpHandle:
+        """Return the artefact's own filtered view of one ``mcp`` grant.
+
+        Args:
+            server: Server name as the artefact's own ``mcp`` capability
+                declares it. Not verified at start-up — only a compiled
+                agent name and its output type are — so a typo here is
+                caught on first call, not before.
+
+        Returns:
+            The grant's own view, filtered exactly as the model's is.
+
+        Raises:
+            AgentRunError: With ``MCP_GRANT_UNKNOWN`` when the artefact
+                declares no ``mcp`` grant on that server name.
+        """
+        ...
+
+    def sql(self, connection: str) -> SqlGrantHandle:
+        """Return the artefact's own bounded view of one ``sql`` grant.
+
+        Args:
+            connection: Connection name as the artefact's own ``sql``
+                capability declares it. Not verified at start-up, for the
+                same reason :meth:`mcp`'s ``server`` is not.
+
+        Returns:
+            A view bounded by that grant's own row and byte limits, under
+            the plan's timeout.
+
+        Raises:
+            AgentRunError: With ``SQL_GRANT_UNKNOWN`` when the artefact
+                declares no ``sql`` grant on that connection name.
+        """
+        ...
+
+    def grants(self) -> tuple[str, ...]:
+        """Return every grant name reachable through :meth:`mcp` and :meth:`sql`.
+
+        Exists so application code — most usefully a test — can pin a grant
+        name in one assertion instead of reading the artefact's YAML.
+
+        Returns:
+            Every ``mcp`` server name and ``sql`` connection name the
+            artefact declares, in declaration order.
+        """
+        ...
 
 
 class TextDeltaEvent(
