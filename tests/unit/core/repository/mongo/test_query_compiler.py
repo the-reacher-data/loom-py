@@ -58,15 +58,19 @@ class TestFieldMapping:
         }
 
     def test_unknown_field_is_unsupported(self, compiler: MongoQueryCompiler) -> None:
+        group = _single(FilterSpec("author", FilterOp.EQ, "x"))
+
         with pytest.raises(UnsupportedQuery, match="'author'") as info:
-            compiler.compile_filter(_single(FilterSpec("author", FilterOp.EQ, "x")))
+            compiler.compile_filter(group)
 
         assert info.value.backend == "mongo"
         assert info.value.model == "Article"
 
     def test_dotted_path_is_unsupported(self, compiler: MongoQueryCompiler) -> None:
+        group = _single(FilterSpec("category.name", FilterOp.EQ, "x"))
+
         with pytest.raises(UnsupportedQuery, match="'category.name'"):
-            compiler.compile_filter(_single(FilterSpec("category.name", FilterOp.EQ, "x")))
+            compiler.compile_filter(group)
 
 
 class TestOperators:
@@ -127,9 +131,10 @@ class TestOperators:
         self, compiler: MongoQueryCompiler, op: FilterOp
     ) -> None:
         assert compiler.compile_filter(_single(FilterSpec("title", op, "%a" * 8)))
+        group = _single(FilterSpec("title", op, "_a" * 9))
 
         with pytest.raises(UnsupportedQuery, match="wildcards"):
-            compiler.compile_filter(_single(FilterSpec("title", op, "_a" * 9)))
+            compiler.compile_filter(group)
 
     def test_ilike_adds_case_insensitive_option(self, compiler: MongoQueryCompiler) -> None:
         group = _single(FilterSpec("title", FilterOp.ILIKE, "%loom%"))
@@ -150,8 +155,10 @@ class TestOperators:
     def test_relation_operators_are_unsupported(
         self, compiler: MongoQueryCompiler, op: FilterOp
     ) -> None:
+        group = _single(FilterSpec("title", op))
+
         with pytest.raises(UnsupportedQuery, match=f"{op.value}.*mongo|mongo.*{op.value}") as info:
-            compiler.compile_filter(_single(FilterSpec("title", op)))
+            compiler.compile_filter(group)
 
         assert info.value.backend == "mongo"
         assert op.value in info.value.reason
@@ -228,14 +235,18 @@ class TestStorageValues:
 
     @pytest.mark.parametrize("op", [FilterOp.GT, FilterOp.GTE, FilterOp.LT, FilterOp.LTE])
     def test_decimal_range_is_unsupported(self, ledger: MongoQueryCompiler, op: FilterOp) -> None:
+        group = _single(FilterSpec("amount", op, Decimal("1")))
+
         with pytest.raises(UnsupportedQuery, match="'amount'.*Decimal") as info:
-            ledger.compile_filter(_single(FilterSpec("amount", op, Decimal("1"))))
+            ledger.compile_filter(group)
 
         assert info.value.backend == "mongo"
 
     def test_decimal_sort_is_unsupported(self, ledger: MongoQueryCompiler) -> None:
+        sort = (SortSpec("amount"),)
+
         with pytest.raises(UnsupportedQuery, match="'amount'.*Decimal"):
-            ledger.compile_sort((SortSpec("amount"),))
+            ledger.compile_sort(sort)
 
 
 class TestGroups:
@@ -272,8 +283,10 @@ class TestSort:
         assert compiler.compile_sort(()) == []
 
     def test_unknown_sort_field_is_unsupported(self, compiler: MongoQueryCompiler) -> None:
+        sort = (SortSpec("rank"),)
+
         with pytest.raises(UnsupportedQuery, match="'rank'"):
-            compiler.compile_sort((SortSpec("rank"),))
+            compiler.compile_sort(sort)
 
 
 class TestCursorFilter:

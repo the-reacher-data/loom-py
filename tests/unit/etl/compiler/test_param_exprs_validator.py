@@ -189,15 +189,19 @@ def test_property_reference_in_replace_where_passes() -> None:
 
 def test_method_reference_still_raises() -> None:
     pred = col("day") == p.not_a_property
+    sources = (_source_binding(pred),)
+    target = _append_target()
     with pytest.raises(ETLCompilationError) as exc_info:
-        validate_param_exprs(_Step, _PWithProperty, (_source_binding(pred),), _append_target())
+        validate_param_exprs(_Step, _PWithProperty, sources, target)
     assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
     assert exc_info.value.field == "not_a_property"
 
 
 def test_unknown_field_still_raises_with_property_params() -> None:
     pred = col("day") == p.bad_field
+    sources = (_source_binding(pred),)
+    target = _append_target()
     with pytest.raises(ETLCompilationError) as exc_info:
-        validate_param_exprs(_Step, _PWithProperty, (_source_binding(pred),), _append_target())
+        validate_param_exprs(_Step, _PWithProperty, sources, target)
     assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
     assert exc_info.value.field == "bad_field"

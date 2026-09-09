@@ -340,6 +340,7 @@ def _gate_autocrud_capabilities(
             pruned.update(_gate_interface(interface, interface.auto_crud_model, wiring, backend))
     mounted = {route.use_case for iface in discovered.interfaces for route in iface.routes}
     dropped = pruned - mounted
+    # Sonar asks to narrow ``replace``'s return; mypy rejects the cast as redundant.
     return dataclasses.replace(
         discovered,
         use_cases=tuple(uc for uc in discovered.use_cases if uc not in dropped),

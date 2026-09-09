@@ -6,7 +6,7 @@ The entire package is skipped automatically when either is absent.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -57,14 +57,13 @@ def table_path(root: Path, ref: TableRef) -> Path:
 
 
 @pytest.fixture
-def delta_root(tmp_path: Path) -> Generator[Path, None, None]:
+def delta_root(tmp_path: Path) -> Path:
     """Temporary root directory for Delta tables.
 
-    Yielded so any cleanup (beyond what ``tmp_path`` already does) can be
-    injected here in the future.  Currently the directory is removed by
-    pytest's own ``tmp_path`` teardown.
+    No teardown is performed here; the directory is removed by pytest's
+    own ``tmp_path`` teardown.
     """
-    yield tmp_path
+    return tmp_path
 
 
 @pytest.fixture

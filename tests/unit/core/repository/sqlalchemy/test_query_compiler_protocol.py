@@ -38,6 +38,7 @@ def test_sqlalchemy_compiler_satisfies_query_compiler() -> None:
 
 def test_compile_filter_honours_allowed_fields() -> None:
     compiler = _compiler(frozenset({"id"}))
+    group = FilterGroup(filters=(FilterSpec("rank", FilterOp.EQ, 1),))
 
     with pytest.raises(UnsafeFilterError):
-        compiler.compile_filter(FilterGroup(filters=(FilterSpec("rank", FilterOp.EQ, 1),)))
+        compiler.compile_filter(group)

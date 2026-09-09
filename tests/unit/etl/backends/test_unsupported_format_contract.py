@@ -32,6 +32,7 @@ def test_spark_does_not_advertise_a_format_it_cannot_write() -> None:
 def test_polars_refuses_the_same_format_with_the_same_error() -> None:
     writer = PolarsFileWriter()
     spec = FileSpec(path="out.xlsx", format=Format.XLSX)
+    frame = pl.DataFrame({"id": [1]}).lazy()
 
     with pytest.raises(UnsupportedFormatError):
-        writer.write(pl.DataFrame({"id": [1]}).lazy(), spec)
+        writer.write(frame, spec)

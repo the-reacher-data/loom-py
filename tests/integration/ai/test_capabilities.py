@@ -850,9 +850,10 @@ class TestSkillsCapability:
         """The harness reads the real directory: an unknown name cannot be granted."""
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing", "invented"),))
+        container = LoomContainer()
 
         with pytest.raises(ValueError, match="invented"):
-            _capabilities.build_capabilities(plan, LoomContainer())
+            _capabilities.build_capabilities(plan, container)
 
     def test_no_construye_ningun_toolset_cuando_la_capacidad_es_skills(
         self, tmp_path: Path, app_container: LoomContainer
@@ -1530,13 +1531,15 @@ class TestPublishedToolNames:
             CompiledUsecaseCapability(keys=("product:create",), use_cases=(CreateProductUseCase,)),
             CompiledUsecaseCapability(keys=("product.create",), use_cases=(CreateProductUseCase,)),
         )
+        model = ScriptedToolModel()
+        deps = CapabilityDepsFactory()
 
         with pytest.raises(AgentCompilationError):
             build_engine(
                 capabilities=colliding,
-                model=ScriptedToolModel(),
+                model=model,
                 container=app_container,
-                deps=CapabilityDepsFactory(),
+                deps=deps,
             )
 
     async def test_el_nombre_de_la_conexion_se_normaliza_cuando_lleva_un_punto(
@@ -1560,15 +1563,18 @@ class TestPublishedToolNames:
     ) -> None:
         """The name is capped at build, not at the provider."""
         long_key = "product:" + "x" * 70
+        capabilities = (
+            CompiledUsecaseCapability(keys=(long_key,), use_cases=(CreateProductUseCase,)),
+        )
+        model = ScriptedToolModel()
+        deps = CapabilityDepsFactory()
 
         with pytest.raises(AgentCompilationError):
             build_engine(
-                capabilities=(
-                    CompiledUsecaseCapability(keys=(long_key,), use_cases=(CreateProductUseCase,)),
-                ),
-                model=ScriptedToolModel(),
+                capabilities=capabilities,
+                model=model,
                 container=app_container,
-                deps=CapabilityDepsFactory(),
+                deps=deps,
             )
 
 

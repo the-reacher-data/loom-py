@@ -100,5 +100,7 @@ def test_builder_rejects_non_persistible_types() -> None:
     class NotAModel:
         pass
 
+    context = RepositoryBuildContext(model=cast(Any, NotAModel))
+
     with pytest.raises(RuntimeError, match="NotAModel"):
-        builder(RepositoryBuildContext(model=cast(Any, NotAModel)))
+        builder(context)

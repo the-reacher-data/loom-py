@@ -112,7 +112,8 @@ class TestReproducibilidadT039:
             async for event in stream:
                 events.append(event)
 
-        assert isinstance(events[-1], FinalEvent) and events[-1].output == _OUTPUT
+        assert isinstance(events[-1], FinalEvent)
+        assert events[-1].output == _OUTPUT
 
     async def test_run_devuelve_el_output_del_guion_cuando_el_guion_termina_en_final(
         self,

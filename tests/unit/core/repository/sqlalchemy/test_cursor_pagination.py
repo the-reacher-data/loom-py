@@ -86,8 +86,10 @@ class TestRejectedTokens:
     async def test_token_from_another_backend(
         self, repository: RepositorySQLAlchemy[_Row, int]
     ) -> None:
+        query = self._query(encode_cursor("dynamodb", [3], 1))
+
         with pytest.raises(UnsupportedQuery) as excinfo:
-            await repository.list_with_query(self._query(encode_cursor("dynamodb", [3], 1)))
+            await repository.list_with_query(query)
 
         assert excinfo.value.backend == "sqlalchemy"
         assert excinfo.value.model == "_Row"
@@ -96,8 +98,9 @@ class TestRejectedTokens:
         self, repository: RepositorySQLAlchemy[_Row, int]
     ) -> None:
         token = encode_cursor("sqlalchemy", [3, "a"], 1)
+        query = self._query(token)
 
         with pytest.raises(UnsupportedQuery) as excinfo:
-            await repository.list_with_query(self._query(token))
+            await repository.list_with_query(query)
 
         assert "sort" in excinfo.value.reason

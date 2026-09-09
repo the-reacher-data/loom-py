@@ -693,8 +693,9 @@ class TestSigningKeyRef:
         self, monkeypatch: pytest.MonkeyPatch, value: object
     ) -> None:
         _patch_factory(monkeypatch, lambda region: _StaticResolver(value))
+        config = _ref_config()
         with pytest.raises(ConfigError, match="non-empty text"):
-            _ref_config().load_signing_key()
+            config.load_signing_key()
 
     def test_resolver_config_errors_pass_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class _Refusing:
@@ -702,8 +703,9 @@ class TestSigningKeyRef:
                 raise ConfigError("boto3 is required")
 
         _patch_factory(monkeypatch, lambda region: _Refusing())
+        config = _ref_config()
         with pytest.raises(ConfigError, match="boto3 is required"):
-            _ref_config().load_signing_key()
+            config.load_signing_key()
 
     def test_resolver_failure_names_the_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class _Failing:
@@ -711,8 +713,9 @@ class TestSigningKeyRef:
                 raise RuntimeError("store unavailable")
 
         _patch_factory(monkeypatch, lambda region: _Failing())
+        config = _ref_config()
         with pytest.raises(ConfigError, match="'secrets'") as excinfo:
-            _ref_config().load_signing_key()
+            config.load_signing_key()
         assert isinstance(excinfo.value.__cause__, RuntimeError)
 
 

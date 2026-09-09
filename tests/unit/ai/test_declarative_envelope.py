@@ -83,9 +83,10 @@ def test_decode_spec_falla_con_spec_unknown_field_cuando_hay_una_clave_engine() 
     """Deployment vocabulary in a Tier-1 artifact is rejected, never ignored."""
     payload = _valid_payload()
     payload["engine"] = "pydantic-ai"
+    encoded = _encode(payload)
 
     with pytest.raises(AgentCompilationError) as exc:
-        decode_spec(_encode(payload))
+        decode_spec(encoded)
 
     assert _codes(exc.value) == [AgentErrorCode.SPEC_UNKNOWN_FIELD]
 
@@ -94,9 +95,10 @@ def test_decode_spec_falla_con_spec_version_unsupported_cuando_la_version_es_dos
     """An envelope version outside the registry is fatal."""
     payload = _valid_payload()
     payload["spec_version"] = 2
+    encoded = _encode(payload)
 
     with pytest.raises(AgentCompilationError) as exc:
-        decode_spec(_encode(payload))
+        decode_spec(encoded)
 
     assert _codes(exc.value) == [AgentErrorCode.SPEC_VERSION_UNSUPPORTED]
 
@@ -105,9 +107,10 @@ def test_decode_spec_falla_con_spec_version_missing_cuando_falta_la_version() ->
     """An artifact without ``spec_version`` cannot be routed to any struct."""
     payload = _valid_payload()
     del payload["spec_version"]
+    encoded = _encode(payload)
 
     with pytest.raises(AgentCompilationError) as exc:
-        decode_spec(_encode(payload))
+        decode_spec(encoded)
 
     assert _codes(exc.value) == [AgentErrorCode.SPEC_VERSION_MISSING]
 
@@ -116,9 +119,10 @@ def test_decode_spec_falla_con_agent_name_invalid_cuando_el_nombre_no_cumple_el_
     """The agent name pattern is enforced during payload decoding."""
     payload = _valid_payload()
     payload["name"] = "Support Triage!"
+    encoded = _encode(payload)
 
     with pytest.raises(AgentCompilationError) as exc:
-        decode_spec(_encode(payload))
+        decode_spec(encoded)
 
     assert _codes(exc.value) == [AgentErrorCode.AGENT_NAME_INVALID]
 
@@ -199,8 +203,9 @@ def test_decode_spec_apunta_las_incidencias_al_origen_cuando_se_declara_un_fiche
     """The declared origin is also what every issue points at as its component."""
     payload = _valid_payload()
     payload["engine"] = "pydantic-ai"
+    encoded = _encode(payload)
 
     with pytest.raises(AgentCompilationError) as exc:
-        decode_spec(_encode(payload), source=_ARTIFACT_PATH)
+        decode_spec(encoded, source=_ARTIFACT_PATH)
 
     assert [issue.component for issue in exc.value.issues] == [_ARTIFACT_PATH]

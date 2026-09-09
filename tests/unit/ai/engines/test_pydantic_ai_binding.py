@@ -115,8 +115,10 @@ class TestModelBinding:
 
     def test_falla_nombrando_los_proveedores_cuando_el_vendor_es_desconocido(self) -> None:
         """An unknown provider dies at start-up, naming what this release binds."""
+        target = InferenceTarget(provider="unheard-of", model="x")
+
         with pytest.raises(AgentCompilationError) as failure:
-            resolve_model(InferenceTarget(provider="unheard-of", model="x"))
+            resolve_model(target)
 
         issue = failure.value.issues[0]
         assert issue.code is AgentErrorCode.PROVIDER_UNKNOWN
@@ -126,8 +128,10 @@ class TestModelBinding:
 
     def test_falla_pidiendo_la_region_cuando_bedrock_no_la_trae(self) -> None:
         """A Bedrock binding without a region fails before any request."""
+        target = InferenceTarget(provider="bedrock", model="x")
+
         with pytest.raises(AgentCompilationError) as failure:
-            resolve_model(InferenceTarget(provider="bedrock", model="x"))
+            resolve_model(target)
 
         assert failure.value.issues[0].code is AgentErrorCode.PROVIDER_SETTING_MISSING
 

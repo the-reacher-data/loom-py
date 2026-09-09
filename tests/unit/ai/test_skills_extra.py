@@ -20,9 +20,10 @@ def test_names_the_ai_harness_extra_when_the_harness_is_missing(
     """The message names ``ai-harness``, not the missing module."""
     monkeypatch.setitem(sys.modules, "pydantic_ai_harness", None)
     plan = _plan_with_skills(tmp_path)
+    container = LoomContainer()
 
     with pytest.raises(AgentCompilationError) as failure:
-        build_capabilities(plan, LoomContainer())
+        build_capabilities(plan, container)
 
     issue = failure.value.issues[0]
     assert issue.code is AgentErrorCode.PROVIDER_NOT_INSTALLED

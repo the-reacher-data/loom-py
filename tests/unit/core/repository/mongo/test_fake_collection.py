@@ -114,8 +114,10 @@ class TestCursorAndPaging:
 
     async def test_duplicate_sort_key_is_rejected(self, collection: FakeCollection) -> None:
         """pymongo folds the pairs into one document, where the last direction wins."""
+        query = collection.find({})
+
         with pytest.raises(ValueError, match="_id"):
-            collection.find({}).sort([("_id", -1), ("_id", 1)])
+            query.sort([("_id", -1), ("_id", 1)])
 
     async def test_keyset_walk_visits_every_document_once(
         self, collection: FakeCollection, compiler: MongoQueryCompiler
@@ -142,7 +144,8 @@ class TestWrites:
         query = compiler.compile_filter(_single("views", FilterOp.EQ, 20))
 
         found = await collection.find_one(query)
-        assert found is not None and found["_id"] == "b"
+        assert found is not None
+        assert found["_id"] == "b"
         assert await collection.count_documents(query) == 2
         assert await collection.find_one({"_id": "zz"}) is None
 
@@ -156,7 +159,8 @@ class TestWrites:
             {"_id": "zz"}, {"$set": {"views": 21}}, return_document=ReturnDocument.AFTER
         )
 
-        assert after is not None and (after["_id"], after["views"]) == ("b", 21)
+        assert after is not None
+        assert (after["_id"], after["views"]) == ("b", 21)
         assert missing is None
         assert collection.documents["b"]["views"] == 21
         assert collection.documents["c"]["views"] == 20

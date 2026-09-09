@@ -42,6 +42,9 @@ run time.
 OUTPUT_MODES: Final[tuple[OutputMode, ...]] = get_args(OutputMode)
 """Values ``InferenceTarget.output_mode`` accepts, derived from :data:`OutputMode`."""
 
+_REDACTED: Final = "<redacted>"
+"""Placeholder shown in place of a secret-bearing value (FR-018)."""
+
 
 class _RedactedRef(str):
     """Secret reference that redacts itself and refuses msgspec encoding.
@@ -54,7 +57,7 @@ class _RedactedRef(str):
     __slots__ = ()
 
     def __repr__(self) -> str:
-        return "<redacted>"
+        return _REDACTED
 
 
 class _RedactedOptions(Mapping[str, Any]):
@@ -87,7 +90,7 @@ class _RedactedOptions(Mapping[str, Any]):
         return NotImplemented
 
     def __repr__(self) -> str:
-        return "<redacted>"
+        return _REDACTED
 
 
 class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -134,8 +137,8 @@ class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
             structs.force_setattr(self, "options", _RedactedOptions(self.options))
 
     def __repr__(self) -> str:
-        credentials = "<redacted>" if self.credentials_ref is not None else None
-        options = "<redacted>" if self.options else "{}"
+        credentials = _REDACTED if self.credentials_ref is not None else None
+        options = _REDACTED if self.options else "{}"
         return (
             f"InferenceTarget(provider={self.provider!r},"
             f" model={self.model!r},"

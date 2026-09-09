@@ -223,9 +223,11 @@ class TestDefaultInclude:
             auto = True
 
         discover(BulkOnly, models=(BulkOnlyRecord,))
+        app_config = _AppConfig(name="demo")
+        ctx = _ctx(persistence={"backend": "sqlalchemy"})
 
         with pytest.raises(RuntimeError, match="BulkOnly") as exc_info:
-            _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence={"backend": "sqlalchemy"}))
+            _build_bootstrap(app_config, ctx)
 
         message = str(exc_info.value)
         assert "BulkOnlyRecord" in message
@@ -239,9 +241,11 @@ class TestDefaultInclude:
             auto = True
 
         discover(RecordsOnNothing)
+        app_config = _AppConfig(name="demo")
+        ctx = _ctx(persistence={"backend": "none"})
 
         with pytest.raises(RuntimeError, match="RecordsOnNothing") as exc_info:
-            _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence={"backend": "none"}))
+            _build_bootstrap(app_config, ctx)
 
         message = str(exc_info.value)
         assert "CapabilityRecord" in message
@@ -256,9 +260,11 @@ class TestExplicitInclude:
             include = ("get", "list")
 
         discover(RecordListing)
+        app_config = _AppConfig(name="demo")
+        ctx = _ctx(persistence=_DYNAMODB_PERSISTENCE)
 
         with pytest.raises(RuntimeError, match="RecordListing") as exc_info:
-            _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence=_DYNAMODB_PERSISTENCE))
+            _build_bootstrap(app_config, ctx)
 
         message = str(exc_info.value)
         assert "CapabilityRecord" in message

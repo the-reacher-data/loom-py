@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Coroutine, Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from loom.core.async_bridge import AsyncBridge
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
@@ -132,7 +132,7 @@ def _session_manager_factory() -> _SessionManagerFactoryProtocol:
             "IntoTable(backend=SQLALCHEMY) requires SQLAlchemy. "
             "Install loom-kernel[sqlalchemy] to write to SQLAlchemy tables."
         ) from exc
-    return SessionManager
+    return cast(_SessionManagerFactoryProtocol, SessionManager)
 
 
 def _freeze_mapping(mapping: Mapping[str, object]) -> tuple[tuple[str, object], ...]:

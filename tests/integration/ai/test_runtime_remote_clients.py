@@ -174,8 +174,10 @@ class TestArranqueRequerido:
             startup_timeout_ms=50,
         )
 
+        budget = asyncio.timeout(0.5)
+
         with pytest.raises(AgentCompilationError) as failure:
-            async with asyncio.timeout(0.5):
+            async with budget:
                 await runtime.__aenter__()
 
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
@@ -389,8 +391,10 @@ class TestPresupuestoTrasTolerar:
             startup_timeout_ms=50,
         )
 
+        budget = asyncio.timeout(1.0)
+
         with pytest.raises(AgentCompilationError) as failure:
-            async with asyncio.timeout(1.0):
+            async with budget:
                 await runtime.__aenter__()
 
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
@@ -409,8 +413,10 @@ class TestPresupuestoTrasTolerar:
             startup_timeout_ms=50,
         )
 
+        budget = asyncio.timeout(1.0)
+
         with pytest.raises(AgentCompilationError) as failure:
-            async with asyncio.timeout(1.0):
+            async with budget:
                 await runtime.__aenter__()
 
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)

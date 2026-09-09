@@ -127,6 +127,9 @@ class AppInvoker:
             bound = invoker.for_identity(caller)
             await bound.invoke(ReadInvoice, params={"id": 7})
         """
+        # Sonar reads ``replace`` as returning ``DataclassInstance`` and asks for a
+        # narrowing; mypy resolves it to ``AppInvoker`` and rejects the cast as
+        # redundant. The plain return is the one form both accept.
         return replace(self, identity=identity)
 
     async def invoke(

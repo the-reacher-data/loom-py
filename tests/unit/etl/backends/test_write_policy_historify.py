@@ -374,8 +374,9 @@ class TestWriteModeRouting:
 
     def test_a_spec_that_is_not_a_table_write_mode_raises(self) -> None:
         writer = _StubWritePolicy(schema_exists=True)
+        spec = MagicMock()
         with pytest.raises(TypeError, match="Unsupported target spec"):
-            writer.write([1], MagicMock(), None)
+            writer.write([1], spec, None)
 
 
 class TestReplaceWherePredicateOrder:

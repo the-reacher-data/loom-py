@@ -242,9 +242,10 @@ class TestRemote:
             factory_ref=FACTORY_REF, factory=factory, params={"server": SERVER}
         )
         shared = await opened(MCP_GRANT)
+        plan = make_plan(capability)
 
         with pytest.raises(AgentCompilationError) as raised:
-            _capabilities.build_toolsets(make_plan(capability), LoomContainer(), mcp=shared)
+            _capabilities.build_toolsets(plan, LoomContainer(), mcp=shared)
 
         (issue,) = raised.value.issues
         assert (issue.code, issue.field) == (
@@ -264,11 +265,10 @@ class TestFactoryFailure:
     def test_a_raising_factory_is_reported_by_class_name_without_its_message(self) -> None:
         """The issue names the agent, the factory and the class; the message stays private."""
         capability = CompiledPythonCapability(factory_ref=FACTORY_REF, factory=FailingFactory())
+        plan = make_plan(capability)
 
         with pytest.raises(AgentCompilationError) as raised:
-            _capabilities.build_toolsets(
-                make_plan(capability), LoomContainer(), mcp=SharedMcpToolsets()
-            )
+            _capabilities.build_toolsets(plan, LoomContainer(), mcp=SharedMcpToolsets())
 
         (issue,) = raised.value.issues
         assert (issue.code, issue.field) == (

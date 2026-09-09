@@ -76,7 +76,8 @@ async def test_cache_hit_returns_the_typed_output_struct(case: BackendCase, seed
 
     assert type(second) is case.model
     assert second == first
-    assert second is not None and second.amount == SEED[0].amount
+    assert second is not None
+    assert second.amount == SEED[0].amount
 
 
 async def test_entity_keys_are_namespaced_by_the_model_table(
@@ -89,9 +90,8 @@ async def test_entity_keys_are_namespaced_by_the_model_table(
     assert cached.entity_name == case.model.__tablename__
     assert cached.entity_name != type(seeded).__name__.lower()
     entity_keys = [key for key in cache.data if f":{SEED[0].id}:" in key]
-    assert entity_keys and all(
-        key.startswith(f"{case.model.__tablename__}:") for key in entity_keys
-    )
+    assert entity_keys
+    assert all(key.startswith(f"{case.model.__tablename__}:") for key in entity_keys)
 
 
 async def test_create_many_invalidates_a_cached_first_page(case: BackendCase, seeded: Any) -> None:

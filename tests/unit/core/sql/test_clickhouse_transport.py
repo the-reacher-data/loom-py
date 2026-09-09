@@ -15,7 +15,6 @@ from __future__ import annotations
 import inspect
 import subprocess
 import sys
-from collections.abc import Iterator
 from urllib.parse import urlencode
 
 import pytest
@@ -51,11 +50,10 @@ print("stock" if httpclient.urlencode(params) == urlencode(params) else "patched
 
 
 @pytest.fixture
-def patched_encoder(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Enable the workaround for one test and restore the driver afterwards."""
+def patched_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enable the workaround for one test; ``monkeypatch`` restores the driver afterwards."""
     monkeypatch.setattr(httpclient, _URLENCODE, getattr(httpclient, _URLENCODE))
     enable_repeated_query_params()
-    yield
 
 
 def _multi_role_registry() -> ClickHouseConnectionRegistry:

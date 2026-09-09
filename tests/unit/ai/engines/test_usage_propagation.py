@@ -180,7 +180,8 @@ class TestFailedRun:
         assert usage is not None
         assert usage.input_tokens >= 1840
         assert usage.requests >= 1
-        assert usage.cost is not None and usage.cost >= Decimal("0.0417")
+        assert usage.cost is not None
+        assert usage.cost >= Decimal("0.0417")
 
     async def test_the_terminal_error_event_carries_it_too(
         self, failing_engine: AgentEngine

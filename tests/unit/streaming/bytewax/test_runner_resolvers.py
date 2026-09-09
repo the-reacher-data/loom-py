@@ -114,13 +114,10 @@ class TestRunResolversRequireConfigPath:
     ) -> None:
         config = ConfigContext.from_dict({})
         runner = StreamingRunner()
+        resolvers = [MappingResolver("stub", {"workers": 3})]
 
         with pytest.raises(ValueError, match="resolvers apply only with config_path"):
-            runner.run(
-                flow=bytewax_stream_flow,
-                config=config,
-                resolvers=[MappingResolver("stub", {"workers": 3})],
-            )
+            runner.run(flow=bytewax_stream_flow, config=config, resolvers=resolvers)
 
     def test_config_without_resolvers_still_runs(
         self,
@@ -180,9 +177,10 @@ class TestRunWithConfigPath:
         _without_boto3(monkeypatch)
         _stub_execution(monkeypatch)
         config_path = _write_streaming_yaml(tmp_path, "${secrets:/stream/workers}")
+        runner = StreamingRunner()
 
         with pytest.raises(ConfigError, match=r"loom-kernel\[config-ssm\]"):
-            StreamingRunner().run(flow=bytewax_stream_flow, config_path=config_path)
+            runner.run(flow=bytewax_stream_flow, config_path=config_path)
 
     def test_no_aws_client_without_placeholders(
         self,

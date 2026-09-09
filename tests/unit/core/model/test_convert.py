@@ -54,16 +54,15 @@ def test_enum_datetime_and_decimal_come_back_typed() -> None:
 
 
 def test_a_bad_value_raises_validation_error() -> None:
+    payload = {
+        "full_name": "Ann",
+        "tier": "bronze",
+        "joined_at": datetime(2026, 1, 3),
+        "balance": "1",
+    }
+
     with pytest.raises(msgspec.ValidationError):
-        to_struct(
-            _Customer,
-            {
-                "full_name": "Ann",
-                "tier": "bronze",
-                "joined_at": datetime(2026, 1, 3),
-                "balance": "1",
-            },
-        )
+        to_struct(_Customer, payload)
 
 
 def test_nested_struct_values_are_renamed_too() -> None:

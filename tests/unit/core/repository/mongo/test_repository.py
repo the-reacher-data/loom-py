@@ -387,20 +387,20 @@ class TestConflicts:
     async def test_duplicate_create_raises_conflict(self, collection: FakeCollection) -> None:
         repo = _articles(collection)
         await repo.create(ArticleCreate(slug="a", title="A"))
+        payload = ArticleCreate(slug="a", title="Again")
 
         with pytest.raises(Conflict, match="Article with slug='a' already exists"):
-            await repo.create(ArticleCreate(slug="a", title="Again"))
+            await repo.create(payload)
 
     async def test_duplicate_in_bulk_raises_conflict_and_persists_nothing(
         self, collection: FakeCollection
     ) -> None:
         repo = _articles(collection)
         await repo.create(ArticleCreate(slug="b", title="B"))
+        payload = [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="b", title="B")]
 
         with pytest.raises(Conflict, match="slug='b'"):
-            await repo.create_many(
-                [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="b", title="B")]
-            )
+            await repo.create_many(payload)
 
         assert set(collection.documents) == {"b"}
 
@@ -420,11 +420,10 @@ class TestConflicts:
         session = FakeMongoClient().start_session()
         provider = cast(SessionProvider, lambda: session)
         repo = RepositoryMongo(Article, collection, session_provider=provider)
+        payload = [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="a", title="A")]
 
         with pytest.raises(Conflict):
-            await repo.create_many(
-                [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="a", title="A")]
-            )
+            await repo.create_many(payload)
 
         assert collection.deletes == 0
         assert set(collection.documents) == {"a"}
@@ -440,14 +439,13 @@ class TestConflicts:
 
         collection = BrokenUndoCollection()
         repo = _articles(collection)
+        payload = [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="a", title="A")]
 
         with (
             caplog.at_level(logging.ERROR, logger=repository_module.__name__),
             pytest.raises(AutoReconnect) as info,
         ):
-            await repo.create_many(
-                [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="a", title="A")]
-            )
+            await repo.create_many(payload)
 
         assert "Article with slug='a' already exists" in "".join(info.value.__notes__)
         assert "MongoBulkUndoFailed" in caplog.text
@@ -463,8 +461,11 @@ class TestConflicts:
             ) -> InsertManyResult:
                 raise BulkWriteError({"writeErrors": [{"index": 0, "code": 121, "errmsg": "x"}]})
 
+        repo = _articles(FailingCollection())
+        payload = [ArticleCreate(slug="a", title="A")]
+
         with pytest.raises(BulkWriteError):
-            await _articles(FailingCollection()).create_many([ArticleCreate(slug="a", title="A")])
+            await repo.create_many(payload)
 
 
 class TestCreateMany:
@@ -643,19 +644,26 @@ class TestCursorPagination:
 
     async def test_foreign_token_is_unsupported(self, collection: FakeCollection) -> None:
         token = encode_cursor("sqlalchemy", [3], "a")
+        repo = _articles(collection)
+        query = self._query(token)
 
         with pytest.raises(UnsupportedQuery, match="another backend"):
-            await _articles(collection).list_with_query(self._query(token))
+            await repo.list_with_query(query)
 
     async def test_legacy_token_is_unsupported(self, collection: FakeCollection) -> None:
+        repo = _articles(collection)
+        query = self._query("bm90LWEtdG9rZW4=")
+
         with pytest.raises(UnsupportedQuery, match="not valid"):
-            await _articles(collection).list_with_query(self._query("bm90LWEtdG9rZW4="))
+            await repo.list_with_query(query)
 
     async def test_key_count_mismatch_is_unsupported(self, collection: FakeCollection) -> None:
         token = encode_cursor("mongo", [3, "x"], "a")
+        repo = _articles(collection)
+        query = self._query(token)
 
         with pytest.raises(UnsupportedQuery, match="does not match the sort"):
-            await _articles(collection).list_with_query(self._query(token))
+            await repo.list_with_query(query)
 
 
 class TestSessions:

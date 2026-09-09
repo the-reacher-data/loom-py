@@ -135,8 +135,10 @@ class TestNoProviderFallback:
         provider = PydanticAIEngineProvider(model_resolver=resolver)
         engine = provider.create_engine(plan, deps=NullDeps(), container=LoomContainer())
 
+        identity = Identity(subject="caller")
+
         with pytest.raises(AgentRunError) as failure:
-            await engine.run("question", identity=Identity(subject="caller"))
+            await engine.run("question", identity=identity)
 
         assert failure.value.code is AgentRunErrorCode.PROVIDER_RATE_LIMITED
         assert resolved == [plan.inference], "the model is bound once, to one provider"

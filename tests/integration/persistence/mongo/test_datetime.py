@@ -6,7 +6,6 @@ aware-column read is UTC, and a ``DateTime(tz=False)`` column reads back naive.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -40,8 +39,8 @@ class EventCreate(BaseModel):
 @pytest.fixture
 async def events(
     mongo_client: AsyncMongoClient[Any], mongo_database: _SessionDatabase
-) -> AsyncIterator[RepositoryMongo[Event, str]]:
-    yield RepositoryMongo(Event, mongo_client[mongo_database.name]["events"])
+) -> RepositoryMongo[Event, str]:
+    return RepositoryMongo(Event, mongo_client[mongo_database.name]["events"])
 
 
 async def test_aware_column_reads_back_as_utc_with_millisecond_precision(
