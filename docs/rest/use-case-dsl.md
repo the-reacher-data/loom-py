@@ -634,6 +634,19 @@ the duplicate declaration instead.
 > duplicate is removed. This applies whether or not any YAML interface is in
 > use.
 
+> **Breaking change:** `create_fastapi_app`'s second parameter used to be
+> `interfaces: Sequence[type[RestInterface]]`; it is now
+> `routes: RouteSources`. Code that called it as documented —
+> `create_fastapi_app(result, interfaces=[...])`, keyword form, every
+> published example — still works: a deprecated `interfaces=` keyword wraps
+> the list in `RouteSources(python=interfaces)` and emits a
+> `DeprecationWarning` naming `routes` as the replacement. A call that passed
+> the list *positionally* now binds it to `routes` instead, which expects a
+> `RouteSources` instance and raises `AttributeError` once compilation reads
+> `routes.python` — that form is not shimmed. Passing both `routes` and
+> `interfaces`, or neither, raises `TypeError`. Migrate by replacing `interfaces=[...]` with
+> `routes=RouteSources(python=[...])`.
+
 ### Disabling a route per environment (`app.rest.disable_routes`)
 
 `app.rest.disable_routes` is a subtractive-only list, and it only targets
@@ -662,6 +675,14 @@ check runs.
 An entry matching no Python-declared route aborts startup instead of doing
 nothing: a silent no-op would leave an operator believing a route is gone
 when it is still being served.
+
+> **Security note:** the disable-and-redeclare override flow lets a
+> `app.rest.interfaces` entry drop a `requires_roles` the Python route
+> declared, since the redeclaration is a fresh route with its own policy,
+> not a patch of the old one. That is consistent with treating configuration
+> as trusted — the same trust an operator already has to remove or rewrite
+> any other route — but it means "per environment" includes the route's
+> authorization, not just its shape.
 
 A runnable version of every example above lives in
 [`tests/integration/rest/test_yaml_interfaces.py`](https://github.com/the-reacher-data/loom-py/blob/main/tests/integration/rest/test_yaml_interfaces.py),

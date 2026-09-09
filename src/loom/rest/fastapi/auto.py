@@ -165,8 +165,9 @@ class _RestConfig(msgspec.Struct, kw_only=True):
     # the same RestInterface objects a Python subclass produces and handed to
     # the same compiler — see _fold_config_interfaces and create_fastapi_app.
     interfaces: dict[str, RestInterfaceConfig] = msgspec.field(default_factory=dict)
-    # Subtractive per-environment overlay: every entry must match a mounted
-    # route, or startup aborts (see RestInterfaceCompiler.compile_sources).
+    # Subtractive per-environment overlay: every entry must match a route
+    # declared in Python, or startup aborts (see
+    # RestInterfaceCompiler.compile_sources).
     disable_routes: tuple[DisableRouteConfig, ...] = ()
 
 
@@ -1296,6 +1297,14 @@ def _section_app_config(ctx: ConfigContext) -> _AppConfig:
     :func:`~loom.core.config.loader.section` already does — this only adds a
     check ahead of it for this one section.
 
+    Both sections decode with untyped (``Any``) entries on purpose: typing an
+    entry as ``dict[str, Any]`` would make ``msgspec`` reject a malformed one
+    (a string where a mapping belongs) before the validators below ever see
+    it, with a generic ``Expected 'object', got 'str'`` — reachable, but
+    silent about which interface or disable-routes entry is at fault. Leaving
+    the entry ``Any`` defers that check to :func:`validate_interfaces_config`
+    and :func:`validate_disable_routes_config`, whose diagnostic names it.
+
     Args:
         ctx: Config context built from the supplied YAML files.
 
@@ -1304,14 +1313,13 @@ def _section_app_config(ctx: ConfigContext) -> _AppConfig:
 
     Raises:
         RestInterfaceConfigError: If an interface, route, or disable-routes
-            entry uses a key its config struct does not declare.
+            entry uses a key its config struct does not declare, or is not a
+            mapping where one is required.
         ConfigError: If decoding fails for any other reason.
     """
-    raw_interfaces = ctx.section_or_default("app.rest.interfaces", dict[str, dict[str, Any]], {})
+    raw_interfaces = ctx.section_or_default("app.rest.interfaces", dict[str, Any], {})
     validate_interfaces_config(raw_interfaces)
-    raw_disable_routes = ctx.section_or_default(
-        "app.rest.disable_routes", tuple[dict[str, Any], ...], ()
-    )
+    raw_disable_routes = ctx.section_or_default("app.rest.disable_routes", tuple[Any, ...], ())
     validate_disable_routes_config(raw_disable_routes)
     return ctx.section(ConfigKey.APP, _AppConfig)
 

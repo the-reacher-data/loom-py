@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import typing
-from typing import Any, cast
+from typing import Any
 
 import msgspec
 import pytest
@@ -235,10 +235,11 @@ class TestValidateInterfacesConfig:
         assert "unknown key" not in message
 
     def test_a_non_mapping_interface_entry_is_a_clear_type_error(self) -> None:
-        # A malformed raw YAML mapping is exactly what this guard exists to
-        # catch — the cast simulates it without lying to the type checker
-        # about what real config files may contain.
-        raw = cast("dict[str, Any]", {"pings": "oops"})
+        # `_section_app_config` decodes app.rest.interfaces as dict[str, Any]
+        # precisely so a malformed entry like this one reaches this guard
+        # instead of failing earlier inside msgspec with a message that does
+        # not name the interface (H3) — no cast needed, entry is really Any.
+        raw = {"pings": "oops"}
 
         with pytest.raises(RestInterfaceConfigError) as excinfo:
             validate_interfaces_config(raw)
@@ -270,6 +271,16 @@ class TestValidateDisableRoutesConfig:
         assert "app.rest.disable_routes" in message
         assert "paths" in message
         assert "path" in message  # listed among the valid keys
+
+    def test_a_non_mapping_entry_is_a_clear_type_error(self) -> None:
+        # `_section_app_config` decodes app.rest.disable_routes as
+        # tuple[Any, ...] for the same reason interfaces are — see H3.
+        with pytest.raises(RestInterfaceConfigError) as excinfo:
+            validate_disable_routes_config(["oops"])
+        message = str(excinfo.value)
+        assert "app.rest.disable_routes" in message
+        assert "must be a mapping" in message
+        assert "unknown key" not in message
 
 
 class TestGeneratedClassNamesAreDistinct:

@@ -81,6 +81,26 @@ def _collision_message(
     return header + advice
 
 
+_MAX_LISTED_CANDIDATES = 20
+
+
+def _format_candidates(routes: Sequence[CompiledRoute]) -> str:
+    """Render the ``(method, full_path)`` of every *routes* entry, capped.
+
+    *routes* are the Python-declared routes actually eligible for
+    disablement — what an operator fixing a typo needs to see, since the
+    entry that failed to match named none of them.
+    """
+    candidates = sorted({(r.route.method.upper(), r.full_path) for r in routes})
+    if not candidates:
+        return "no Python-declared route is eligible for disablement."
+    shown = candidates[:_MAX_LISTED_CANDIDATES]
+    rendered = ", ".join(f"({method}, {path!r})" for method, path in shown)
+    omitted = len(candidates) - len(shown)
+    suffix = f", and {omitted} more" if omitted else ""
+    return f"eligible routes are: {rendered}{suffix}."
+
+
 def _apply_disablement(
     routes: list[CompiledRoute], disabled: Sequence[tuple[str, str]]
 ) -> list[CompiledRoute]:
@@ -117,7 +137,8 @@ def _apply_disablement(
             "compile_sources (e.g. the health check) is never a target. "
             "Name the full path, prefix included, of a Python-declared "
             "route that would otherwise be published — check for a typo "
-            "or a route already removed."
+            "or a route already removed. "
+            f"{_format_candidates(routes)}"
         )
     return kept
 
@@ -127,9 +148,9 @@ class RouteSources:
     """Everything that decides which routes mount, and from which origin.
 
     Groups the three inputs :meth:`RestInterfaceCompiler.compile_sources` and
-    :func:`~loom.rest.fastapi.app.create_fastapi_app` need, so a composition
-    root builds one value instead of threading three parallel sequences
-    through both call sites.
+    :func:`~loom.rest.fastapi.app.create_fastapi_app` need — the Python
+    interfaces, the config-declared ones, and the routes disabled between
+    them — into the one value both call sites pass along together.
 
     Args:
         python: ``RestInterface`` subclasses declared in code. Compiled
@@ -146,6 +167,16 @@ class RouteSources:
     python: Sequence[type[RestInterface[Any]]] = ()
     config: Sequence[type[RestInterface[Any]]] = ()
     disabled: Sequence[tuple[str, str]] = ()
+
+    def __post_init__(self) -> None:
+        # A frozen dataclass only stops rebinding the field itself; a caller
+        # passing a plain list still owns that list and can mutate it after
+        # construction, silently changing what this "frozen" value compiles.
+        # object.__setattr__ is the documented way to write to a frozen
+        # instance's own __init__/__post_init__.
+        object.__setattr__(self, "python", tuple(self.python))
+        object.__setattr__(self, "config", tuple(self.config))
+        object.__setattr__(self, "disabled", tuple(self.disabled))
 
 
 class InterfaceCompilationError(Exception):

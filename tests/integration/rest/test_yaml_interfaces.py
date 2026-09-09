@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from loom.core.identity import Identity, reset_identity, set_identity
 from loom.rest.autocrud import build_auto_routes
 from loom.rest.compiler import InterfaceCompilationError
 from loom.rest.config import RestInterfaceConfigError
@@ -352,3 +353,98 @@ class TestUnknownKeysAbortStartup:
         message = str(excinfo.value)
         assert "paths" in message
         assert "path" in message
+
+    def test_a_non_mapping_interface_entry_names_the_interface_end_to_end(
+        self, tmp_path: Path
+    ) -> None:
+        """H3: proves the guard runs on the real create_app path, not msgspec's."""
+        config_path, _module = write_project(
+            tmp_path,
+            rest={"interfaces": {"tickets_typo": "oops"}},
+        )
+        with pytest.raises(RestInterfaceConfigError) as excinfo:
+            create_app(config_path)
+        message = str(excinfo.value)
+        assert "tickets_typo" in message
+        assert "must be a mapping" in message
+
+    def test_a_non_mapping_disable_routes_entry_names_it_end_to_end(self, tmp_path: Path) -> None:
+        """H3: proves the guard runs on the real create_app path, not msgspec's."""
+        config_path, _module = write_project(
+            tmp_path,
+            rest={"disable_routes": ["oops"]},
+        )
+        with pytest.raises(RestInterfaceConfigError) as excinfo:
+            create_app(config_path)
+        message = str(excinfo.value)
+        assert "app.rest.disable_routes" in message
+        assert "must be a mapping" in message
+
+
+class TestRequiresRolesFromConfig:
+    """H4: ``requires_roles`` declared in ``app.rest.interfaces`` is enforced."""
+
+    def test_a_caller_without_the_declared_role_is_refused(self, tmp_path: Path) -> None:
+        module = module_name(tmp_path)
+        config_path, _module = write_project(
+            tmp_path,
+            rest={
+                "interfaces": {
+                    "gadgets": {
+                        "prefix": "/gadgets",
+                        "auto": True,
+                        "model": f"{module}:Gadget",
+                        "requires_roles": ["admin"],
+                    }
+                }
+            },
+        )
+        app = create_app(config_path)
+        token = set_identity(Identity(subject="user-1", roles=("reader",), mechanism="test"))
+        try:
+            response = TestClient(app).get("/gadgets/")
+        finally:
+            reset_identity(token)
+        assert response.status_code == 403
+
+    def test_a_caller_holding_the_declared_role_is_served(self, tmp_path: Path) -> None:
+        module = module_name(tmp_path)
+        config_path, _module = write_project(
+            tmp_path,
+            rest={
+                "interfaces": {
+                    "gadgets": {
+                        "prefix": "/gadgets",
+                        "auto": True,
+                        "model": f"{module}:Gadget",
+                        "requires_roles": ["admin"],
+                    }
+                }
+            },
+        )
+        app = create_app(config_path)
+        token = set_identity(Identity(subject="user-1", roles=("admin",), mechanism="test"))
+        try:
+            with TestClient(app) as client:
+                response = client.get("/gadgets/")
+        finally:
+            reset_identity(token)
+        assert response.status_code == 200
+
+    def test_an_unauthenticated_caller_is_refused(self, tmp_path: Path) -> None:
+        module = module_name(tmp_path)
+        config_path, _module = write_project(
+            tmp_path,
+            rest={
+                "interfaces": {
+                    "gadgets": {
+                        "prefix": "/gadgets",
+                        "auto": True,
+                        "model": f"{module}:Gadget",
+                        "requires_roles": ["admin"],
+                    }
+                }
+            },
+        )
+        app = create_app(config_path)
+        assert TestClient(app).get("/gadgets/").status_code == 403

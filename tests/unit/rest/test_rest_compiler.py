@@ -46,6 +46,25 @@ def rest_compiler(use_case_compiler: UseCaseCompiler) -> RestInterfaceCompiler:
     return RestInterfaceCompiler(use_case_compiler)
 
 
+class TestRouteSources:
+    """A frozen ``RouteSources`` must not alias the caller's own mutable list."""
+
+    def test_a_python_list_passed_in_is_copied_not_aliased(self) -> None:
+        class IFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        interfaces = [IFace]
+        sources = RouteSources(python=interfaces)
+        interfaces.append(IFace)
+
+        assert len(sources.python) == 1
+
+    def test_fields_are_stored_as_tuples(self) -> None:
+        sources = RouteSources(disabled=[("GET", "/a")])
+        assert isinstance(sources.disabled, tuple)
+
+
 class TestCompile:
     def test_compile_single_route(self, rest_compiler: RestInterfaceCompiler) -> None:
         class IFace(RestInterface[str]):
@@ -481,6 +500,59 @@ class TestCompileSources:
             rest_compiler.compile_sources(
                 RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
             )
+
+    def test_disable_routes_matching_nothing_names_the_eligible_candidates(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """H2: the fail-closed error must name what could have been disabled."""
+
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (
+                RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),
+                RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),
+            )
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(
+                RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
+            )
+        message = str(excinfo.value)
+        assert "(POST, '/users/')" in message
+        assert "(GET, '/users/{user_id}')" in message
+
+    def test_disable_routes_matching_nothing_caps_the_candidate_list(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """H2: a huge route set does not blow up the error message."""
+
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = tuple(
+                RestRoute(use_case=GetUserUseCase, method="GET", path=f"/{i}") for i in range(25)
+            )
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(
+                RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
+            )
+        message = str(excinfo.value)
+        assert "and 5 more" in message
+
+    def test_disabling_a_config_route_names_no_eligible_candidates(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """H2: no Python routes exist to name when only config declares any."""
+
+        class ConfigIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),)
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(
+                RouteSources(config=[ConfigIFace], disabled=[("GET", "/users/{user_id}")])
+            )
+        assert "no Python-declared route is eligible for disablement" in str(excinfo.value)
 
     def test_disabling_a_python_route_lets_config_redeclare_it(
         self, rest_compiler: RestInterfaceCompiler

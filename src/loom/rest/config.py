@@ -343,7 +343,7 @@ def _reject_unknown_keys(target: str, entry: Any, valid: frozenset[str]) -> None
             )
 
 
-def validate_interfaces_config(raw: Mapping[str, Mapping[str, Any]]) -> None:
+def validate_interfaces_config(raw: Mapping[str, Any]) -> None:
     """Reject an unknown key anywhere in a raw ``app.rest.interfaces`` mapping.
 
     Runs on the *raw*, not-yet-decoded mapping so the error can name the
@@ -352,6 +352,13 @@ def validate_interfaces_config(raw: Mapping[str, Mapping[str, Any]]) -> None:
     ``forbid_unknown_fields=True`` on :class:`RestInterfaceConfig` and
     :class:`RestRouteConfig`, which still reject a typo reached through any
     other conversion path (e.g. a test constructing one directly).
+
+    Each entry is read as ``Any``, not ``Mapping[str, Any]``: the caller
+    decodes the section that way on purpose (see
+    :func:`~loom.rest.fastapi.auto._section_app_config`) so a malformed
+    entry — a string where a mapping belongs — reaches the type guard below
+    instead of failing earlier inside ``msgspec`` with a diagnostic that
+    does not name the interface.
 
     Args:
         raw: ``app.rest.interfaces`` as a plain mapping, before conversion
@@ -374,16 +381,20 @@ def validate_interfaces_config(raw: Mapping[str, Mapping[str, Any]]) -> None:
             _reject_unknown_keys(f"app.rest.interfaces.{name}: route", route, _ROUTE_FIELDS)
 
 
-def validate_disable_routes_config(raw: Sequence[Mapping[str, Any]]) -> None:
+def validate_disable_routes_config(raw: Sequence[Any]) -> None:
     """Reject an unknown key anywhere in a raw ``app.rest.disable_routes`` list.
 
+    Each entry is read as ``Any``, not ``Mapping[str, Any]``, for the same
+    reason :func:`validate_interfaces_config` does — see its docstring.
+
     Args:
-        raw: ``app.rest.disable_routes`` as a plain sequence of mappings,
-            before conversion to :class:`DisableRouteConfig`.
+        raw: ``app.rest.disable_routes`` as a plain sequence, before
+            conversion to :class:`DisableRouteConfig`.
 
     Raises:
         RestInterfaceConfigError: If an entry uses a key
-            :class:`DisableRouteConfig` does not declare.
+            :class:`DisableRouteConfig` does not declare, or is not a
+            mapping.
     """
     for entry in raw:
         _reject_unknown_keys("app.rest.disable_routes", entry, _DISABLE_ROUTE_FIELDS)
