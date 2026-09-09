@@ -91,6 +91,11 @@ _LOCAL_LIBRARY_PREFIX: Final[str] = "./"
 _CompileResult = tuple[tuple[CompiledCapability, ...], list[AgentCompilationIssue]]
 _HandlerResult = tuple[CompiledCapability | None, list[AgentCompilationIssue]]
 _ResolveResult = tuple[Path | None, list[AgentCompilationIssue]]
+_McpCompileResult = tuple[CompiledMcpCapability | None, list[AgentCompilationIssue]]
+"""Return shape of :func:`compile_mcp_capability`: narrower than the dispatch
+map's own ``_HandlerResult`` since every caller of the shared helper — the
+agent path and the use-case marker path alike — always gets a
+``CompiledMcpCapability`` back, never any other capability kind."""
 
 _FIRST_POSITIONAL: Final[object] = object()
 """Stand-in for the build-time first positional when binding ``params``."""
@@ -258,13 +263,39 @@ def _compile_sql(capability: SqlCapability, context: _Context) -> _HandlerResult
     )
 
 
-def _compile_mcp(capability: McpCapability, context: _Context) -> _HandlerResult:
-    server = context.mcp_servers.get(capability.server)
+def compile_mcp_capability(
+    server_name: str,
+    *,
+    include: tuple[str, ...],
+    exclude: tuple[str, ...],
+    servers: Mapping[str, McpServerConfig],
+    component: str,
+) -> _McpCompileResult:
+    """Resolve a server name and filter into a :class:`CompiledMcpCapability`.
+
+    Shared by the agent ``mcp`` capability (:func:`_compile_mcp`) and the
+    use-case ``Mcp()`` marker path (:mod:`loom.rest.fastapi.auto`), so both
+    produce an identical compiled capability from identical inputs and the
+    agent path's behaviour cannot drift from an independent copy.
+
+    Args:
+        server_name: Name the caller declared, looked up in ``servers``.
+        include: Tool-name globs to admit; the caller's own filter.
+        exclude: Tool-name globs to refuse.
+        servers: Every MCP server configured for this deployment.
+        component: Artifact or use-case path the returned issue points at.
+
+    Returns:
+        The compiled capability, or ``None`` with one
+        :func:`~loom.ai.errors.mcp_server_unknown` issue when ``server_name``
+        is not in ``servers``.
+    """
+    server = servers.get(server_name)
     if server is None:
-        return None, [mcp_server_unknown(context.component, capability.server)]
+        return None, [mcp_server_unknown(component, server_name)]
     return (
         CompiledMcpCapability(
-            server=capability.server,
+            server=server_name,
             transport=server.transport,
             url=server.url,
             headers_ref=server.headers_ref,
@@ -273,10 +304,20 @@ def _compile_mcp(capability: McpCapability, context: _Context) -> _HandlerResult
             command=server.command,
             args=server.args,
             env=tuple(sorted((server.env or {}).items())),
-            include=capability.include,
-            exclude=capability.exclude,
+            include=include,
+            exclude=exclude,
         ),
         [],
+    )
+
+
+def _compile_mcp(capability: McpCapability, context: _Context) -> _HandlerResult:
+    return compile_mcp_capability(
+        capability.server,
+        include=capability.include,
+        exclude=capability.exclude,
+        servers=context.mcp_servers,
+        component=context.component,
     )
 
 

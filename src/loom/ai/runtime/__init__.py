@@ -22,13 +22,14 @@ from loom.ai.errors import (
     AgentRunError as AgentRunError,
 )
 from loom.ai.runtime._health import AgentHealth
-from loom.ai.runtime._lifecycle import A2AClientFactory, AgentRuntime
+from loom.ai.runtime._lifecycle import A2AClientFactory, AgentRuntime, UseCaseMcpGrant
 from loom.ai.runtime._mcp import McpClientFactory, SharedMcpSession
 
 __all__ = [
     "A2AClientFactory",
     "AgentHealth",
     "AgentRuntime",
+    "UseCaseMcpGrant",
     "McpClientFactory",
     "McpSession",
     "SharedMcpSession",

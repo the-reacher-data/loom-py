@@ -110,6 +110,11 @@ class FilterTarget:
     ``include``/``exclude`` are empty when the grant declares no filter; such
     a target is still listed (see :func:`filter_targets`), just never checked
     by :func:`filter_issues`.
+
+    Attributes:
+        agent: The agent declaring this grant, or the registered use-case key
+            when the target comes from an ``Mcp()`` marker instead of a
+            compiled agent plan (see ``AgentRuntime._use_case_filter_targets``).
     """
 
     agent: str

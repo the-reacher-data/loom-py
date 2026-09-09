@@ -102,6 +102,7 @@ from loom.core.runner import shutdown_runner
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.agent_markers import declaring_agent_bindings
 from loom.core.use_case.factory import UseCaseFactory
+from loom.core.use_case.mcp_markers import declaring_mcp_bindings
 from loom.rest.autocrud import build_auto_routes
 
 _logger = logging.getLogger(__name__)
@@ -723,7 +724,7 @@ class WorkerBootstrapResult:
 
 
 # ---------------------------------------------------------------------------
-# Agent() marker refusal (T402)
+# Agent() and Mcp() marker refusal (T402, spec 015 T202)
 # ---------------------------------------------------------------------------
 
 
@@ -763,6 +764,41 @@ def _reject_agent_markers(
     from loom.ai._startup import verify_agent_markers
 
     verify_agent_markers(declaring, kernel.registry, {})
+
+
+def _reject_mcp_markers(
+    compilables: Sequence[type[Compilable]],
+    kernel: KernelRuntime,
+) -> None:
+    """Abort worker start-up when a compiled use case declares an ``Mcp()`` marker.
+
+    A task worker never builds an AI runtime, so a declared server is never
+    opened here either — the same reason :func:`_reject_agent_markers`
+    refuses ``Agent()``. Reuses :func:`loom.ai._startup.verify_mcp_markers`,
+    called with no configured servers at all, which reports every declared
+    server as unknown by name.
+
+    Args:
+        compilables: Every use case and job compiled for this worker.
+        kernel: The just-built kernel runtime, whose compiler already holds
+            each of their plans and whose registry names them in the error.
+
+    Raises:
+        AgentCompilationError: Naming each declaring use case and its
+            ``Mcp()`` parameter, when at least one declares the marker.
+    """
+    declaring = declaring_mcp_bindings(compilables, kernel.compiler)
+    if not declaring:
+        # No use case declares Mcp(): importing 'loom.ai' here, only to find
+        # nothing to check, would pull the AI pillar into every worker
+        # process regardless of whether any job or use case ever reaches it.
+        return
+
+    # Local import: the AI pillar is optional and this branch only runs once
+    # a declaring use case is already known to exist.
+    from loom.ai._startup import verify_mcp_markers
+
+    verify_mcp_markers(declaring, kernel.registry, {})
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +923,7 @@ def bootstrap_worker(
         uow_factory=uow_factory,
     )
     _reject_agent_markers(resolved.compilables, kernel)
+    _reject_mcp_markers(resolved.compilables, kernel)
     kernel.factory.verify()
     celery_app = create_celery_app(celery_cfg)
 

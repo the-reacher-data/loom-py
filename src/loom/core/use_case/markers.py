@@ -278,11 +278,21 @@ def Mcp(server: str, *, include: Sequence[str]) -> Any:
 
     Unlike :func:`Agent`, no output type is **ever** checked against the
     parameter's annotation: ``McpHandle`` carries no type parameter, so there
-    is no declared shape to compare it with. Once start-up verification is
-    wired — it is not in this version — it will check the server's name and
-    that *include* matches at least one published tool; neither is checked
-    today, so a misspelled server name reaches the ``RuntimeError`` above
-    rather than aborting the boot.
+    is no declared shape to compare it with. Both checks a ``Mcp()`` marker
+    gets are already wired at start-up, aborting the boot rather than waiting
+    for a first call: *server* is validated against ``ai.mcp_servers``, naming
+    the declaring use case and parameter when it is not configured, and
+    *include* is checked against the server's real tool list under the same
+    ``startup_timeout_ms`` an agent's own ``mcp`` filter is checked against.
+    The second check needs a listing, so under
+    ``ai.remote_clients: optional`` a server that never connected is skipped
+    rather than failing: a tolerated outage means the filter goes unverified,
+    not that it verified clean.
+
+    Resolution is a separate thing and is **not** wired: the handle is never
+    built or injected, which is why a compiled use case declaring this marker
+    still hits the ``RuntimeError`` above at its first execution rather than
+    receiving a live ``McpHandle``.
 
     Returned value is intentionally typed as ``Any`` to avoid ``mypy``
     default-argument incompatibility in signatures like:

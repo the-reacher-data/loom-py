@@ -1,17 +1,20 @@
-"""Start-up verification of ``Agent()`` marker bindings, shared by every worker.
+"""Start-up verification of use-case marker bindings, shared by every worker.
 
-Both composition roots that admit the marker — the FastAPI auto-bootstrap
+Both composition roots that admit a marker — the FastAPI auto-bootstrap
 (:mod:`loom.rest.fastapi.auto`) and the Celery worker bootstrap
 (:mod:`loom.celery.bootstrap`) — call :func:`verify_agent_markers` once every
 compiled use case declaring at least one ``Agent()`` binding is already known
 via :func:`~loom.core.use_case.agent_markers.declaring_agent_bindings`, so
 neither ever imports this module for a deployment that declares no marker at
-all (FR-050).
+all (FR-050). :func:`verify_mcp_markers` follows the same shape for the
+``Mcp()`` marker, driven by
+:func:`~loom.core.use_case.mcp_markers.declaring_mcp_bindings` instead.
 
 The Celery worker never builds an AI runtime (T402: task workers do not serve
-the AI pillar), so it always calls this with an empty ``plans_by_name`` —
-which reports every declared agent as unknown, the same message a mistyped
-name gets under a real runtime, naming the parameter and the use case that
+the AI pillar), so it always calls :func:`verify_agent_markers` with an empty
+``plans_by_name`` and :func:`verify_mcp_markers` with an empty server
+mapping — each reports every declared name as unknown, the same message a
+typo gets under a real runtime, naming the parameter and the use case that
 could not run.
 """
 
@@ -21,14 +24,16 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import get_args
 
 from loom.ai.compiler import AgentPlan
+from loom.ai.config import McpServerConfig
 from loom.ai.errors import (
     AgentCompilationError,
     AgentCompilationIssue,
     agent_marker_output_mismatch,
     agent_marker_unknown,
+    mcp_marker_unknown,
 )
 from loom.core.engine.compilable import Compilable
-from loom.core.engine.plan import AgentBinding
+from loom.core.engine.plan import AgentBinding, McpBinding
 from loom.core.use_case.registry import UseCaseRegistry
 
 
@@ -101,4 +106,60 @@ def _agent_binding_issues(
         )
 
 
-__all__ = ["verify_agent_markers"]
+def verify_mcp_markers(
+    declaring: Sequence[tuple[type[Compilable], tuple[McpBinding, ...]]],
+    registry: UseCaseRegistry,
+    servers: Mapping[str, McpServerConfig],
+) -> None:
+    """Abort start-up when an ``Mcp()`` marker names a server not configured.
+
+    Only the name is checked here — whether ``include`` matches a published
+    tool needs a live session and is checked later, inside the runtime's own
+    listing pass (``_verify_tool_filters``), on the same ``startup_timeout_ms``
+    an agent's own filter is checked against.
+
+    Args:
+        declaring: Use cases declaring at least one ``Mcp()`` binding, paired
+            with those bindings — see
+            :func:`~loom.core.use_case.mcp_markers.declaring_mcp_bindings`.
+        registry: Resolves a use case's registered key for the error message.
+        servers: Every MCP server configured for this deployment, from
+            ``ai.mcp_servers``. Empty when no ``ai:`` section is present,
+            which reports every declared server as unknown — the same
+            fail-closed answer :func:`verify_agent_markers` gives with an
+            empty ``plans_by_name``.
+
+    Raises:
+        AgentCompilationError: Aggregating one issue per unknown server name,
+            so a single run reports every problem at once.
+    """
+    issues: list[AgentCompilationIssue] = [
+        issue
+        for uc_type, mcp_bindings in declaring
+        for issue in _mcp_binding_issues(
+            registry.key_for(uc_type) or uc_type.__qualname__, mcp_bindings, servers
+        )
+    ]
+    if issues:
+        raise AgentCompilationError(issues)
+
+
+def _mcp_binding_issues(
+    uc_name: str,
+    mcp_bindings: Sequence[McpBinding],
+    servers: Mapping[str, McpServerConfig],
+) -> Iterator[AgentCompilationIssue]:
+    """Yield one issue per ``Mcp()`` binding naming a server not configured.
+
+    Args:
+        uc_name: Registered key (or qualname) of the declaring use case.
+        mcp_bindings: Every ``Mcp()`` parameter that use case declares.
+        servers: Every configured MCP server, by its own name.
+    """
+    available = tuple(servers)
+    for binding in mcp_bindings:
+        if binding.server not in servers:
+            yield mcp_marker_unknown(uc_name, binding.name, binding.server, available)
+
+
+__all__ = ["verify_agent_markers", "verify_mcp_markers"]

@@ -65,6 +65,7 @@ from loom.core.sql.config import roles_need_identity_binding
 from loom.core.use_case.agent_markers import declaring_agent_bindings
 from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.invoker import AppInvoker
+from loom.core.use_case.mcp_markers import DeclaringMcpBindings, declaring_mcp_bindings
 from loom.core.use_case.registry import UseCaseRegistry
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
@@ -110,8 +111,9 @@ if TYPE_CHECKING:
     # Annotations only: the AI pillar and the ClickHouse extra are imported at
     # run time solely by the branch that needs them.
     from loom.ai.compiler import AgentPlan
-    from loom.ai.config import AiConfig
-    from loom.ai.runtime import AgentRuntime
+    from loom.ai.config import AiConfig, McpServerConfig
+    from loom.ai.errors import AgentCompilationIssue
+    from loom.ai.runtime import AgentRuntime, UseCaseMcpGrant
     from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
 
 
@@ -624,6 +626,8 @@ class _AiWiring:
 def _effective_agent_specs(
     config_specs: tuple[str, ...],
     manifest_specs: tuple[str, ...],
+    *,
+    has_declaring_use_case: bool,
 ) -> tuple[str, ...]:
     """Return the single artifact source of the application.
 
@@ -631,9 +635,21 @@ def _effective_agent_specs(
     an implicit precedence would silently ignore half of the agents an
     operator declared.
 
+    Args:
+        config_specs: Glob patterns from ``ai.specs``.
+        manifest_specs: Glob patterns from the manifest ``AGENTS`` attribute.
+        has_declaring_use_case: Whether at least one compiled use case
+            declares an ``Mcp()`` marker (owner decision D1). When ``True``,
+            an empty artifact set is tolerated instead of aborting: a
+            deployment whose only AI usage is ``Mcp()`` no longer has to ship
+            a filler agent artifact it never runs. It still declares
+            ``ai.engine`` and installs the extra — ``_resolve_ai`` resolves
+            the provider unconditionally, and that is where the MCP client
+            factory comes from — this only sheds the filler *artifact*.
+
     Raises:
         AgentCompilationError: When both sources declare artifacts, or when
-            neither does.
+            neither does and no use case declares ``Mcp()``.
     """
     # Local import: same containment rule as '_resolve_ai'; this helper only
     # ever runs from the branch that already decided to load the AI pillar.
@@ -641,7 +657,7 @@ def _effective_agent_specs(
 
     if config_specs and manifest_specs:
         raise AgentCompilationError([agent_specs_conflict()])
-    if not config_specs and not manifest_specs:
+    if not config_specs and not manifest_specs and not has_declaring_use_case:
         raise AgentCompilationError([agent_specs_missing()])
     return config_specs or manifest_specs
 
@@ -653,6 +669,7 @@ def _resolve_ai(
     sql_cfg: SqlConfig | None,
     code_path: Path,
     manifest_agent_specs: tuple[str, ...],
+    use_case_mcp_bindings: DeclaringMcpBindings,
 ) -> _AiWiring:
     """Load the optional ``ai:`` section into its compiled agent runtime.
 
@@ -660,6 +677,11 @@ def _resolve_ai(
     Present section -> the configured engine is resolved, every declared
     artifact is compiled offline, and the runtime is built without opening a
     single connection: its live clients open inside the app lifespan.
+
+    Args:
+        use_case_mcp_bindings: Use cases declaring an ``Mcp()`` marker, from
+            ``_verify_mcp_markers`` — already verified against
+            ``ai.mcp_servers`` by the caller, before this function ever runs.
     """
     if not ctx.has(ConfigKey.AI):
         return _AiWiring(config=None, runtime=None)
@@ -689,11 +711,14 @@ def _resolve_ai(
         sql=sql_cfg,
         native_tools=native_tools,
     )
-    specs = _effective_agent_specs(ai_cfg.specs, manifest_agent_specs)
+    specs = _effective_agent_specs(
+        ai_cfg.specs, manifest_agent_specs, has_declaring_use_case=bool(use_case_mcp_bindings)
+    )
     decoded = load_specs(specs, root=code_path)
     # DecodedSpec, not .spec: the artifact's own path is what resolves a
     # './library' skill grant, and dropping it fails them in real wiring.
     plans = compiler.compile_all(decoded)
+    use_case_mcp = _compile_use_case_mcp(use_case_mcp_bindings, kernel.registry, ai_cfg.mcp_servers)
     runtime = AgentRuntime(
         plans=plans,
         config=ai_cfg,
@@ -706,8 +731,115 @@ def _resolve_ai(
         # validate the grant against.
         mcp_client_factory=mcp_factory,
         a2a_client_factory=a2a_factory,
+        use_case_mcp=use_case_mcp,
     )
     return _AiWiring(config=ai_cfg, runtime=runtime, plans=plans)
+
+
+def _compile_use_case_mcp(
+    declaring: DeclaringMcpBindings,
+    registry: UseCaseRegistry,
+    servers: Mapping[str, McpServerConfig],
+) -> tuple[UseCaseMcpGrant, ...]:
+    """Compile every verified ``Mcp()`` binding into the runtime's own grants.
+
+    ``_verify_mcp_markers`` already checked every binding's server name
+    against this same ``servers`` mapping, so the shared compile helper's own
+    ``mcp_server_unknown`` is unreachable from this call by construction. The
+    caller still raises on one anyway rather than dropping it silently,
+    fail-closed should that ordering ever break — one line, no new
+    vocabulary.
+
+    Args:
+        declaring: Use cases declaring at least one ``Mcp()`` binding, from
+            ``_verify_mcp_markers``.
+        registry: Resolves each use case's registered key.
+        servers: Every MCP server configured for this deployment.
+
+    Returns:
+        One ``UseCaseMcpGrant`` per declared binding, in declaration order.
+
+    Raises:
+        AgentCompilationError: Only if ``_verify_mcp_markers``'s ordering were
+            ever broken and an unknown server reached this call unverified.
+    """
+    # Local imports: same containment rule as '_resolve_ai' — this helper
+    # only ever runs from the branch that already decided to load the AI
+    # pillar.
+    from loom.ai.compiler.phases import compile_mcp_capability
+    from loom.ai.errors import AgentCompilationError
+    from loom.ai.runtime import UseCaseMcpGrant
+
+    grants: list[UseCaseMcpGrant] = []
+    issues: list[AgentCompilationIssue] = []
+    for uc_type, bindings in declaring:
+        usecase = registry.key_for(uc_type) or uc_type.__qualname__
+        for binding in bindings:
+            capability, binding_issues = compile_mcp_capability(
+                binding.server,
+                include=binding.include,
+                exclude=(),
+                servers=servers,
+                component=usecase,
+            )
+            issues.extend(binding_issues)
+            if capability is not None:
+                grants.append(
+                    UseCaseMcpGrant(capability=capability, usecase=usecase, parameter=binding.name)
+                )
+    if issues:
+        raise AgentCompilationError(issues)
+    return tuple(grants)
+
+
+def _verify_mcp_markers(
+    use_cases: Sequence[type[Compilable]],
+    compiler: UseCaseCompiler,
+    registry: UseCaseRegistry,
+    ctx: ConfigContext,
+) -> DeclaringMcpBindings:
+    """Abort start-up when an ``Mcp()`` marker names a server not configured.
+
+    Runs immediately before the ``_resolve_ai`` call, not in the
+    ``_verify_agent_markers`` slot after it: an unknown server must die here
+    so the shared MCP capability compiler (``compile_mcp_capability``) can
+    never be asked to report it for a use case — one condition, one message.
+
+    The AI section is decoded a second time here, once per boot, only when at
+    least one use case declares the marker — ``ConfigContext.section`` caches
+    nothing. Accepted overhead, in exchange for one call site that also
+    covers the no-``ai:``-section case (FR-08) instead of two call sites keyed
+    on whether the section exists.
+
+    Args:
+        use_cases: Every use case compiled for this deployment.
+        compiler: Compiler holding the cached plan of each of them.
+        registry: Resolves a use case's registered key for the error message.
+        ctx: Deployment configuration, read for ``ai.mcp_servers`` only when
+            at least one use case declares the marker.
+
+    Returns:
+        Every use case declaring an ``Mcp()`` binding, paired with those
+        bindings, for ``_resolve_ai`` to compile once verification passes.
+
+    Raises:
+        AgentCompilationError: Aggregating one issue per unknown server name.
+    """
+    declaring = declaring_mcp_bindings(use_cases, compiler)
+    if not declaring:
+        # No use case declares Mcp(): importing 'loom.ai' here, only to find
+        # nothing to check, would be exactly the containment leak
+        # '_resolve_ai' itself avoids for the same absent-section case
+        # (FR-050) — an app with no 'ai:' section must never pull the pillar
+        # in just because start-up ran.
+        return declaring
+    # Local imports: same containment rule as '_resolve_ai'.
+    from loom.ai._startup import verify_mcp_markers
+    from loom.ai.config import AiConfig
+
+    servers = ctx.section(ConfigKey.AI, AiConfig).mcp_servers if ctx.has(ConfigKey.AI) else {}
+    verify_mcp_markers(declaring, registry, servers)
+    return declaring
 
 
 def _bind_agent_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
@@ -1450,12 +1582,16 @@ def create_app(
         ObservabilityRuntime, lambda: observability_runtime, scope=Scope.APPLICATION
     )
     _reject_manifest_agents_without_ai_section(ctx, discovered.agent_specs)
+    use_case_mcp_bindings = _verify_mcp_markers(
+        discovered.use_cases, result.compiler, result.registry, ctx
+    )
     ai = _resolve_ai(
         ctx,
         kernel=result,
         sql_cfg=sql.config,
         code_path=effective_code_path,
         manifest_agent_specs=discovered.agent_specs,
+        use_case_mcp_bindings=use_case_mcp_bindings,
     )
     _verify_agent_markers(discovered.use_cases, result.compiler, result.registry, ai)
     _bind_agent_resolver(result, ai)

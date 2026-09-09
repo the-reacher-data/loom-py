@@ -44,6 +44,7 @@ from loom.ai.compiler import (
     CompiledPythonCapability,
     CompiledSkillsCapability,
 )
+from loom.ai.compiler.phases import compile_mcp_capability
 from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.declarative import (
     A2ACapability,
@@ -271,6 +272,73 @@ class TestMcp:
             ("search_*", "fetch_document"),
             ("delete_*",),
         )
+
+
+class TestCompileMcpCapabilityHelper:
+    """``compile_mcp_capability`` (T201): the shared body ``_compile_mcp`` calls.
+
+    Exercised directly, with no ``AgentSpecV1`` in sight, because it is meant
+    to be reachable from the use-case marker path without the artifact
+    vocabulary — this is what a caller outside the agent capability phase
+    actually calls.
+    """
+
+    def test_resolves_a_configured_server_with_the_callers_own_filter(
+        self, compiler_env_config: AiConfig
+    ) -> None:
+        capability, issues = compile_mcp_capability(
+            "knowledge",
+            include=("search_*",),
+            exclude=(),
+            servers=compiler_env_config.mcp_servers,
+            component="orders.get_order_status",
+        )
+        server = compiler_env_config.mcp_servers["knowledge"]
+        assert issues == []
+        assert isinstance(capability, CompiledMcpCapability)
+        assert (capability.url, capability.include, capability.exclude) == (
+            server.url,
+            ("search_*",),
+            (),
+        )
+
+    def test_reports_server_unknown_when_the_name_is_not_configured(
+        self, compiler_env_config: AiConfig
+    ) -> None:
+        capability, issues = compile_mcp_capability(
+            "nowhere",
+            include=(),
+            exclude=(),
+            servers=compiler_env_config.mcp_servers,
+            component="orders.get_order_status",
+        )
+        assert capability is None
+        (issue,) = issues
+        assert (issue.code, issue.field) == (
+            AgentErrorCode.MCP_SERVER_UNKNOWN,
+            "capabilities.server",
+        )
+
+    def test_the_agent_capability_phase_calls_it_for_an_identical_result(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        plan_for: Callable[..., AgentPlan],
+        compiler_env_config: AiConfig,
+    ) -> None:
+        """The extraction changes nothing observable about the existing path."""
+        spec = spec_factory(
+            capabilities=(McpCapability(server="knowledge", include=("search_*",)),)
+        )
+        via_phase = _capability_of_kind(plan_for(spec), "mcp")
+        via_helper, issues = compile_mcp_capability(
+            "knowledge",
+            include=("search_*",),
+            exclude=(),
+            servers=compiler_env_config.mcp_servers,
+            component=spec.name,
+        )
+        assert issues == []
+        assert via_phase == via_helper
 
 
 class TestA2A:
