@@ -340,7 +340,9 @@ def _gate_autocrud_capabilities(
             pruned.update(_gate_interface(interface, interface.auto_crud_model, wiring, backend))
     mounted = {route.use_case for iface in discovered.interfaces for route in iface.routes}
     dropped = pruned - mounted
-    # Sonar asks to narrow ``replace``'s return; mypy rejects the cast as redundant.
+    # ``replace`` over an explicit constructor: it cannot fall out of step when a
+    # field is added. Sonar's narrowing suggestion here is a false positive, and
+    # mypy rejects the cast it asks for.
     return dataclasses.replace(
         discovered,
         use_cases=tuple(uc for uc in discovered.use_cases if uc not in dropped),
