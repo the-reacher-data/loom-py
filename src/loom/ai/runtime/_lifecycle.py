@@ -63,6 +63,7 @@ from loom.ai.errors import (
 from loom.ai.runtime._bounded import RunContext
 from loom.ai.runtime._chain import enter_agent_call, exit_agent_call
 from loom.ai.runtime._conversation import load_conversation
+from loom.ai.runtime._grants import AgentGrants, McpGrant
 from loom.ai.runtime._health import AgentHealth, worst
 from loom.ai.runtime._hooks import hooked_events, no_terminal_message
 from loom.ai.runtime._limits import cancel_task, supervised_events
@@ -206,6 +207,7 @@ class AgentRuntime:
         self._tool_catalog: dict[str, tuple[McpToolInfo, ...]] = {}
         self._live: set[str] = set()
         self._health: dict[str, AgentHealth] = {}
+        self._grants: dict[str, AgentGrants] = {}
         self._runs = asyncio.Semaphore(config.max_concurrent_runs)
 
     async def __aenter__(self) -> Self:
@@ -234,6 +236,7 @@ class AgentRuntime:
             # is proceeding without, so the filter pass gets a fresh one.
             await self._verify_tool_filters(self._startup_deadline() if tolerated else deadline)
             self._build_engines()
+            self._grants = self._build_grants()
             self._start_health_probe(stack)
         except BaseException:
             self._stack = None
@@ -271,6 +274,7 @@ class AgentRuntime:
         self._sessions.clear()
         self._tool_catalog.clear()
         self._live.clear()
+        self._grants.clear()
         await stack.aclose()
 
     def agent_names(self) -> tuple[str, ...]:
@@ -762,42 +766,55 @@ class AgentRuntime:
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
         slot = self._require_slot(name)
         _check_conversation_id(conversation_id)
-        # Pushed before admission is taken: a run refused for a cycle or for
-        # exceeding 'max_agent_depth' must never occupy a concurrency permit
-        # it will just give back. The default depth of one means this push
-        # alone already consumes the whole budget the top-level run gets — a
-        # use case nested underneath (an output hook, most concretely) that
-        # declares its own Agent() marker finds no depth left, by design.
+        async with self._chain_bound(name), self._admitted(name):
+            run = RunContext(
+                plan=slot.plan,
+                identity=identity,
+                interaction_id=uuid4().hex,
+                conversation_id=conversation_id,
+            )
+            conversation = await load_conversation(run, self._deps, self._container)
+            engine_stream = _open_engine_stream(
+                slot.engine,
+                prompt,
+                identity=identity,
+                conversation=conversation,
+                output_type=output_type,
+            )
+            async with engine_stream as events:
+                supervised = supervised_events(events, slot.plan.policies)
+                hooked = hooked_events(supervised, run, self._deps, self._container)
+                try:
+                    yield hooked
+                finally:
+                    await hooked.aclose()
+                    await supervised.aclose()
+
+    @asynccontextmanager
+    async def _chain_bound(self, name: str) -> AsyncIterator[None]:
+        """Enter *name* on the call chain for the body, and always leave it after.
+
+        Entered before :meth:`_admitted`: a run refused for a cycle or for
+        exceeding ``max_agent_depth`` must never occupy a concurrency permit
+        it will just give back. The default depth of one means this push
+        alone already consumes the whole budget the top-level run gets — a
+        use case nested underneath (an output hook, most concretely) that
+        declares its own ``Agent()`` marker finds no depth left, by design.
+        """
         prior_chain = enter_agent_call(name, max_depth=self._config.max_agent_depth)
         try:
-            await self._admit(name)
-            try:
-                run = RunContext(
-                    plan=slot.plan,
-                    identity=identity,
-                    interaction_id=uuid4().hex,
-                    conversation_id=conversation_id,
-                )
-                conversation = await load_conversation(run, self._deps, self._container)
-                engine_stream = _open_engine_stream(
-                    slot.engine,
-                    prompt,
-                    identity=identity,
-                    conversation=conversation,
-                    output_type=output_type,
-                )
-                async with engine_stream as events:
-                    supervised = supervised_events(events, slot.plan.policies)
-                    hooked = hooked_events(supervised, run, self._deps, self._container)
-                    try:
-                        yield hooked
-                    finally:
-                        await hooked.aclose()
-                        await supervised.aclose()
-            finally:
-                self._runs.release()
+            yield
         finally:
             exit_agent_call(prior_chain)
+
+    @asynccontextmanager
+    async def _admitted(self, name: str) -> AsyncIterator[None]:
+        """Take a run slot for the body, and always release it after."""
+        await self._admit(name)
+        try:
+            yield
+        finally:
+            self._runs.release()
 
     async def _admit(self, name: str) -> None:
         """Take a run slot, refusing instead of queueing when none is free."""
@@ -814,138 +831,70 @@ class AgentRuntime:
 
     # -- grants (T301/T303) -------------------------------------------------
     #
-    # Read by ``loom.ai.runtime._handle``/``loom.ai.runtime._grants`` alone,
-    # never by application code: an ``AgentHandle`` is the only public door
-    # onto a plan's granted resources. Kept as methods of ``AgentRuntime``
-    # rather than reached through its private attributes directly, so the
-    # grant views depend on one small, named surface instead of on the
-    # runtime's storage shape.
+    # Read by ``loom.ai.runtime._handle`` alone, never by application code:
+    # an ``AgentHandle`` is the only public door onto a plan's granted
+    # resources. One method, returning one immutable value per agent, rather
+    # than the wider method-per-fact surface this used to be: a marker-driven
+    # run reads ``grants(name)`` once instead of repeating a linear scan over
+    # ``plan.capabilities`` — once per grant lookup, once per policy read —
+    # on every call a use case makes through its handle.
 
-    def mcp_grant(
-        self, name: str, server: str
-    ) -> tuple[CompiledMcpCapability, SharedMcpSession, tuple[McpToolInfo, ...]] | None:
-        """Return one agent's own MCP grant, its shared session and its tools.
-
-        The session and the tool catalogue are exactly what start-up already
-        opened and listed for this server — never a second connection, never
-        a second listing.
+    def grants(self, name: str) -> AgentGrants:
+        """Return one agent's own resolved grants, built once at start-up.
 
         Args:
-            name: Agent whose grants are searched.
-            server: Server name as the artefact's ``mcp`` capability declares.
+            name: Agent whose grants are read.
 
         Returns:
-            ``None`` when the agent grants no such server.
+            The immutable :class:`~loom.ai.runtime._grants.AgentGrants` this
+            runtime resolved for *name* when it was entered.
 
         Raises:
             KeyError: When no agent is named *name*.
         """
-        for capability in self._require_plan(name).capabilities:
-            if type(capability) is CompiledMcpCapability and capability.server == server:
-                key = mcp_key(capability)
-                session = self._sessions.get(key)
-                if session is None:
-                    return None
-                return capability, session, self._tool_catalog.get(key, ())
-        return None
+        self._require_plan(name)
+        return self._grants[name]
 
-    def sql_grant(self, name: str, connection: str) -> CompiledSqlCapability | None:
-        """Return one agent's own SQL grant, by connection name.
+    def _build_grants(self) -> dict[str, AgentGrants]:
+        """Resolve every plan's grants once, right after its engine is built."""
+        return {name: self._plan_grants(plan) for name, plan in self._plans.items()}
 
-        Args:
-            name: Agent whose grants are searched.
-            connection: Connection name as the artefact's ``sql`` capability
-                declares it.
-
-        Returns:
-            ``None`` when the agent grants no such connection.
-
-        Raises:
-            KeyError: When no agent is named *name*.
-        """
-        for capability in self._require_plan(name).capabilities:
-            if type(capability) is CompiledSqlCapability and capability.connection == connection:
-                return capability
-        return None
-
-    def mcp_grant_names(self, name: str) -> tuple[str, ...]:
-        """Return every ``mcp`` server one agent grants, in declaration order.
-
-        Raises:
-            KeyError: When no agent is named *name*.
-        """
-        return tuple(
-            capability.server
-            for capability in self._require_plan(name).capabilities
-            if type(capability) is CompiledMcpCapability
-        )
-
-    def sql_grant_names(self, name: str) -> tuple[str, ...]:
-        """Return every ``sql`` connection one agent grants, in declaration order.
-
-        Raises:
-            KeyError: When no agent is named *name*.
-        """
-        return tuple(
-            capability.connection
-            for capability in self._require_plan(name).capabilities
-            if type(capability) is CompiledSqlCapability
-        )
-
-    def grant_names(self, name: str) -> tuple[str, ...]:
-        """Return every ``mcp`` server and ``sql`` connection one agent grants.
-
-        Args:
-            name: Agent to describe.
-
-        Returns:
-            Every granted server and connection name, in declaration order.
-
-        Raises:
-            KeyError: When no agent is named *name*.
-        """
-        names: list[str] = []
-        for capability in self._require_plan(name).capabilities:
+    def _plan_grants(self, plan: AgentPlan) -> AgentGrants:
+        """Resolve one plan's ``mcp``/``sql`` grants against the clients start-up opened."""
+        mcp: dict[str, McpGrant] = {}
+        sql: dict[str, CompiledSqlCapability] = {}
+        mcp_names: list[str] = []
+        for capability in plan.capabilities:
             if type(capability) is CompiledMcpCapability:
-                names.append(capability.server)
+                mcp_names.append(capability.server)
+                grant = self._mcp_grant(capability)
+                if grant is not None:
+                    mcp[capability.server] = grant
             elif type(capability) is CompiledSqlCapability:
-                names.append(capability.connection)
-        return tuple(names)
+                sql[capability.connection] = capability
+        hook = plan.on_output
+        return AgentGrants(
+            mcp=MappingProxyType(mcp),
+            sql=MappingProxyType(sql),
+            mcp_names=tuple(mcp_names),
+            tool_timeout_s=plan.policies.tool_timeout_ms / 1000,
+            output_shape_bound=hook is not None and HOOK_OUTPUT_FIELD in hook.accepted,
+        )
 
-    def tool_timeout_s(self, name: str) -> float:
-        """Return one agent's own ``tool_timeout_ms``, in seconds.
+    def _mcp_grant(self, capability: CompiledMcpCapability) -> McpGrant | None:
+        """Pair one compiled ``mcp`` capability with its live session, if one opened.
 
-        Args:
-            name: Agent whose policy is read.
-
-        Raises:
-            KeyError: When no agent is named *name*.
+        ``None`` under ``ai.remote_clients: optional`` for a server whose
+        connection was tolerated as unreachable — the same case
+        ``mcp_grant`` used to signal with its own ``None`` return.
         """
-        return self._require_plan(name).policies.tool_timeout_ms / 1000
-
-    def output_hook_shape_bound(self, name: str) -> bool:
-        """Report whether one agent's output hook declares the ``output`` field.
-
-        Args:
-            name: Agent to check.
-
-        Returns:
-            ``True`` when a per-run shape override must be refused before the
-            model is called (T304): the hook's command was compiled against
-            the artefact's own declared output, so it cannot take another
-            shape. ``False`` for an agent with no hook, or one whose hook
-            declares only conversation-bookkeeping fields.
-
-        Raises:
-            KeyError: When no agent is named *name*.
-        """
-        hook = self._require_plan(name).on_output
-        return hook is not None and HOOK_OUTPUT_FIELD in hook.accepted
-
-    @property
-    def container(self) -> LoomContainer:
-        """Application container the grant views resolve services from."""
-        return self._container
+        key = mcp_key(capability)
+        session = self._sessions.get(key)
+        if session is None:
+            return None
+        return McpGrant(
+            capability=capability, session=session, catalogue=self._tool_catalog.get(key, ())
+        )
 
     def _require_plan(self, name: str) -> AgentPlan:
         plan = self._plans.get(name)

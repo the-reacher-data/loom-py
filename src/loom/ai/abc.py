@@ -242,8 +242,11 @@ class McpHandle(Protocol):
 
         Raises:
             AgentRunError: With a code naming why the call failed — the tool
-                is outside this grant's filter, or the tool reported a
-                failure.
+                is outside this grant's filter, the tool reported a failure,
+                or the server returned structured content that is not a
+                mapping (a list, a scalar) — a contradiction of the protocol
+                this method returns, distinct from returning no structured
+                content at all, which comes back as ``{}``.
         """
         ...
 
@@ -376,15 +379,19 @@ class AgentHandle(Protocol[AnswerT]):
         *,
         conversation_id: str | None = None,
     ) -> AgentAnswer[str]:
-        """Run the agent for open prose, with no output shape at all.
+        """Run the agent for open prose, pinning this run's answer to ``str``.
 
-        Distinct from ``run(prompt, expect=str)`` rather than a third
-        overload of it: this mode decodes nothing, so it has no decode
-        failures, runs no output check, and never interacts with the
-        pinned-output-mode refusal, because there is no declared shape for
-        anything to conflict with. The name states the form — open text —
-        not the author's intent, because the form is the only part loom
-        knows.
+        A named spelling of ``run(prompt, expect=str)`` rather than a third
+        overload of it — the name states the form this run asks for, open
+        prose, not the author's intent, because the form is the only part
+        loom knows. Being a shape pin, this mode runs no output check
+        (:meth:`run`'s own note on ``expect`` applies here too: the check is
+        compiled against the artefact's declared schema and cannot validate
+        another one) and is refused before the model is called under
+        exactly the condition ``run``'s ``expect`` is: when the artefact's
+        output hook command declares the ``output`` field, which was
+        compiled against the declared shape and cannot be handed ``str``
+        instead.
 
         Args:
             prompt: Prompt for this run.
@@ -393,6 +400,12 @@ class AgentHandle(Protocol[AnswerT]):
 
         Returns:
             The model's own prose, this run's usage and its interaction id.
+
+        Raises:
+            AgentRunError: With ``AGENT_RUN_SHAPE_WITH_HOOK`` when the
+                artefact's output hook command declares the ``output``
+                field — refused before the model is called, for the same
+                reason :meth:`run` raises it with ``expect`` given.
         """
         ...
 
@@ -654,7 +667,18 @@ class McpToolCallResult(LoomFrozenStruct, frozen=True, kw_only=True):
 
 
 class McpSession(Protocol):
-    """Minimal MCP session the runtime needs from any client library."""
+    """Minimal MCP session the runtime needs from any client library.
+
+    Migration (breaking, from v1.16.1): ``list_tools`` used to return tool
+    names (``tuple[str, ...]``) and ``call_tool`` used to return the server's
+    structured content directly (``object``). Both shapes shipped, so a
+    third-party session implementing this Protocol has to update both methods.
+    ``list_tools`` now returns :class:`McpToolInfo` so a caller can see which
+    tools publish an output schema, and ``call_tool`` now returns
+    :class:`McpToolCallResult` so a caller can see the server's own failure
+    flag instead of having it silently folded into a successful-looking
+    return. Nothing else about the Protocol moved.
+    """
 
     async def list_tools(self) -> tuple[McpToolInfo, ...]:
         """Return the tools the server exposes.

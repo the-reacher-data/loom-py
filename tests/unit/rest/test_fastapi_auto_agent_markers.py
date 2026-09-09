@@ -25,6 +25,7 @@ from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.sql.service import NullSqlQueryService, SqlQueryService
 from loom.core.use_case import Agent
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.invoker import AppInvoker
@@ -159,8 +160,16 @@ class TestAgregacionDeProblemas:
 
 
 def _kernel_runtime() -> KernelRuntime:
-    """Build a real, minimal ``KernelRuntime`` — every collaborator genuine, none stubbed."""
+    """Build a real, minimal ``KernelRuntime`` — every collaborator genuine, none stubbed.
+
+    ``SqlQueryService`` is registered the same way ``create_app`` always
+    registers it (M5), before ``_bind_agent_resolver`` ever runs: that
+    function resolves it unconditionally now, so an unregistered container
+    here would fail every test in this class for a reason unrelated to what
+    each one is pinning.
+    """
     container = LoomContainer()
+    container.register_instance(SqlQueryService, NullSqlQueryService())
     compiler = UseCaseCompiler()
     factory = UseCaseFactory(container)
     executor = RuntimeExecutor(compiler)

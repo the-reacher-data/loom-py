@@ -33,21 +33,21 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
-from typing import Any, TypeVar
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import msgspec
 
-from loom.ai._filters import matches
-from loom.ai.abc import McpToolInfo
+from loom.ai._filters import admits
+from loom.ai._roles import bound_query_roles
+from loom.ai.abc import McpHandle, McpToolInfo, SqlGrantHandle
 from loom.ai.compiler import CompiledMcpCapability, CompiledSqlCapability
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.runtime._mcp import SharedMcpSession
-from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.sql.abc import RoleNotAllowedError, RolesNotBoundError, SqlQueryResult
-from loom.core.sql.roles import resolve_query_roles
+from loom.core.sql.abc import SqlQueryResult
 from loom.core.sql.service import SqlQueryService
 
 _T = TypeVar("_T")
@@ -55,9 +55,62 @@ _T = TypeVar("_T")
 
 def _tool_allowed(name: str, capability: CompiledMcpCapability) -> bool:
     """Same include-then-exclude rule the model's own toolset filter applies."""
-    if capability.include and not matches(name, capability.include):
-        return False
-    return not matches(name, capability.exclude)
+    return admits(name, include=capability.include, exclude=capability.exclude)
+
+
+@dataclass(frozen=True, slots=True)
+class McpGrant:
+    """One agent's own ``mcp`` grant, resolved once at start-up.
+
+    Carries exactly what :meth:`~loom.ai.abc.AgentHandle.mcp` needs to build
+    its view: the compiled capability, the worker's shared session for that
+    server and the tool catalogue start-up already listed — never a second
+    connection, never a second listing.
+    """
+
+    capability: CompiledMcpCapability
+    session: SharedMcpSession
+    catalogue: tuple[McpToolInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AgentGrants:
+    """Every ``mcp``/``sql`` grant one agent was compiled with, resolved once.
+
+    Built once per plan at start-up by
+    :meth:`~loom.ai.runtime.AgentRuntime.grants`, so a marker-driven run
+    never repeats the linear scan over ``plan.capabilities`` that finding
+    one grant, or one policy, would otherwise cost on every call.
+
+    Attributes:
+        mcp: Live ``mcp`` grants by server name; a server declared under
+            ``ai.remote_clients: optional`` whose connection was never
+            opened has no entry here.
+        sql: Compiled ``sql`` grants by connection name.
+        mcp_names: Every ``mcp`` server this agent declares, in declaration
+            order — including one whose connection never opened, so an
+            "unknown grant" refusal can still name it.
+        tool_timeout_s: The plan's own ``tool_timeout_ms``, in seconds.
+        output_shape_bound: Whether the plan's output hook declares the
+            ``output`` field, so a per-run shape override must be refused
+            (T304).
+    """
+
+    mcp: Mapping[str, McpGrant]
+    sql: Mapping[str, CompiledSqlCapability]
+    mcp_names: tuple[str, ...]
+    tool_timeout_s: float
+    output_shape_bound: bool
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Every ``mcp`` server and ``sql`` connection this agent declares.
+
+        Declaration order across both kinds — the shape
+        :meth:`~loom.ai.abc.AgentHandle.grants` returns — computed rather
+        than stored, so the two underlying lists cannot drift apart from it.
+        """
+        return (*self.mcp_names, *self.sql)
 
 
 class McpGrantView:
@@ -113,10 +166,27 @@ class McpGrantView:
             ) from exc
 
     async def call_untyped(self, tool: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Call *tool* and return the server's own structured content, undecoded."""
+        """Call *tool* and return the server's own structured content, undecoded.
+
+        ``None`` — a server that returned no structured content at all — is
+        the one shape folded into ``{}`` here: an absence, not a
+        contradiction. Any other non-mapping content (a list, a scalar) is a
+        server publishing a result its own protocol does not allow, and is
+        refused rather than silently discarded — the same "a server that
+        contradicts itself fails" rule :meth:`call` applies through
+        ``TOOL_DECODE_FAILED``.
+        """
         self._require_tool(tool)
         structured = await self._call(tool, arguments)
-        return structured if isinstance(structured, Mapping) else {}
+        if structured is None:
+            return {}
+        if not isinstance(structured, Mapping):
+            raise AgentRunError(
+                AgentRunErrorCode.TOOL_RESULT_UNSTRUCTURED,
+                f"tool {tool!r} of mcp server {self._capability.server!r} returned "
+                f"{type(structured).__name__} instead of a structured mapping",
+            )
+        return structured
 
     async def _call(self, tool: str, arguments: Mapping[str, Any]) -> object | None:
         async with self._guard(tool):
@@ -165,20 +235,31 @@ class McpGrantView:
 
 
 class SqlGrantView:
-    """The concrete :class:`~loom.ai.abc.SqlGrantHandle` an ``AgentHandle.sql()`` returns."""
+    """The concrete :class:`~loom.ai.abc.SqlGrantHandle` an ``AgentHandle.sql()`` returns.
+
+    Args:
+        agent: Agent this grant belongs to, named in its own span.
+        capability: Compiled ``sql`` capability this view is bounded by.
+        sql_query_service: The application's single, already-resolved query
+            service — resolved once by whoever builds the marker resolver,
+            never per call and never by reaching into a container this view
+            holds no reference to.
+        identity: Verified caller whose roles bind this view's queries.
+        observability: Runtime this view's own span opens on, or ``None``.
+    """
 
     def __init__(
         self,
         *,
         agent: str,
         capability: CompiledSqlCapability,
-        container: LoomContainer,
+        sql_query_service: SqlQueryService,
         identity: Identity,
         observability: ObservabilityRuntime | None,
     ) -> None:
         self._agent = agent
         self._capability = capability
-        self._container = container
+        self._sql_query_service = sql_query_service
         self._identity = identity
         self._observability = observability
 
@@ -189,10 +270,9 @@ class SqlGrantView:
         parameters: Mapping[str, Any] | None = None,
     ) -> Sequence[Mapping[str, Any]]:
         """Run *statement* with the caller's roles, under this grant's own bounds."""
-        roles = self._bound_roles()
-        service: SqlQueryService = self._container.resolve(SqlQueryService)
+        roles = bound_query_roles(self._capability, self._identity)
         with self._span(roles):
-            result = await service.execute(
+            result = await self._sql_query_service.execute(
                 statement,
                 connection=self._capability.connection,
                 roles=roles,
@@ -200,37 +280,6 @@ class SqlGrantView:
                 limit=self._capability.max_rows,
             )
         return _bounded_rows(self._capability, result)
-
-    def _bound_roles(self) -> tuple[str, ...]:
-        """Resolve the caller's roles; the connection's shared role is unreachable.
-
-        Mirrors :func:`~loom.ai.engines.pydantic_ai._capabilities._bound_roles`
-        exactly: ``roles_bound`` is hard-coded ``True`` and the result is
-        re-checked for emptiness, because ``()`` would fall through
-        ``SqlQueryService.execute`` to the connection's shared ``default_role``
-        (FR-043a).
-        """
-        allowed = frozenset(self._capability.config.allowed_roles)
-        try:
-            roles = resolve_query_roles(
-                self._identity,
-                connection=self._capability.connection,
-                roles_bound=True,
-                allowed_roles=allowed,
-                requested_roles=None,
-            )
-        except (RolesNotBoundError, RoleNotAllowedError) as exc:
-            raise AgentRunError(
-                AgentRunErrorCode.UNAUTHORIZED,
-                f"the caller may not query the {self._capability.connection!r} connection",
-            ) from exc
-        if not roles:
-            raise AgentRunError(
-                AgentRunErrorCode.UNAUTHORIZED,
-                "no role of the caller is allowlisted on the "
-                f"{self._capability.connection!r} connection",
-            )
-        return roles
 
     def _span(self, roles: tuple[str, ...]) -> AbstractContextManager[None]:
         if self._observability is None:
@@ -245,6 +294,11 @@ class SqlGrantView:
         )
 
 
+_JSON_ARRAY_OVERHEAD = len(b"[]")
+"""Bytes an empty JSON array costs; every row added past the first also costs
+one byte for the ``,`` joining it to the previous one."""
+
+
 def _bounded_rows(
     capability: CompiledSqlCapability, result: SqlQueryResult
 ) -> tuple[Mapping[str, Any], ...]:
@@ -255,15 +309,34 @@ def _bounded_rows(
     trailing rows so the encoded payload never exceeds ``max_result_bytes`` —
     the same "truncate, don't refuse" contract
     :meth:`~loom.ai.abc.SqlGrantHandle.query` documents.
+
+    Each row is encoded exactly once and its size accumulated, rather than
+    re-encoding the whole kept list on every row: the running total is
+    arithmetically identical to ``len(msgspec.json.encode(kept))`` for a
+    compact JSON array (no whitespace between elements), so the bound this
+    reaches is the same one the naive re-encode would have found, at O(n)
+    instead of O(n^2) in the number of rows.
     """
     columns = tuple(column.name for column in result.columns)
     kept: list[Mapping[str, Any]] = []
+    total = _JSON_ARRAY_OVERHEAD
     for row in result.rows:
-        candidate = [*kept, dict(zip(columns, row, strict=True))]
-        if len(msgspec.json.encode(candidate)) > capability.max_result_bytes:
+        mapped = dict(zip(columns, row, strict=True))
+        separator = 1 if kept else 0
+        total += len(msgspec.json.encode(mapped)) + separator
+        if total > capability.max_result_bytes:
             break
-        kept.append(candidate[-1])
+        kept.append(mapped)
     return tuple(kept)
 
 
-__all__ = ["McpGrantView", "SqlGrantView"]
+if TYPE_CHECKING:  # each view satisfies the public Protocol it stands in for (A3)
+
+    def _mcp_grant_view_satisfies_mcp_handle(view: McpGrantView) -> McpHandle:
+        return view
+
+    def _sql_grant_view_satisfies_sql_grant_handle(view: SqlGrantView) -> SqlGrantHandle:
+        return view
+
+
+__all__ = ["AgentGrants", "McpGrant", "McpGrantView", "SqlGrantView"]

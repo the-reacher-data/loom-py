@@ -7,7 +7,7 @@ ordering, and the SQL view's role binding and byte-bound truncation.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import msgspec
@@ -17,10 +17,9 @@ from loom.ai.abc import McpToolCallResult, McpToolInfo
 from loom.ai.compiler import CompiledMcpCapability, CompiledSqlCapability
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.runtime._grants import McpGrantView, SqlGrantView
-from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
 from loom.core.sql.abc.contracts import SqlColumn, SqlQueryResult
-from loom.core.sql.config import SqlConnectionConfig
+from loom.core.sql.config import SqlConfig, SqlConnectionConfig
 from loom.core.sql.service import SqlQueryService
 from tests.integration.ai.conftest import make_mcp_capability, make_sql_capability
 
@@ -229,25 +228,54 @@ class TestLlamadaSinTipar:
 
         assert result == {"anything": True}
 
+    async def test_sin_contenido_estructurado_devuelve_un_mapa_vacio(self) -> None:
+        """La ausencia legítima de contenido — no una contradicción — se pliega a ``{}``."""
+        capability = make_mcp_capability()
+        catalogue = (McpToolInfo(name="raw_tool", has_output_schema=False),)
+        session = FakeSession(
+            tools=catalogue,
+            results={"raw_tool": McpToolCallResult(ok=True, structured=None)},
+        )
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        result = await view.call_untyped("raw_tool", {})
+
+        assert result == {}
+
+    async def test_un_contenido_no_mapa_se_rechaza_en_vez_de_descartarse(self) -> None:
+        """Una lista o un escalar contradicen el protocolo; no se pliegan a ``{}`` en silencio."""
+        capability = make_mcp_capability()
+        catalogue = (McpToolInfo(name="raw_tool", has_output_schema=False),)
+        session = FakeSession(
+            tools=catalogue,
+            results={"raw_tool": McpToolCallResult(ok=True, structured=["not", "a", "mapping"])},
+        )
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        with pytest.raises(AgentRunError) as excinfo:
+            await view.call_untyped("raw_tool", {})
+
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_RESULT_UNSTRUCTURED
+        assert "list" in str(excinfo.value)
+
 
 def _sql_view(
-    *, capability: CompiledSqlCapability, identity: Identity, service: object
+    *, capability: CompiledSqlCapability, identity: Identity, service: SqlQueryService
 ) -> SqlGrantView:
-    container = LoomContainer()
-    container.register_instance(SqlQueryService, service)
     return SqlGrantView(
         agent=_AGENT,
         capability=capability,
-        container=container,
+        sql_query_service=service,
         identity=identity,
         observability=None,
     )
 
 
-class FakeSqlQueryService:
+class FakeSqlQueryService(SqlQueryService):
     """A double of ``SqlQueryService`` returning a fixed result and recording roles."""
 
     def __init__(self, result: SqlQueryResult) -> None:
+        super().__init__(executors={}, config=SqlConfig(connections={}))
         self._result = result
         self.roles: tuple[str, ...] | None = None
 
@@ -256,13 +284,13 @@ class FakeSqlQueryService:
         sql: str,
         *,
         connection: str,
-        roles: tuple[str, ...] | None = None,
+        roles: Sequence[str] | None = None,
         parameters: Mapping[str, Any] | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> SqlQueryResult:
         del sql, connection, parameters, limit, offset
-        self.roles = roles
+        self.roles = tuple(roles) if roles is not None else None
         return self._result
 
 
@@ -343,3 +371,38 @@ class TestCotasDelResultadoSql:
 
         assert len(result) < len(rows)
         assert len(msgspec.json.encode(list(result))) <= capability.max_result_bytes
+
+    @pytest.mark.parametrize(
+        ("max_result_bytes", "expected_rows"),
+        [
+            (20, 0),  # one byte short of the first row's own encoded array
+            (21, 1),  # exactly the first row's own encoded array
+            (40, 1),  # one byte short of both rows plus their separator
+            (41, 2),  # exactly both rows plus their separator
+        ],
+    )
+    async def test_el_corte_cae_exactamente_en_el_limite_de_bytes(
+        self, max_result_bytes: int, expected_rows: int
+    ) -> None:
+        """Pins the exact boundary: the encoded array overhead and the row
+        separator are counted once each, not approximated.
+        """
+        capability = make_sql_capability()
+        capability = msgspec.structs.replace(
+            capability,
+            config=SqlConnectionConfig(
+                backend="clickhouse",
+                url=capability.config.url,
+                allowed_roles=("analyst",),
+                readonly=True,
+            ),
+            max_result_bytes=max_result_bytes,
+        )
+        rows = ((1, "a"), (2, "b"))
+        service = FakeSqlQueryService(_result(*rows))
+        view = _sql_view(capability=capability, identity=_CALLER, service=service)
+
+        result = await view.query("select * from t")
+
+        assert len(result) == expected_rows
+        assert len(msgspec.json.encode(list(result))) <= max_result_bytes

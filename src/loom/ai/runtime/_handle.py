@@ -26,16 +26,17 @@ second one.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from loom.ai.abc import AgentAnswer, McpHandle, SqlGrantHandle
+from loom.ai.abc import AgentAnswer, AgentHandle, McpHandle, SqlGrantHandle
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
-from loom.ai.runtime._grants import McpGrantView, SqlGrantView
+from loom.ai.runtime._grants import AgentGrants, McpGrantView, SqlGrantView
 from loom.ai.runtime._lifecycle import AgentRuntime
 from loom.core.identity import Identity
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.observability.span import LoomSpan
+from loom.core.sql.service import SqlQueryService
 
 
 class _BoundAgentHandle:
@@ -52,6 +53,10 @@ class _BoundAgentHandle:
             registered, matching every other optional-observability
             collaborator in this codebase (e.g.
             :class:`~loom.core.sql.caller_bound.CallerBoundSql`).
+        sql_query_service: The application's single, already-resolved query
+            service, handed to every :class:`~loom.ai.runtime._grants.SqlGrantView`
+            this handle builds — this handle never reaches into the runtime
+            for it, and the runtime holds no container to reach into.
     """
 
     def __init__(
@@ -61,11 +66,13 @@ class _BoundAgentHandle:
         runtime: AgentRuntime,
         identity: Identity,
         observability: ObservabilityRuntime | None,
+        sql_query_service: SqlQueryService,
     ) -> None:
         self._name = name
         self._runtime = runtime
         self._identity = identity
         self._observability = observability
+        self._sql_query_service = sql_query_service
 
     async def run(
         self,
@@ -144,16 +151,16 @@ class _BoundAgentHandle:
             AgentRunError: With ``MCP_GRANT_UNKNOWN`` when the artefact
                 declares no ``mcp`` grant on that server name.
         """
-        grant = self._runtime.mcp_grant(self._name, server)
+        grants = self._runtime.grants(self._name)
+        grant = grants.mcp.get(server)
         if grant is None:
-            raise self._mcp_grant_unknown(server)
-        capability, session, catalogue = grant
+            raise self._mcp_grant_unknown(server, grants)
         return McpGrantView(
             agent=self._name,
-            capability=capability,
-            session=session,
-            catalogue=catalogue,
-            timeout_s=self._runtime.tool_timeout_s(self._name),
+            capability=grant.capability,
+            session=grant.session,
+            catalogue=grant.catalogue,
+            timeout_s=grants.tool_timeout_s,
             identity=self._identity,
             observability=self._observability,
         )
@@ -165,23 +172,24 @@ class _BoundAgentHandle:
             AgentRunError: With ``SQL_GRANT_UNKNOWN`` when the artefact
                 declares no ``sql`` grant on that connection name.
         """
-        capability = self._runtime.sql_grant(self._name, connection)
+        grants = self._runtime.grants(self._name)
+        capability = grants.sql.get(connection)
         if capability is None:
-            raise self._sql_grant_unknown(connection)
+            raise self._sql_grant_unknown(connection, grants)
         return SqlGrantView(
             agent=self._name,
             capability=capability,
-            container=self._runtime.container,
+            sql_query_service=self._sql_query_service,
             identity=self._identity,
             observability=self._observability,
         )
 
     def grants(self) -> tuple[str, ...]:
         """Return every grant name reachable through :meth:`mcp` and :meth:`sql`."""
-        return self._runtime.grant_names(self._name)
+        return self._runtime.grants(self._name).names
 
-    def _mcp_grant_unknown(self, server: str) -> AgentRunError:
-        granted = self._runtime.mcp_grant_names(self._name)
+    def _mcp_grant_unknown(self, server: str, grants: AgentGrants) -> AgentRunError:
+        granted = grants.mcp_names
         if granted:
             detail = f"mcp servers this agent grants: {', '.join(granted)}"
         else:
@@ -194,8 +202,8 @@ class _BoundAgentHandle:
             f"agent {self._name!r} grants no mcp server named {server!r}; {detail}",
         )
 
-    def _sql_grant_unknown(self, connection: str) -> AgentRunError:
-        granted = self._runtime.sql_grant_names(self._name)
+    def _sql_grant_unknown(self, connection: str, grants: AgentGrants) -> AgentRunError:
+        granted = tuple(grants.sql)
         if granted:
             detail = f"sql connections this agent grants: {', '.join(granted)}"
         else:
@@ -223,7 +231,7 @@ class _BoundAgentHandle:
 
     def _require_shape_allowed(self) -> None:
         """Refuse a per-run shape when the output hook's command needs the declared one (T304)."""
-        if self._runtime.output_hook_shape_bound(self._name):
+        if self._runtime.grants(self._name).output_shape_bound:
             raise AgentRunError(
                 AgentRunErrorCode.AGENT_RUN_SHAPE_WITH_HOOK,
                 f"agent {self._name!r} declares an output hook that reads the run's "
@@ -272,16 +280,23 @@ class _BoundAgentHandle:
 def agent_marker_resolver(
     runtime: AgentRuntime,
     *,
+    sql_query_service: SqlQueryService,
     observability: ObservabilityRuntime | None,
 ) -> Any:
     """Build the resolver ``RuntimeExecutor.bind_agent_resolver`` takes.
 
     Kept a plain factory function, not a class, because it closes over
-    nothing but the two collaborators every handle it builds needs — the
-    live runtime and the observability runtime the handle's span opens on.
+    nothing but the collaborators every handle it builds needs — the live
+    runtime, the application's single query service and the observability
+    runtime the handle's span opens on. ``sql_query_service`` is resolved by
+    the caller, once, the same way the composition root resolves it for
+    every other consumer (M5): a handle never reaches into a container for
+    it, and ``AgentRuntime`` holds no container to reach into.
 
     Args:
         runtime: Live agent runtime serving this deployment.
+        sql_query_service: The application's single query service, handed to
+            every ``sql`` grant view a resolved handle builds.
         observability: Runtime every handle's span opens on, or ``None``.
 
     Returns:
@@ -297,9 +312,16 @@ def agent_marker_resolver(
             runtime=runtime,
             identity=identity,
             observability=observability,
+            sql_query_service=sql_query_service,
         )
 
     return _resolve
+
+
+if TYPE_CHECKING:  # the handle satisfies the public Protocol it stands in for (A3)
+
+    def _bound_handle_satisfies_agent_handle(handle: _BoundAgentHandle) -> AgentHandle[Any]:
+        return handle
 
 
 __all__ = ["agent_marker_resolver"]

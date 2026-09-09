@@ -32,7 +32,7 @@ from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
 from loom.core.sql.abc.contracts import SqlColumn, SqlQueryResult
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
-from loom.core.sql.service import SqlQueryService
+from loom.core.sql.service import NullSqlQueryService, SqlQueryService
 from loom.core.use_case import Agent, UseCase
 from tests.integration.ai.conftest import (
     MARKER_AGENT_NAME,
@@ -184,7 +184,14 @@ def _wired(
         mcp_client_factory=mcp_client_factory(mcp_clients or {}),  # type: ignore[arg-type]
         sql_config=make_sql_config(_SQL_CONNECTION) if granted_sql else None,
     )
-    executor.bind_agent_resolver(agent_marker_resolver(runtime, observability=None))
+    sql_query_service = (
+        container.resolve(SqlQueryService)
+        if container.is_registered(SqlQueryService)
+        else NullSqlQueryService()
+    )
+    executor.bind_agent_resolver(
+        agent_marker_resolver(runtime, sql_query_service=sql_query_service, observability=None)
+    )
     return executor, runtime
 
 

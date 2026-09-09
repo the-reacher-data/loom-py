@@ -27,6 +27,7 @@ from loom.ai.errors import (
     a2a_url_invalid,
     endpoint_auth_missing,
     inference_target_incomplete,
+    max_agent_depth_invalid,
     mcp_auth_conflict,
     mcp_auth_strategy_unknown,
     mcp_credentials_inline,
@@ -374,7 +375,9 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             (incomplete provider settings, literal secret in
             ``credentials_ref``), per unsafe remote server or agent (bad URL,
             inline credentials, out-of-range timeout), per endpoint without
-            a named ``auth``, and for an unknown ``remote_clients`` mode.
+            a named ``auth``, for an unknown ``remote_clients`` mode, and for
+            a ``max_agent_depth`` below 1 — which would refuse every run,
+            including the top-level one.
     """
 
     engine: str
@@ -403,6 +406,8 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
                 issues.append(endpoint_auth_missing(name))
         if self.remote_clients not in _REMOTE_CLIENTS_MODES:
             issues.append(remote_clients_unknown(self.remote_clients, _REMOTE_CLIENTS_MODES))
+        if self.max_agent_depth < 1:
+            issues.append(max_agent_depth_invalid(self.max_agent_depth))
         if issues:
             raise AgentCompilationError(issues)
 

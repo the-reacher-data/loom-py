@@ -28,6 +28,7 @@ from loom.core.di import LoomContainer
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
+from loom.core.sql.service import NullSqlQueryService
 from tests.integration.ai.conftest import (
     INNER_MARKER_AGENT_NAME,
     MARKER_AGENT_NAME,
@@ -74,7 +75,9 @@ def _wired(
         deps=deps,
         container=container,
     )
-    executor.bind_agent_resolver(agent_marker_resolver(runtime, observability=None))
+    executor.bind_agent_resolver(
+        agent_marker_resolver(runtime, sql_query_service=NullSqlQueryService(), observability=None)
+    )
     return executor, runtime
 
 

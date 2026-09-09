@@ -33,7 +33,8 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import RunContext, Tool, ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from loom.ai._filters import matches
+from loom.ai._filters import admits
+from loom.ai._roles import bound_query_roles
 from loom.ai._usecase import invoke_as, require_invoker
 from loom.ai.abc import McpSession, ToolsetContext
 from loom.ai.compiler import (
@@ -86,8 +87,7 @@ from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.plan import ExecutionPlan
 from loom.core.identity import Identity
-from loom.core.sql.abc import RoleNotAllowedError, RolesNotBoundError, SqlQueryResult
-from loom.core.sql.roles import resolve_query_roles
+from loom.core.sql.abc import SqlQueryResult
 from loom.core.sql.service import SqlQueryService
 
 _logger = logging.getLogger(__name__)
@@ -231,29 +231,11 @@ def _oversized_statement(capability: CompiledSqlCapability, sql: str) -> ToolRet
 def _bound_roles(capability: CompiledSqlCapability, identity: Identity) -> tuple[str, ...]:
     """Resolve the caller's roles; the shared ``default_role`` is unreachable.
 
-    ``roles_bound`` is hard-coded ``True`` and the result is re-checked for
-    emptiness, because ``()`` would reach ``SqlQueryService.execute`` and fall
-    back to the connection's shared role (FR-043a).
+    Delegates to :func:`loom.ai._roles.bound_query_roles`, the single rule
+    this model-facing tool and the marker-facing
+    :class:`~loom.ai.runtime._grants.SqlGrantView` both apply.
     """
-    try:
-        roles = resolve_query_roles(
-            identity,
-            connection=capability.connection,
-            roles_bound=True,
-            allowed_roles=frozenset(capability.config.allowed_roles),
-            requested_roles=None,
-        )
-    except (RolesNotBoundError, RoleNotAllowedError) as exc:
-        raise AgentRunError(
-            AgentRunErrorCode.UNAUTHORIZED,
-            f"the caller may not query the '{capability.connection}' connection",
-        ) from exc
-    if not roles:
-        raise AgentRunError(
-            AgentRunErrorCode.UNAUTHORIZED,
-            f"no role of the caller is allowlisted on the '{capability.connection}' connection",
-        )
-    return roles
+    return bound_query_roles(capability, identity)
 
 
 async def _query(
@@ -313,9 +295,7 @@ def _tool_predicate(
 
     def allowed(run: RunContext[Any], definition: ToolDefinition) -> bool:
         del run
-        if include and not matches(definition.name, include):
-            return False
-        return not matches(definition.name, exclude)
+        return admits(definition.name, include=include, exclude=exclude)
 
     return allowed
 

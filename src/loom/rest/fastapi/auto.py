@@ -650,6 +650,12 @@ def _bind_agent_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
     ``ai:`` section is present: a use case declaring ``Agent()`` in that
     deployment still compiles, and fails informatively at its first
     execution instead, which is what an unresolved resolver already does.
+
+    ``SqlQueryService`` is resolved here, once, and handed to the resolver
+    rather than left for a handle to reach into the container for later:
+    it is always registered by this point (``_register_sql_service`` runs
+    before this function, spec M5), so there is nothing optional about the
+    resolution itself.
     """
     if ai.runtime is None:
         return
@@ -662,7 +668,10 @@ def _bind_agent_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
         if result.container.is_registered(ObservabilityRuntime)
         else None
     )
-    resolver = agent_marker_resolver(ai.runtime, observability=observability)
+    sql_query_service = result.container.resolve(SqlQueryService)
+    resolver = agent_marker_resolver(
+        ai.runtime, sql_query_service=sql_query_service, observability=observability
+    )
     result.executor.bind_agent_resolver(resolver)
 
 

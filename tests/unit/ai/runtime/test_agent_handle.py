@@ -27,17 +27,23 @@ from loom.core.command import Command
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.sql.service import NullSqlQueryService
 from loom.core.use_case import Caller, Input, UseCase
 from tests.integration.ai.conftest import (
     DEFAULT_USAGE,
     ConversationRecorder,
     CountingEngineProvider,
     RecordingDepsFactory,
+    RecordingMcpSession,
     RecordTurn,
     StubDepsFactory,
+    StubMcpClient,
     conversational_plan,
     make_ai_config,
+    make_mcp_capability,
+    make_mcp_servers,
     make_plan,
+    mcp_client_factory,
 )
 
 
@@ -155,7 +161,11 @@ class TestIdentidadAnonima:
     ) -> None:
         runtime = await _agent_runtime(deps, container)
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=ANONYMOUS, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=ANONYMOUS,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -178,7 +188,11 @@ class TestIdentidadAnonima:
         # here — it matches the agent name ``markers.md`` and the example
         # in ``docs/rest/use-case-dsl.md`` both use.
         handle = _BoundAgentHandle(
-            name="incident-triage", runtime=runtime, identity=ANONYMOUS, observability=None
+            name="incident-triage",
+            runtime=runtime,
+            identity=ANONYMOUS,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -201,7 +215,11 @@ class TestIdentidadAnonima:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=ANONYMOUS, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=ANONYMOUS,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -228,7 +246,11 @@ class TestIdentidadAnonima:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -255,7 +277,11 @@ class TestElSpanDelHandle:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=observability
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=observability,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -273,7 +299,11 @@ class TestElSpanDelHandle:
         """``observability=None`` es un no-op explícito, no un fallo silencioso."""
         runtime = await _agent_runtime(deps, container)
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -338,7 +368,11 @@ class TestLosTresModos:
     ) -> None:
         runtime = await _agent_runtime(deps, container)
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -352,7 +386,11 @@ class TestLosTresModos:
         engine = _ShapedEngine(shaped_output={"severity": 5})
         runtime = await _shaped_runtime(deps, container, engine)
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -367,7 +405,11 @@ class TestLosTresModos:
         engine = _ShapedEngine(shaped_output="a plain sentence")
         runtime = await _shaped_runtime(deps, container, engine)
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -383,7 +425,11 @@ class TestLosTresModos:
         engine = _ShapedEngine(shaped_output={"anything": True})
         runtime = await _shaped_runtime(deps, container, engine)
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -410,7 +456,11 @@ class TestRechazoPorHookDeSalida:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -440,7 +490,11 @@ class TestRechazoPorHookDeSalida:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=agent_name, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=agent_name,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -467,7 +521,11 @@ class TestRechazoPorHookDeSalida:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -491,7 +549,11 @@ class TestRechazoPorHookDeSalida:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -516,7 +578,11 @@ class TestRechazoPorHookDeSalida:
             container=container,
         )
         handle = _BoundAgentHandle(
-            name=_AGENT_NAME, runtime=runtime, identity=_AUTHENTICATED, observability=None
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
 
         async with runtime:
@@ -526,22 +592,98 @@ class TestRechazoPorHookDeSalida:
         assert recorder.timeline == ["hook"]
 
 
+_RUNBOOKS_SERVER = "runbooks"
+
+
+async def _runtime_with_one_mcp_grant(
+    deps: StubDepsFactory, container: LoomContainer
+) -> AgentRuntime:
+    """One agent, one live ``mcp`` grant on :data:`_RUNBOOKS_SERVER` — the only one."""
+    capability = make_mcp_capability(_RUNBOOKS_SERVER)
+    session = RecordingMcpSession(label=_RUNBOOKS_SERVER, tools=("search",))
+    client = StubMcpClient(label=_RUNBOOKS_SERVER, session=session, log=[])
+    provider = CountingEngineProvider(engines={_AGENT_NAME: _OneShotEngine()})  # type: ignore[dict-item]
+    return AgentRuntime(
+        plans=[make_plan(_AGENT_NAME, capabilities=(capability,))],
+        config=make_ai_config(mcp_servers=make_mcp_servers(_RUNBOOKS_SERVER)),
+        engine_provider=provider,  # type: ignore[arg-type]
+        deps=deps,
+        container=container,
+        mcp_client_factory=mcp_client_factory({_RUNBOOKS_SERVER: client}),  # type: ignore[arg-type]
+    )
+
+
 class TestGrantsSinConcesion:
     """T301/T303: nombrar el grant ausente antes de tocar la red."""
 
-    def test_mcp_desconocido_nombra_los_grants_mcp_del_agente(
+    async def test_mcp_desconocido_nombra_los_grants_mcp_del_agente(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
+        """El mensaje nombra el único servidor concedido, no uno arbitrario."""
+        runtime = await _runtime_with_one_mcp_grant(deps, container)
         handle = _BoundAgentHandle(
             name=_AGENT_NAME,
-            runtime=object(),  # type: ignore[arg-type]
+            runtime=runtime,
             identity=_AUTHENTICATED,
             observability=None,
+            sql_query_service=NullSqlQueryService(),
         )
-        with pytest.raises(AttributeError):
-            # 'object()' carries no runtime API: this only proves the method
-            # is no longer 'NotImplementedError' but a real lookup.
-            handle.mcp("server")
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                handle.mcp("not-granted")
+
+        assert excinfo.value.code is AgentRunErrorCode.MCP_GRANT_UNKNOWN
+        assert str(excinfo.value) == (
+            "agent 'triage' grants no mcp server named 'not-granted'; mcp servers "
+            f"this agent grants: {_RUNBOOKS_SERVER}"
+        )
+
+    async def test_sql_desconocido_nombra_los_grants_sql_del_agente(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """El mismo rechazo, del lado ``sql``: un agente sin grant ``sql`` alguno."""
+        runtime = await _agent_runtime(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                handle.sql("reporting")
+
+        assert excinfo.value.code is AgentRunErrorCode.SQL_GRANT_UNKNOWN
+        assert str(excinfo.value) == (
+            "agent 'triage' grants no sql connection named 'reporting'; agent "
+            "'triage' grants no sql connection; add one to its artefact's 'sql' "
+            "capability"
+        )
+
+
+class TestGrantsPublicados:
+    """T301/T303: ``grants()`` nombra cada permiso concedido, la mitigación que la
+    especificación promete para el único terreno que cede el diseño — que el
+    nombre del servidor ``mcp`` no se verifica al arrancar.
+    """
+
+    async def test_grants_nombra_el_servidor_mcp_concedido(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        runtime = await _runtime_with_one_mcp_grant(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            assert handle.grants() == (_RUNBOOKS_SERVER,)
 
 
 class TestElResolverDeMarcadores:
@@ -551,7 +693,9 @@ class TestElResolverDeMarcadores:
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         runtime = await _agent_runtime(deps, container)
-        resolve = agent_marker_resolver(runtime, observability=None)
+        resolve = agent_marker_resolver(
+            runtime, sql_query_service=NullSqlQueryService(), observability=None
+        )
 
         handle = resolve(_AGENT_NAME, _AUTHENTICATED)
 

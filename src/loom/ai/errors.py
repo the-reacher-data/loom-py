@@ -133,6 +133,7 @@ class AgentErrorCode(StrEnum):
     AGENT_SPECS_CONFLICT = "AGENT_SPECS_CONFLICT"
     AGENT_SPECS_MISSING = "AGENT_SPECS_MISSING"
     REMOTE_CLIENTS_UNKNOWN = "REMOTE_CLIENTS_UNKNOWN"
+    MAX_AGENT_DEPTH_INVALID = "MAX_AGENT_DEPTH_INVALID"
 
     # Use-case agent markers (model-as-actor)
     AGENT_MARKER_UNKNOWN = "AGENT_MARKER_UNKNOWN"
@@ -1092,6 +1093,24 @@ def remote_clients_unknown(value: str, valid: Sequence[str]) -> AgentCompilation
         ),
         component="ai",
         field="ai.remote_clients",
+    )
+
+
+def max_agent_depth_invalid(value: int) -> AgentCompilationIssue:
+    """The nesting bound is below the one entry every top-level run already spends.
+
+    Args:
+        value: The rejected value of ``ai.max_agent_depth``.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MAX_AGENT_DEPTH_INVALID,
+        message=(
+            f"ai.max_agent_depth: {value} is below the minimum of 1; the top-level "
+            "run itself counts as one entry in the chain, so a value below 1 refuses "
+            "every run, including the top-level one"
+        ),
+        component="ai",
+        field="ai.max_agent_depth",
     )
 
 
