@@ -183,7 +183,48 @@ class PydanticAIEngine:
             An async context manager yielding the event stream and closing it
             — and the provider connection behind it — on exit.
         """
-        return self._stream(prompt, identity, conversation)
+        return self._stream(prompt, identity, conversation, output_type=None)
+
+    def run_stream_shaped(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+        output_type: type[Any],
+    ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
+        """Run the agent, streaming events decoded into *output_type* for this call only.
+
+        The counterpart of :meth:`run_stream` that
+        :class:`~loom.ai.runtime._handle._BoundAgentHandle` reaches for
+        ``AgentHandle.run(expect=...)`` and ``AgentHandle.run_text`` (T304).
+        Deliberately not a parameter of :meth:`run_stream` itself: that
+        signature is pinned to exactly ``prompt``, ``identity`` and
+        ``conversation`` by the shared engine contract, so a shape override is
+        a separate, optional capability an engine opts into — read with
+        ``getattr`` by :func:`~loom.ai.runtime._lifecycle._open_engine_stream`
+        — rather than a fourth parameter every engine must carry.
+
+        pydantic-ai validates the run's answer against *output_type* on its
+        own, exactly as it validates against the plan's declared shape for an
+        unshaped run; what this method skips is loom's *own* output check
+        (:func:`~loom.ai.engines.pydantic_ai._output.decode_output`), because
+        that check is compiled against the plan's declared schema and *this*
+        answer is deliberately shaped otherwise.
+
+        Args:
+            prompt: Caller prompt.
+            identity: Verified caller; every capability call runs as them.
+            conversation: The conversation this run continues, or ``None``.
+            output_type: Type this run's answer is decoded into, overriding
+                the plan's own declared output for this call only.
+
+        Returns:
+            An async context manager yielding the event stream; its
+            ``final`` event carries an already-decoded ``output_type``
+            instance rather than the plan's declared shape.
+        """
+        return self._stream(prompt, identity, conversation, output_type=output_type)
 
     async def health(self) -> HealthStatus:
         """Report health from the last observed outcome, with no network I/O.
@@ -262,16 +303,25 @@ class PydanticAIEngine:
 
     @asynccontextmanager
     async def _stream(
-        self, prompt: str, identity: Identity, conversation: Conversation | None
+        self,
+        prompt: str,
+        identity: Identity,
+        conversation: Conversation | None,
+        *,
+        output_type: type[Any] | None,
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
-        events = self._events(prompt, identity, conversation)
+        events = self._events(prompt, identity, conversation, output_type)
         try:
             yield events
         finally:
             await events.aclose()
 
     async def _events(
-        self, prompt: str, identity: Identity, conversation: Conversation | None
+        self,
+        prompt: str,
+        identity: Identity,
+        conversation: Conversation | None,
+        output_type: type[Any] | None,
     ) -> AsyncGenerator[AgentEvent]:
         """Replay one run as loom events, ending in exactly one terminal.
 
@@ -288,8 +338,9 @@ class PydanticAIEngine:
         started = perf_counter()
         for attempt in range(self._attempts):
             emitted = False
+            attempt_run = self._one_run(prompt, deps, spend, started, decoded, output_type)
             try:
-                async for event in self._one_run(prompt, deps, spend, started, decoded):
+                async for event in attempt_run:
                     emitted = True
                     yield event
                 self._record(None)
@@ -312,14 +363,16 @@ class PydanticAIEngine:
         spend: RunUsage,
         started: float,
         conversation: RunConversation | None,
+        output_type: type[Any] | None,
     ) -> AsyncIterator[AgentEvent]:
         """One attempt: engine events in, loom events out, ending in ``final``."""
+        pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
         async with self._agent.run_stream_events(
-            prompt, deps=deps, usage=spend, **run_kwargs(conversation)
+            prompt, deps=deps, usage=spend, **run_kwargs(conversation), **pinned
         ) as stream:
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
-                    yield self._final(event.result, spend, started, conversation)
+                    yield self._final(event.result, spend, started, conversation, output_type)
                     return
                 mapped = translate(event)
                 if mapped is not None:
@@ -331,8 +384,16 @@ class PydanticAIEngine:
         spend: RunUsage,
         started: float,
         conversation: RunConversation | None,
+        output_type: type[Any] | None,
     ) -> FinalEvent:
-        output = decode_output(self._plan.output, result)
+        # An overridden shape skips loom's own output check on purpose
+        # (T304): 'decode_output' is compiled against the plan's declared
+        # schema, and pydantic-ai has already validated 'result.output'
+        # against 'output_type' itself when one was requested.
+        if output_type is not None:
+            output = result.output
+        else:
+            output = decode_output(self._plan.output, result)
         return FinalEvent(
             output=output,
             usage=self._usage(spend, started),

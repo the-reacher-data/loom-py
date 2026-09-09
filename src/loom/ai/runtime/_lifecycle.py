@@ -32,13 +32,16 @@ from loom.ai.abc import (
     AgentEngineProvider,
     AgentEvent,
     AgentResult,
+    Conversation,
     DepsFactory,
     ErrorEvent,
     FinalEvent,
     HealthState,
     McpSession,
+    McpToolInfo,
 )
 from loom.ai.compiler._plan import (
+    HOOK_OUTPUT_FIELD,
     AgentPlan,
     CompiledA2ACapability,
     CompiledMcpCapability,
@@ -200,6 +203,7 @@ class AgentRuntime:
         self._owner: asyncio.Task[Any] | None = None
         self._slots: dict[str, _AgentSlot] = {}
         self._sessions: dict[str, SharedMcpSession] = {}
+        self._tool_catalog: dict[str, tuple[McpToolInfo, ...]] = {}
         self._live: set[str] = set()
         self._health: dict[str, AgentHealth] = {}
         self._runs = asyncio.Semaphore(config.max_concurrent_runs)
@@ -265,6 +269,7 @@ class AgentRuntime:
         self._owner = None
         self._slots.clear()
         self._sessions.clear()
+        self._tool_catalog.clear()
         self._live.clear()
         await stack.aclose()
 
@@ -328,6 +333,7 @@ class AgentRuntime:
         *,
         identity: Identity,
         conversation_id: str | None = None,
+        output_type: type[Any] | None = None,
     ) -> AgentResult:
         """Run one agent to completion.
 
@@ -339,6 +345,16 @@ class AgentRuntime:
                 the conversation the loader use case receives, when the
                 artifact declares one, and is copied verbatim into the output
                 hook's command.  Never read by loom.
+            output_type: When given, decode this run's answer into this type
+                instead of the plan's own declared output (T304); the plan's
+                own output check does not run. ``None`` — the default — runs
+                the plan's declared shape exactly as before this parameter
+                existed. Not part of :class:`~loom.ai.abc.AgentEngine`'s own
+                ``run``/``run_stream``, whose signature is pinned to exactly
+                ``prompt``, ``identity`` and ``conversation``: an engine opts
+                into shape overrides through the separate, optional
+                ``run_stream_shaped`` capability instead (see
+                :mod:`~loom.ai.runtime._grants`).
 
         Returns:
             The decoded output, the run's usage, its ``interaction_id``, the
@@ -354,7 +370,13 @@ class AgentRuntime:
                 ends in a failure event.
         """
         result: AgentResult | None = None
-        stream = self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
+        stream = self._run_stream(
+            name,
+            prompt,
+            identity=identity,
+            conversation_id=conversation_id,
+            output_type=output_type,
+        )
         async with stream as events:
             async for event in events:
                 if type(event) is ErrorEvent:
@@ -630,7 +652,10 @@ class AgentRuntime:
         Tools are listed once per shared session, never once per (plan,
         capability) pair: sessions are shared per server, so two plans pointing
         at the same server would otherwise pay two serialised round trips for
-        identical data.
+        identical data. The listing outlives this pass on ``self._tool_catalog``
+        (T301): a grant handle's ``mcp()``/``tools()`` read it synchronously
+        later, at no extra round trip, because ``MCPToolset.list_tools`` caches
+        its own result.
 
         This pass never fails open. Under ``ai.remote_clients: optional`` the
         waiver covers only servers that never connected --- ``_list_tools_once``
@@ -650,18 +675,20 @@ class AgentRuntime:
         targets = filter_targets(self._plans.values())
         if not targets:
             return
-        listed: dict[str, tuple[str, ...]] = {}
+        listed: dict[str, tuple[McpToolInfo, ...]] = {}
         try:
             async with asyncio.timeout_at(deadline):
                 await self._list_tools_once(targets, listed)
         except TimeoutError:
             raise AgentCompilationError(listing_timeout_issues(targets, listed)) from None
+        finally:
+            self._tool_catalog.update(listed)
         issues = filter_issues(targets, listed)
         if issues:
             raise AgentCompilationError(issues)
 
     async def _list_tools_once(
-        self, targets: Sequence[FilterTarget], listed: dict[str, tuple[str, ...]]
+        self, targets: Sequence[FilterTarget], listed: dict[str, tuple[McpToolInfo, ...]]
     ) -> None:
         """List the tools of every session a declared filter applies to, once per session."""
         for target in targets:
@@ -731,6 +758,7 @@ class AgentRuntime:
         *,
         identity: Identity,
         conversation_id: str | None,
+        output_type: type[Any] | None = None,
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
         slot = self._require_slot(name)
         _check_conversation_id(conversation_id)
@@ -751,9 +779,14 @@ class AgentRuntime:
                     conversation_id=conversation_id,
                 )
                 conversation = await load_conversation(run, self._deps, self._container)
-                async with slot.engine.run_stream(
-                    prompt, identity=identity, conversation=conversation
-                ) as events:
+                engine_stream = _open_engine_stream(
+                    slot.engine,
+                    prompt,
+                    identity=identity,
+                    conversation=conversation,
+                    output_type=output_type,
+                )
+                async with engine_stream as events:
                     supervised = supervised_events(events, slot.plan.policies)
                     hooked = hooked_events(supervised, run, self._deps, self._container)
                     try:
@@ -779,6 +812,141 @@ class AgentRuntime:
         # Never suspends: the guard above proved a permit is available.
         await self._runs.acquire()
 
+    # -- grants (T301/T303) -------------------------------------------------
+    #
+    # Read by ``loom.ai.runtime._handle``/``loom.ai.runtime._grants`` alone,
+    # never by application code: an ``AgentHandle`` is the only public door
+    # onto a plan's granted resources. Kept as methods of ``AgentRuntime``
+    # rather than reached through its private attributes directly, so the
+    # grant views depend on one small, named surface instead of on the
+    # runtime's storage shape.
+
+    def mcp_grant(
+        self, name: str, server: str
+    ) -> tuple[CompiledMcpCapability, SharedMcpSession, tuple[McpToolInfo, ...]] | None:
+        """Return one agent's own MCP grant, its shared session and its tools.
+
+        The session and the tool catalogue are exactly what start-up already
+        opened and listed for this server — never a second connection, never
+        a second listing.
+
+        Args:
+            name: Agent whose grants are searched.
+            server: Server name as the artefact's ``mcp`` capability declares.
+
+        Returns:
+            ``None`` when the agent grants no such server.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        for capability in self._require_plan(name).capabilities:
+            if type(capability) is CompiledMcpCapability and capability.server == server:
+                key = mcp_key(capability)
+                session = self._sessions.get(key)
+                if session is None:
+                    return None
+                return capability, session, self._tool_catalog.get(key, ())
+        return None
+
+    def sql_grant(self, name: str, connection: str) -> CompiledSqlCapability | None:
+        """Return one agent's own SQL grant, by connection name.
+
+        Args:
+            name: Agent whose grants are searched.
+            connection: Connection name as the artefact's ``sql`` capability
+                declares it.
+
+        Returns:
+            ``None`` when the agent grants no such connection.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        for capability in self._require_plan(name).capabilities:
+            if type(capability) is CompiledSqlCapability and capability.connection == connection:
+                return capability
+        return None
+
+    def mcp_grant_names(self, name: str) -> tuple[str, ...]:
+        """Return every ``mcp`` server one agent grants, in declaration order.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        return tuple(
+            capability.server
+            for capability in self._require_plan(name).capabilities
+            if type(capability) is CompiledMcpCapability
+        )
+
+    def sql_grant_names(self, name: str) -> tuple[str, ...]:
+        """Return every ``sql`` connection one agent grants, in declaration order.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        return tuple(
+            capability.connection
+            for capability in self._require_plan(name).capabilities
+            if type(capability) is CompiledSqlCapability
+        )
+
+    def grant_names(self, name: str) -> tuple[str, ...]:
+        """Return every ``mcp`` server and ``sql`` connection one agent grants.
+
+        Args:
+            name: Agent to describe.
+
+        Returns:
+            Every granted server and connection name, in declaration order.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        names: list[str] = []
+        for capability in self._require_plan(name).capabilities:
+            if type(capability) is CompiledMcpCapability:
+                names.append(capability.server)
+            elif type(capability) is CompiledSqlCapability:
+                names.append(capability.connection)
+        return tuple(names)
+
+    def tool_timeout_s(self, name: str) -> float:
+        """Return one agent's own ``tool_timeout_ms``, in seconds.
+
+        Args:
+            name: Agent whose policy is read.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        return self._require_plan(name).policies.tool_timeout_ms / 1000
+
+    def output_hook_shape_bound(self, name: str) -> bool:
+        """Report whether one agent's output hook declares the ``output`` field.
+
+        Args:
+            name: Agent to check.
+
+        Returns:
+            ``True`` when a per-run shape override must be refused before the
+            model is called (T304): the hook's command was compiled against
+            the artefact's own declared output, so it cannot take another
+            shape. ``False`` for an agent with no hook, or one whose hook
+            declares only conversation-bookkeeping fields.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        hook = self._require_plan(name).on_output
+        return hook is not None and HOOK_OUTPUT_FIELD in hook.accepted
+
+    @property
+    def container(self) -> LoomContainer:
+        """Application container the grant views resolve services from."""
+        return self._container
+
     def _require_plan(self, name: str) -> AgentPlan:
         plan = self._plans.get(name)
         if plan is None:
@@ -794,6 +962,42 @@ class AgentRuntime:
                 "'async with runtime:' to open its clients and build its engines"
             )
         return slot
+
+
+def _open_engine_stream(
+    engine: AgentEngine,
+    prompt: str,
+    *,
+    identity: Identity,
+    conversation: Conversation | None,
+    output_type: type[Any] | None,
+) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
+    """Open the engine's event stream, shaped for this call when asked.
+
+    :class:`~loom.ai.abc.AgentEngine` itself takes no ``output_type``: its
+    ``run``/``run_stream`` signature is pinned to exactly ``prompt``,
+    ``identity`` and ``conversation`` (T304, and see the public-surface test
+    that enforces it). An engine that wants to serve
+    :meth:`~loom.ai.abc.AgentHandle.run`'s ``expect`` and ``run_text`` opts in
+    through the separate, optional ``run_stream_shaped`` method instead, read
+    with ``getattr`` the way :data:`~loom.ai.abc.NativeToolSupport` is.
+
+    Raises:
+        NotImplementedError: When *output_type* is given and the engine
+            declares no ``run_stream_shaped``. Not expected in a deployment
+            running the pydantic-ai engine, which implements it.
+    """
+    if output_type is None:
+        return engine.run_stream(prompt, identity=identity, conversation=conversation)
+    shaped = getattr(engine, "run_stream_shaped", None)
+    if shaped is None:
+        raise NotImplementedError(
+            f"{type(engine).__name__} does not support a per-run output shape: "
+            "it declares no 'run_stream_shaped'"
+        )
+    return shaped(  # type: ignore[no-any-return]
+        prompt, identity=identity, conversation=conversation, output_type=output_type
+    )
 
 
 def _check_conversation_id(conversation_id: str | None) -> None:

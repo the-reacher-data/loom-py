@@ -624,27 +624,57 @@ class HealthStatus(LoomFrozenStruct, frozen=True, kw_only=True):
     detail: str | None = None
 
 
+class McpToolInfo(LoomFrozenStruct, frozen=True, kw_only=True):
+    """One tool a session's server advertises.
+
+    Attributes:
+        name: Tool name as the server exposes it.
+        has_output_schema: Whether the server published a schema for this
+            tool's structured result. A :class:`McpHandle` refuses a typed
+            call on a tool for which this is ``False``, before any network
+            call — see :meth:`McpHandle.call`.
+    """
+
+    name: str
+    has_output_schema: bool
+
+
+class McpToolCallResult(LoomFrozenStruct, frozen=True, kw_only=True):
+    """The server's own answer to one ``call_tool``, protocol-level and undecoded.
+
+    Attributes:
+        ok: ``False`` when the server flagged the call as failed.
+        structured: The tool's structured result, or ``None`` when the server
+            returned none — including every call the server flagged failed,
+            whose content is never treated as an answer.
+    """
+
+    ok: bool
+    structured: object | None = None
+
+
 class McpSession(Protocol):
     """Minimal MCP session the runtime needs from any client library."""
 
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes.
+    async def list_tools(self) -> tuple[McpToolInfo, ...]:
+        """Return the tools the server exposes.
 
         Returns:
-            Every tool name the server advertises, before any declared filter
-            is applied.
+            Every tool the server advertises, before any declared filter is
+            applied, each carrying whether it publishes an output schema.
         """
         ...
 
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
-        """Invoke one tool and return its result.
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
+        """Invoke one tool and return its protocol-level result.
 
         Args:
             name: Tool name as the server exposes it.
             arguments: Arguments to pass to the tool.
 
         Returns:
-            The tool's result, as the client library decoded it.
+            The server's own error flag and structured content, neither
+            interpreted nor decoded.
         """
         ...
 

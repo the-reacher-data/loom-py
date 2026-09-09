@@ -44,6 +44,8 @@ _REQUIRED_EXPORTS = frozenset(
         "ToolsetFactory",
         "ToolsetContext",
         "McpSession",
+        "McpToolInfo",
+        "McpToolCallResult",
         "DepsFactory",
         "AgentAnswer",
         "AgentHandle",

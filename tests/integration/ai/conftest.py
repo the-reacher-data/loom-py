@@ -33,6 +33,8 @@ from loom.ai.abc import (
     ErrorEvent,
     FinalEvent,
     HealthStatus,
+    McpToolCallResult,
+    McpToolInfo,
     TextDeltaEvent,
 )
 from loom.ai.compiler._plan import (
@@ -117,7 +119,11 @@ class RecordingMcpSession:
     Args:
         label: Name used in the shared lifecycle log.
         tools: Tool names the server claims to expose.
-        results: Result returned per tool name; missing names return ``None``.
+        schemas: Names, among ``tools``, that publish an output schema; the
+            rest report none (T301).
+        results: Structured content returned per tool name; missing names
+            return ``None``. A name mapped to :data:`FAILED` reports the
+            server's own error flag instead (T302).
         list_delay_ms: Time one ``list_tools`` round trip costs, so a test can
             express a start-up budget spent on listing rather than connecting.
     """
@@ -127,27 +133,39 @@ class RecordingMcpSession:
         *,
         label: str = "stub",
         tools: Sequence[str] = ("alpha", "beta"),
+        schemas: Sequence[str] = (),
         results: Mapping[str, object] | None = None,
         list_delay_ms: int = 0,
     ) -> None:
         self.label = label
         self.tools = tuple(tools)
+        self.schemas = frozenset(schemas)
         self.results = dict(results or {})
         self.list_delay_ms = list_delay_ms
         self.calls: list[tuple[str, Mapping[str, Any]]] = []
         self.listed = 0
 
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the stub server exposes."""
+    async def list_tools(self) -> tuple[McpToolInfo, ...]:
+        """Return the tools the stub server exposes, each with its schema flag."""
         self.listed += 1
         if self.list_delay_ms:
             await asyncio.sleep(self.list_delay_ms / 1000)
-        return self.tools
+        return tuple(
+            McpToolInfo(name=name, has_output_schema=name in self.schemas) for name in self.tools
+        )
 
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
-        """Record the invocation and return the scripted result."""
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
+        """Record the invocation and return the scripted protocol-level result."""
         self.calls.append((name, dict(arguments)))
-        return self.results.get(name)
+        outcome = self.results.get(name)
+        if outcome is FAILED:
+            return McpToolCallResult(ok=False, structured=None)
+        return McpToolCallResult(ok=True, structured=outcome)
+
+
+FAILED = object()
+"""Sentinel: :attr:`RecordingMcpSession.results` maps a tool name to this to
+script an ``is_error`` result instead of a structured one (T302)."""
 
 
 class InterleavingSensitiveSession:
@@ -170,11 +188,11 @@ class InterleavingSensitiveSession:
         self.started: list[str] = []
         self.completed: list[str] = []
 
-    async def list_tools(self) -> tuple[str, ...]:
+    async def list_tools(self) -> tuple[McpToolInfo, ...]:
         """Return a fixed tool name; the poisoning test never filters."""
-        return ("echo",)
+        return (McpToolInfo(name="echo", has_output_schema=False),)
 
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
         """Echo ``arguments['token']`` back, unless two calls overlapped."""
         del name
         token = str(arguments["token"])
@@ -186,7 +204,7 @@ class InterleavingSensitiveSession:
         try:
             await asyncio.sleep(self._delay_s)
             self.completed.append(token)
-            return self._slot
+            return McpToolCallResult(ok=True, structured=self._slot)
         finally:
             self._busy = False
 
@@ -987,6 +1005,31 @@ class RecordingScriptedEngine(ScriptedEngine):
     ) -> Any:
         self.identities.append(identity)
         return super().run_stream(prompt, identity=identity, conversation=conversation)
+
+
+class ShapedRecordingEngine(RecordingScriptedEngine):
+    """A :class:`RecordingScriptedEngine` that also serves per-run shape overrides.
+
+    Records ``output_type`` per call to ``run_stream_shaped`` so a test can
+    tell an ``AgentHandle.run(expect=...)``/``run_text`` call apart from a
+    plain ``run(prompt)`` — the latter goes through ``run_stream`` alone,
+    never through this method (T304).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.shaped_calls: list[type[Any]] = []
+
+    def run_stream_shaped(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+        output_type: type[Any],
+    ) -> Any:
+        self.shaped_calls.append(output_type)
+        return self.run_stream(prompt, identity=identity, conversation=conversation)
 
 
 MARKER_AGENT_NAME = "triage"
