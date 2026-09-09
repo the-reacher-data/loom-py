@@ -178,6 +178,63 @@ class TestStructuralErrorsNameTheConfigEntry:
 
         assert len(interface.routes) == 5
 
+    def test_partial_include_typo_names_the_unknown_operation(self) -> None:
+        """M2: a typo among otherwise-valid names must not be silently dropped."""
+        cfg = {
+            "tickets": RestInterfaceConfig(
+                prefix="/tickets",
+                auto=True,
+                model=f"{_MODULE}:Ticket",
+                include=("craete", "get"),
+            )
+        }
+
+        with pytest.raises(RestInterfaceConfigError) as excinfo:
+            build_interfaces_from_config(cfg)
+        message = str(excinfo.value)
+        assert "app.rest.interfaces.tickets" in message
+        assert "'include'" in message
+        assert "craete" in message
+        assert "create" in message  # listed among the valid operations
+
+    def test_include_with_only_typos_names_the_unknown_operation(self) -> None:
+        """M2: an all-typo 'include' must not fall through to the empty-routes advice."""
+        cfg = {
+            "tickets": RestInterfaceConfig(
+                prefix="/tickets",
+                auto=True,
+                model=f"{_MODULE}:Ticket",
+                include=("craete",),
+            )
+        }
+
+        with pytest.raises(RestInterfaceConfigError) as excinfo:
+            build_interfaces_from_config(cfg)
+        message = str(excinfo.value)
+        assert "app.rest.interfaces.tickets" in message
+        assert "'include'" in message
+        assert "craete" in message
+        assert "RestInterface" not in message  # no generated-class name leaks in
+
+    def test_model_without_auto_is_rejected_rather_than_silently_ignored(self) -> None:
+        """L4: 'model' has no effect unless 'auto' is set — reject instead of no-op."""
+        cfg = {
+            "tickets": RestInterfaceConfig(
+                prefix="/tickets",
+                model=f"{_MODULE}:Ticket",
+                routes=(
+                    RestRouteConfig(use_case=f"{_MODULE}:PingUseCase", method="GET", path="/"),
+                ),
+            )
+        }
+
+        with pytest.raises(RestInterfaceConfigError) as excinfo:
+            build_interfaces_from_config(cfg)
+        message = str(excinfo.value)
+        assert "app.rest.interfaces.tickets" in message
+        assert "'model'" in message
+        assert "'auto'" in message
+
 
 class TestValidateInterfacesConfig:
     """Unknown-key detection on the raw ``app.rest.interfaces`` mapping (H3)."""
@@ -451,6 +508,16 @@ class TestFieldDefaultsMatchThePythonRoute:
         }
 
         assert config_fields == _interface_field_names()
+
+
+class TestRestInterfaceConfigErrorIsPublic:
+    """L3: the only exception a config-error handler needs is reachable from loom.rest."""
+
+    def test_reexported_from_loom_rest(self) -> None:
+        import loom.rest
+
+        assert loom.rest.RestInterfaceConfigError is RestInterfaceConfigError
+        assert "RestInterfaceConfigError" in loom.rest.__all__
 
 
 def _interface_field_names() -> frozenset[str]:

@@ -15,6 +15,7 @@ from loom.rest.compiler import (
     RestInterfaceCompiler,
     RouteSources,
 )
+from loom.rest.config import RestInterfaceConfigError
 from loom.rest.errors import HttpErrorMapper
 from loom.rest.middleware import TraceIdMiddleware
 from loom.rest.model import (
@@ -35,6 +36,7 @@ __all__ = [
     "RestApiDefaults",
     "RestInterface",
     "RestInterfaceCompiler",
+    "RestInterfaceConfigError",
     "RestRoute",
     "RouteSources",
     "TraceIdMiddleware",

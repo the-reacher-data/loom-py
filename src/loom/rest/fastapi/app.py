@@ -72,13 +72,13 @@ def _resolve_route_sources(
     which says nothing about how to fix the call.
 
     Raises:
-        TypeError: If neither or both are given, or if *routes* is a sequence
-            of interfaces passed positionally.
+        TypeError: If neither or both are given, or if *routes* is not a
+            ``RouteSources`` instance (e.g. a bare sequence of interfaces).
     """
     if routes is not None and not isinstance(routes, RouteSources):
         raise TypeError(
-            "create_fastapi_app() no longer accepts a sequence of interfaces as its "
-            "second positional argument. Pass RouteSources(python=[...]) instead."
+            "create_fastapi_app()'s 'routes' parameter no longer accepts a bare sequence "
+            "of interfaces. Pass RouteSources(python=[...]) instead."
         )
     if routes is not None and interfaces is not None:
         raise TypeError(
@@ -88,7 +88,7 @@ def _resolve_route_sources(
         return routes
     if interfaces is not None:
         warnings.warn(
-            "create_fastapi_app(interfaces=...) is deprecated. "
+            "create_fastapi_app(interfaces=...) is deprecated and will be removed in 2.0. "
             "Use create_fastapi_app(routes=RouteSources(python=interfaces)) instead.",
             DeprecationWarning,
             stacklevel=3,

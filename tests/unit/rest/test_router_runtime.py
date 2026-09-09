@@ -803,6 +803,23 @@ class TestDeprecatedInterfacesKeyword:
                 observability_runtime=ObservabilityRuntime.noop(),
             )
 
+    def test_interfaces_keyword_warning_points_at_the_caller_not_this_module(self) -> None:
+        """L8: stacklevel must land on this test's call site, not app.py's internals."""
+
+        class IFace(RestInterface[str]):
+            prefix = "/ping"
+            routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
+
+        result = _bootstrap(PingUseCase)
+        with pytest.warns(DeprecationWarning) as record:
+            create_fastapi_app(
+                result,
+                interfaces=[IFace],
+                observability_runtime=ObservabilityRuntime.noop(),
+            )
+
+        assert record[0].filename == __file__
+
     def test_neither_routes_nor_interfaces_raises_type_error(self) -> None:
         result = _bootstrap(PingUseCase)
         with pytest.raises(TypeError, match="requires 'routes'"):

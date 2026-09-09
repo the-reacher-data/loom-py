@@ -127,9 +127,9 @@ def _apply_disablement(
         kept.append(route)
     unmatched = targets - matched
     if unmatched:
-        method, path = sorted(unmatched)[0]
+        rendered = ", ".join(f"({method}, {path!r})" for method, path in sorted(unmatched))
         raise InterfaceCompilationError(
-            f"app.rest.disable_routes names ({method}, {path!r}), which "
+            f"app.rest.disable_routes names {rendered}, which "
             "matches no route declared by a Python interface. This only "
             "covers routes declared in code (Python RestInterface "
             "subclasses) — a config-declared route is removed by deleting "

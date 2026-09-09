@@ -36,16 +36,30 @@ import msgspec
 from loom.core.config.errors import ConfigError
 from loom.core.repository.abc.query import PaginationMode
 from loom.core.symbols import import_symbol
+from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface, RestRoute
+
+__all__ = [
+    "DisableRouteConfig",
+    "RestInterfaceConfig",
+    "RestInterfaceConfigError",
+    "RestRouteConfig",
+    "build_interfaces_from_config",
+    "validate_disable_routes_config",
+    "validate_interfaces_config",
+]
+
+_VALID_CRUD_OPS = frozenset(CrudOp)
 
 
 class RestInterfaceConfigError(ConfigError):
     """Raised when an ``app.rest.interfaces`` entry cannot be built.
 
     Covers an unresolved ``module:Symbol`` reference (``use_case`` or
-    ``model``) and an ``auto`` interface with no ``model`` to derive its
-    CRUD routes from.
+    ``model``), an ``auto`` interface with no ``model`` to derive its CRUD
+    routes from, a ``model`` given without ``auto``, and an ``include``
+    entry that names no known CRUD operation.
 
     Args:
         message: Human-readable description naming the interface at fault.
@@ -105,10 +119,15 @@ class RestInterfaceConfig(msgspec.Struct, kw_only=True, forbid_unknown_fields=Tr
         prefix: URL prefix for every route in this interface.
         tags: OpenAPI tags applied to every route.
         auto: Whether to generate standard CRUD routes.
-        include: Whitelist of CRUD operation names, when ``auto`` is set.
+        include: Whitelist of CRUD operation names, when ``auto`` is set. Each
+            entry must be one of ``create``, ``get``, ``list``, ``update``,
+            ``delete`` — an unrecognised entry aborts startup rather than
+            being silently dropped.
         routes: Explicit route declarations.
         model: ``module:Symbol`` reference to the entity auto-CRUD serves.
-            Required only when ``auto`` is set and ``routes`` is empty.
+            Required only when ``auto`` is set and ``routes`` is empty;
+            rejected when ``auto`` is not set, since it would otherwise
+            resolve and then be silently ignored.
         pagination_mode: Default pagination strategy for this interface.
         allow_pagination_override: Whether pagination may be overridden.
         profile_default: Default query profile for this interface.
@@ -231,7 +250,7 @@ def _interface_base(interface_name: str, cfg: RestInterfaceConfig) -> type[RestI
 
 
 def _validate_structural(interface_name: str, cfg: RestInterfaceConfig) -> None:
-    """Reject the two structural faults ``RestInterfaceCompiler`` would otherwise catch.
+    """Reject the three structural faults ``RestInterfaceCompiler`` would otherwise catch.
 
     Runs before the dynamic class is generated, so the diagnostic names the
     config entry that actually caused it — the same way :func:`_resolve_model`
@@ -239,6 +258,13 @@ def _validate_structural(interface_name: str, cfg: RestInterfaceConfig) -> None:
     a generated class nobody wrote by hand, and in the ``routes`` case,
     advising to "declare a RestRoute", which makes no sense for a
     config-declared interface.
+
+    An unknown ``include`` entry is caught here too: left to
+    :func:`~loom.rest.autocrud.build_auto_routes`, it is silently dropped
+    (a typo removes an endpoint with no warning) instead of aborting startup.
+    A ``model`` given without ``auto: true`` is caught for the same reason:
+    ``RestInterface.__init_subclass__`` returns before CRUD generation reads
+    it, so the reference would otherwise resolve, then be silently ignored.
     """
     if not cfg.prefix:
         raise RestInterfaceConfigError(
@@ -249,6 +275,19 @@ def _validate_structural(interface_name: str, cfg: RestInterfaceConfig) -> None:
         raise RestInterfaceConfigError(
             f"app.rest.interfaces.{interface_name}: 'routes' is empty. Declare at least one "
             "route, or set 'auto: true' with a 'model' reference to generate CRUD routes."
+        )
+    if cfg.model and not cfg.auto:
+        raise RestInterfaceConfigError(
+            f"app.rest.interfaces.{interface_name}: 'model' is set but 'auto' is not. "
+            "'model' only takes effect for auto-CRUD generation — set 'auto: true', "
+            "or remove 'model' if this interface only declares explicit 'routes'."
+        )
+    unknown_ops = [op for op in cfg.include if op not in _VALID_CRUD_OPS]
+    if unknown_ops:
+        valid = ", ".join(sorted(_VALID_CRUD_OPS))
+        raise RestInterfaceConfigError(
+            f"app.rest.interfaces.{interface_name}: 'include' has unknown operation(s) "
+            f"{unknown_ops!r}. Valid operations are: {valid}."
         )
 
 
@@ -308,8 +347,10 @@ def build_interfaces_from_config(
         One dynamically built ``RestInterface`` subclass per entry.
 
     Raises:
-        RestInterfaceConfigError: If a reference does not resolve, or an
-            ``auto`` interface declares no routes and no ``model``.
+        RestInterfaceConfigError: If a reference does not resolve, an
+            ``auto`` interface declares no routes and no ``model``,
+            ``include`` names an operation that is not a CRUD operation, or
+            ``model`` is set without ``auto``.
     """
     return tuple(_build_interface_class(name, cfg) for name, cfg in interfaces.items())
 

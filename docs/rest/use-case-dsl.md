@@ -640,12 +640,14 @@ the duplicate declaration instead.
 > `create_fastapi_app(result, interfaces=[...])`, keyword form, every
 > published example — still works: a deprecated `interfaces=` keyword wraps
 > the list in `RouteSources(python=interfaces)` and emits a
-> `DeprecationWarning` naming `routes` as the replacement. A call that passed
-> the list *positionally* now binds it to `routes` instead, which expects a
-> `RouteSources` instance and raises `AttributeError` once compilation reads
-> `routes.python` — that form is not shimmed. Passing both `routes` and
-> `interfaces`, or neither, raises `TypeError`. Migrate by replacing `interfaces=[...]` with
-> `routes=RouteSources(python=[...])`.
+> `DeprecationWarning` naming `routes` as the replacement (the keyword will
+> be removed in 2.0). A call that passed the list *positionally* now binds
+> it to `routes`, which requires a `RouteSources` instance:
+> `create_fastapi_app` raises `TypeError` immediately, naming
+> `RouteSources(python=[...])` as the replacement — it does not wait for
+> compilation to fail on a missing attribute. Passing both `routes` and
+> `interfaces`, or neither, also raises `TypeError`. Migrate by replacing
+> `interfaces=[...]` with `routes=RouteSources(python=[...])`.
 
 ### Disabling a route per environment (`app.rest.disable_routes`)
 
@@ -685,7 +687,7 @@ when it is still being served.
 > authorization, not just its shape.
 
 A runnable version of every example above lives in
-[`tests/integration/rest/test_yaml_interfaces.py`](https://github.com/the-reacher-data/loom-py/blob/main/tests/integration/rest/test_yaml_interfaces.py),
+[`tests/integration/rest/test_yaml_interfaces.py`](https://github.com/the-reacher-data/loom-py/blob/master/tests/integration/rest/test_yaml_interfaces.py),
 exercised end to end against a real FastAPI app on every test run.
 
 ---

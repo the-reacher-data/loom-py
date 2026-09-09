@@ -521,6 +521,26 @@ class TestCompileSources:
         assert "(POST, '/users/')" in message
         assert "(GET, '/users/{user_id}')" in message
 
+    def test_disable_routes_matching_nothing_lists_every_unmatched_entry(
+        self, rest_compiler: RestInterfaceCompiler
+    ) -> None:
+        """L9: two bad entries must both be named, not just the first."""
+
+        class PyIFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        with pytest.raises(InterfaceCompilationError) as excinfo:
+            rest_compiler.compile_sources(
+                RouteSources(
+                    python=[PyIFace],
+                    disabled=[("GET", "/users/missing"), ("DELETE", "/users/also-missing")],
+                )
+            )
+        message = str(excinfo.value)
+        assert "(DELETE, '/users/also-missing')" in message
+        assert "(GET, '/users/missing')" in message
+
     def test_disable_routes_matching_nothing_caps_the_candidate_list(
         self, rest_compiler: RestInterfaceCompiler
     ) -> None:
