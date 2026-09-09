@@ -81,7 +81,12 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
     ) -> tuple[Any, Any, Any]:
         del app_cfg, ctx, metrics
         result = SimpleNamespace(
-            compiler=object(),
+            # create_app now verifies every compiled plan's Agent() markers
+            # (spec 014, T202) before it registers the agent resolver, so the
+            # stub compiler and registry must answer both calls the same way
+            # a real, marker-free KernelRuntime would: no plan, no key.
+            compiler=SimpleNamespace(get_plan=lambda use_case_type: None),
+            registry=SimpleNamespace(key_for=lambda use_case_type: None),
             factory=SimpleNamespace(verify=lambda: None),
             # create_app always registers SqlQueryService (M5), so the stub
             # container must accept register() calls.

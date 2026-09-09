@@ -58,6 +58,7 @@ from loom.ai.errors import (
     sql_readonly_drift,
 )
 from loom.ai.runtime._bounded import RunContext
+from loom.ai.runtime._chain import enter_agent_call, exit_agent_call
 from loom.ai.runtime._conversation import load_conversation
 from loom.ai.runtime._health import AgentHealth, worst
 from loom.ai.runtime._hooks import hooked_events, no_terminal_message
@@ -733,27 +734,37 @@ class AgentRuntime:
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
         slot = self._require_slot(name)
         _check_conversation_id(conversation_id)
-        await self._admit(name)
+        # Pushed before admission is taken: a run refused for a cycle or for
+        # exceeding 'max_agent_depth' must never occupy a concurrency permit
+        # it will just give back. The default depth of one means this push
+        # alone already consumes the whole budget the top-level run gets — a
+        # use case nested underneath (an output hook, most concretely) that
+        # declares its own Agent() marker finds no depth left, by design.
+        prior_chain = enter_agent_call(name, max_depth=self._config.max_agent_depth)
         try:
-            run = RunContext(
-                plan=slot.plan,
-                identity=identity,
-                interaction_id=uuid4().hex,
-                conversation_id=conversation_id,
-            )
-            conversation = await load_conversation(run, self._deps, self._container)
-            async with slot.engine.run_stream(
-                prompt, identity=identity, conversation=conversation
-            ) as events:
-                supervised = supervised_events(events, slot.plan.policies)
-                hooked = hooked_events(supervised, run, self._deps, self._container)
-                try:
-                    yield hooked
-                finally:
-                    await hooked.aclose()
-                    await supervised.aclose()
+            await self._admit(name)
+            try:
+                run = RunContext(
+                    plan=slot.plan,
+                    identity=identity,
+                    interaction_id=uuid4().hex,
+                    conversation_id=conversation_id,
+                )
+                conversation = await load_conversation(run, self._deps, self._container)
+                async with slot.engine.run_stream(
+                    prompt, identity=identity, conversation=conversation
+                ) as events:
+                    supervised = supervised_events(events, slot.plan.policies)
+                    hooked = hooked_events(supervised, run, self._deps, self._container)
+                    try:
+                        yield hooked
+                    finally:
+                        await hooked.aclose()
+                        await supervised.aclose()
+            finally:
+                self._runs.release()
         finally:
-            self._runs.release()
+            exit_agent_call(prior_chain)
 
     async def _admit(self, name: str) -> None:
         """Take a run slot, refusing instead of queueing when none is free."""

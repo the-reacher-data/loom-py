@@ -358,6 +358,16 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         max_concurrent_runs: Per-worker run limit (FR-033a).
         max_prompt_bytes: Enforced while reading the request body.
         health_cache_ttl_ms: Refresh period of the health probe.
+        max_agent_depth: Longest chain of nested agent runs one task may
+            open, counting the top-level run itself. A use case reaches a
+            named agent through an ``Agent()`` marker parameter, and that
+            handle's ``run`` counts as one more entry in the same chain the
+            run that reached the use case already opened. Defaults to ``1``,
+            under which the top-level run alone already consumes the whole
+            budget: an output hook, or any other use case an agent's run
+            invokes, that itself declares an ``Agent()`` marker finds no
+            depth left, and the whole class of agent-calls-agent cycles is
+            unreachable without deliberately raising this value.
 
     Raises:
         AgentCompilationError: Aggregating one issue per invalid model binding
@@ -380,6 +390,7 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     max_concurrent_runs: int = 8
     max_prompt_bytes: int = 65536
     health_cache_ttl_ms: int = 5000
+    max_agent_depth: int = 1
 
     def __post_init__(self) -> None:
         issues: list[AgentCompilationIssue] = []

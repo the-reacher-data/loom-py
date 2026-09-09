@@ -26,6 +26,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 
 from loom.ai.abc import (
     AgentEvent,
+    AgentHandle,
     AgentResult,
     AgentUsage,
     Conversation,
@@ -62,7 +63,7 @@ from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
 from loom.core.observability.event import LifecycleEvent
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
-from loom.core.use_case import Caller, Input, UseCase
+from loom.core.use_case import Agent, Caller, Input, UseCase
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.invoker import AppInvoker
 from loom.core.use_case.keys import use_case_key
@@ -635,6 +636,7 @@ def make_ai_config(
     max_prompt_bytes: int = 65536,
     health_cache_ttl_ms: int = 20,
     remote_clients: str = "required",
+    max_agent_depth: int = 1,
 ) -> AiConfig:
     """Build an ``AiConfig`` with test-sized budgets and no model secrets."""
     return AiConfig(
@@ -650,6 +652,7 @@ def make_ai_config(
         max_prompt_bytes=max_prompt_bytes,
         health_cache_ttl_ms=health_cache_ttl_ms,
         remote_clients=remote_clients,
+        max_agent_depth=max_agent_depth,
     )
 
 
@@ -946,3 +949,141 @@ def conversation_recorder(container: LoomContainer) -> ConversationRecorder:
 def conversation_deps() -> RecordingDepsFactory:
     """Deps factory serving the hook and the loader through a real executor."""
     return RecordingDepsFactory((RecordTurn, LoadHistory))
+
+
+# ---------------------------------------------------------------------------
+# Agent() marker doubles (spec 014, PR2)
+#
+# 'AgentRuntime' and the marker resolver it feeds
+# ('loom.ai.runtime._handle.agent_marker_resolver') are deliberately absent
+# from this module, for the reason the module docstring states: importing
+# 'loom.ai.runtime' here would abort collection of every test in this
+# package on one bad import, hiding which module actually regressed. Each
+# marker test module builds its own 'AgentRuntime' and resolver, over the
+# plan and use-case doubles this section provides.
+# ---------------------------------------------------------------------------
+
+
+class RecordingScriptedEngine(ScriptedEngine):
+    """A :class:`ScriptedEngine` that also records the identity of every run.
+
+    What a marker-driven run must prove is not merely that it returns an
+    answer, but that the identity reaching the model is the one the executor
+    bound the handle to — never a worker identity, never a value read back
+    out of the caller-facing parameters. Recording it here, at the one seam
+    between the handle and the "model", is what lets a test assert on it.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.identities: list[Identity] = []
+
+    def run_stream(
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+    ) -> Any:
+        self.identities.append(identity)
+        return super().run_stream(prompt, identity=identity, conversation=conversation)
+
+
+MARKER_AGENT_NAME = "triage"
+"""Agent name every marker use case below reaches through ``Agent()``."""
+
+
+class MarkerAgentUseCase(UseCase[object, dict[str, object]]):
+    """The example the spec's marker shape describes, at its simplest.
+
+    Declares both ``Caller()`` and ``Agent()``: the handle must close over
+    the same identity ``caller`` receives, both bound by the executor from
+    the one identity the transport verified for this execution.
+    """
+
+    async def execute(
+        self,
+        caller: Identity = Caller(),
+        triage: AgentHandle[dict[str, Any]] = Agent(MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        answer = await triage.run("assess this")
+        return {"caller_subject": caller.subject, "output": answer.output}
+
+
+class ShadowedIdentityParamUseCase(UseCase[object, dict[str, object]]):
+    """A primitive parameter that merely *looks* like an identity.
+
+    Regression fixture for the exact defect a reviewer found in the SQL pull
+    request: a value the caller controls through ``params`` must never reach
+    the model as if it were the verified identity. ``identity`` here is a
+    plain ``str`` — an ordinary primitive parameter with no marker — so a
+    caller may set it to anything; the handle must still run as ``caller``,
+    read only from the ``Caller()``/``Agent()`` bindings.
+    """
+
+    async def execute(
+        self,
+        identity: str,
+        caller: Identity = Caller(),
+        triage: AgentHandle[dict[str, Any]] = Agent(MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        answer = await triage.run(identity)
+        return {
+            "param_identity": identity,
+            "caller_subject": caller.subject,
+            "output": answer.output,
+        }
+
+
+OUTER_MARKER_AGENT_NAME = "outer"
+INNER_MARKER_AGENT_NAME = "inner"
+
+
+class OuterMarkerUseCase(UseCase[object, dict[str, object]]):
+    """Declares the outer agent of a nested-call scenario."""
+
+    async def execute(
+        self,
+        caller: Identity = Caller(),
+        outer: AgentHandle[dict[str, Any]] = Agent(OUTER_MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        del caller
+        answer = await outer.run("go")
+        return {"output": answer.output}
+
+
+class InnerMarkerUseCase(UseCase[object, dict[str, object]]):
+    """Declares the inner agent a nested call reaches from inside the outer run.
+
+    Stands in for an output hook or a tool's own use case invoking another
+    agent — the exact shape spec 011's rewritten paragraph (T601) describes.
+    """
+
+    async def execute(
+        self,
+        caller: Identity = Caller(),
+        inner: AgentHandle[dict[str, Any]] = Agent(INNER_MARKER_AGENT_NAME),
+    ) -> dict[str, object]:
+        del caller
+        answer = await inner.run("go deeper")
+        return {"output": answer.output}
+
+
+def marker_use_case_executor(
+    *use_cases: type[Compilable],
+) -> tuple[UseCaseCompiler, RuntimeExecutor]:
+    """Compile *use_cases* and build the real executor a marker test drives.
+
+    Args:
+        use_cases: Every use case the test invokes, including the nested
+            ones an outer run's engine calls back into.
+
+    Returns:
+        The compiler (for plan inspection) and the executor, not yet bound
+        to any agent resolver — the test module binds one once its own
+        ``AgentRuntime`` exists.
+    """
+    compiler = UseCaseCompiler()
+    for use_case in use_cases:
+        compiler.compile(use_case)
+    return compiler, RuntimeExecutor(compiler)

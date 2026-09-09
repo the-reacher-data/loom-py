@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, get_args
 
 import msgspec
 import prometheus_client
@@ -36,6 +36,8 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import AGENTS_ONLY_HINT, DiscoveryResult
+from loom.core.engine.compilable import Compilable
+from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.identity import Identity
 from loom.core.introspection import (
     INTROSPECTION_STATE_ATTR,
@@ -58,6 +60,7 @@ from loom.core.sql import (
 from loom.core.sql.config import roles_need_identity_binding
 from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.invoker import AppInvoker
+from loom.core.use_case.registry import UseCaseRegistry
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest._body import DEFAULT_MAX_BODY_BYTES, BodySizeLimitMiddleware
@@ -95,7 +98,9 @@ if TYPE_CHECKING:
     # run time solely by the branch that needs them.
     from loom.ai.compiler import AgentPlan
     from loom.ai.config import AiConfig
+    from loom.ai.errors import AgentCompilationIssue
     from loom.ai.runtime import AgentRuntime
+    from loom.core.engine.plan import AgentBinding
     from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
 
 
@@ -635,6 +640,125 @@ def _resolve_ai(
         a2a_client_factory=a2a_factory,
     )
     return _AiWiring(config=ai_cfg, runtime=runtime, plans=plans)
+
+
+def _bind_agent_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
+    """Wire the executor's ``Agent()`` marker resolver, once the AI runtime exists.
+
+    ``KernelRuntime.executor`` is built before this function can run — the AI
+    pillar it depends on is optional and resolved afterwards — so binding
+    happens here rather than at kernel construction. A no-op when no
+    ``ai:`` section is present: a use case declaring ``Agent()`` in that
+    deployment still compiles, and fails informatively at its first
+    execution instead, which is what an unresolved resolver already does.
+    """
+    if ai.runtime is None:
+        return
+    # Local import: same containment rule as '_resolve_ai' — the AI pillar
+    # is optional, and this branch only runs once that section is present.
+    from loom.ai.runtime._handle import agent_marker_resolver
+
+    observability = (
+        result.container.resolve(ObservabilityRuntime)
+        if result.container.is_registered(ObservabilityRuntime)
+        else None
+    )
+    resolver = agent_marker_resolver(ai.runtime, observability=observability)
+    result.executor.bind_agent_resolver(resolver)
+
+
+def _verify_agent_markers(
+    use_cases: Sequence[type[Compilable]],
+    compiler: UseCaseCompiler,
+    registry: UseCaseRegistry,
+    ai: _AiWiring,
+) -> None:
+    """Abort start-up when an ``Agent()`` marker cannot be satisfied.
+
+    Runs in the slot between '_resolve_ai' and 'result.factory.verify()':
+    every compiled agent plan already exists here, whether or not an ``ai:``
+    section is present — an absent section means ``ai.plans`` is simply
+    empty, so every declared agent is reported unknown the same way a typo
+    would be.
+
+    Args:
+        use_cases: Every use case compiled for this deployment.
+        compiler: Compiler holding the cached plan of each of them.
+        registry: Resolves a use case's registered key for the error message.
+        ai: The (possibly empty) AI wiring '_resolve_ai' built.
+
+    Raises:
+        AgentCompilationError: Aggregating one issue per unknown agent name
+            and per mismatched output type, so a single run reports every
+            problem at once.
+    """
+    declaring = [
+        (uc_type, plan.agent_bindings)
+        for uc_type in use_cases
+        for plan in (compiler.get_plan(uc_type),)
+        if plan is not None and plan.agent_bindings
+    ]
+    if not declaring:
+        # No use case declares Agent(): importing 'loom.ai' here, only to
+        # find nothing to check, would be exactly the containment leak
+        # '_resolve_ai' itself avoids for the same absent-section case
+        # (FR-050) — an app with no 'ai:' section must never pull the pillar
+        # in just because start-up ran.
+        return
+
+    # Local import: same containment rule as '_resolve_ai'.
+    from loom.ai.errors import AgentCompilationError
+
+    plans_by_name = {plan.name: plan for plan in ai.plans}
+    issues: list[AgentCompilationIssue] = [
+        issue
+        for uc_type, agent_bindings in declaring
+        for issue in _agent_binding_issues(
+            registry.key_for(uc_type) or uc_type.__qualname__, agent_bindings, plans_by_name
+        )
+    ]
+    if issues:
+        raise AgentCompilationError(issues)
+
+
+def _agent_binding_issues(
+    uc_name: str,
+    agent_bindings: Sequence[AgentBinding],
+    plans_by_name: Mapping[str, AgentPlan],
+) -> Iterator[AgentCompilationIssue]:
+    """Yield one issue per ``Agent()`` binding that start-up cannot satisfy.
+
+    Args:
+        uc_name: Registered key (or qualname) of the declaring use case.
+        agent_bindings: Every ``Agent()`` parameter that use case declares.
+        plans_by_name: Every compiled agent plan, by its own name.
+    """
+    # Local import: same containment rule as '_verify_agent_markers'.
+    from loom.ai.errors import agent_marker_output_mismatch, agent_marker_unknown
+
+    available = tuple(plans_by_name)
+    for binding in agent_bindings:
+        agent_plan = plans_by_name.get(binding.agent)
+        if agent_plan is None:
+            yield agent_marker_unknown(uc_name, binding.name, binding.agent, available)
+            continue
+        expected_args = get_args(binding.annotation)
+        if not expected_args:
+            # No type argument to check against — e.g. a bare 'AgentHandle'
+            # annotation with no subscript. Nothing this pass can compare,
+            # so it is not reported as a mismatch.
+            continue
+        expected = expected_args[0]
+        declared = agent_plan.output.decoder.type
+        if expected is declared:
+            continue
+        yield agent_marker_output_mismatch(
+            uc_name,
+            binding.name,
+            binding.agent,
+            expected=getattr(expected, "__name__", str(expected)),
+            declared=getattr(declared, "__name__", str(declared)),
+        )
 
 
 def _bind_agent_surface(
@@ -1262,6 +1386,8 @@ def create_app(
         code_path=effective_code_path,
         manifest_agent_specs=discovered.agent_specs,
     )
+    _verify_agent_markers(discovered.use_cases, result.compiler, result.registry, ai)
+    _bind_agent_resolver(result, ai)
     # Last: every service a use case may inject is registered by now.
     result.factory.verify()
 
