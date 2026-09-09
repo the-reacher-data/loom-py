@@ -42,6 +42,13 @@ if TYPE_CHECKING:
     # class at run time — the error only carries the value it is handed.
     from loom.ai.abc import AgentUsage
 
+# Repeated ``field`` values for issue factories that report on the same
+# artifact path from more than one code.
+_FIELD_CAPABILITIES_CONNECTION: Final = "capabilities.connection"
+_FIELD_CAPABILITIES_LIBRARY: Final = "capabilities.library"
+_FIELD_CAPABILITIES_FACTORY: Final = "capabilities.factory"
+_FIELD_AI_ENGINE: Final = "ai.engine"
+
 
 class AgentErrorCode(StrEnum):
     """Enumeration of all agent compile-time failure codes."""
@@ -482,7 +489,7 @@ def sql_connection_unknown(component: str, connection: str) -> AgentCompilationI
         code=AgentErrorCode.SQL_CONNECTION_UNKNOWN,
         message=f"{component}: sql connection '{connection}' is not configured",
         component=component,
-        field="capabilities.connection",
+        field=_FIELD_CAPABILITIES_CONNECTION,
     )
 
 
@@ -492,7 +499,7 @@ def sql_connection_not_readonly(component: str, connection: str) -> AgentCompila
         code=AgentErrorCode.SQL_CONNECTION_NOT_READONLY,
         message=f"{component}: sql connection '{connection}' is not read-only",
         component=component,
-        field="capabilities.connection",
+        field=_FIELD_CAPABILITIES_CONNECTION,
     )
 
 
@@ -502,7 +509,7 @@ def sql_config_missing(component: str) -> AgentCompilationIssue:
         code=AgentErrorCode.SQL_CONFIG_MISSING,
         message=f"{component}: sql capability declared with no data-layer configuration",
         component=component,
-        field="capabilities.connection",
+        field=_FIELD_CAPABILITIES_CONNECTION,
     )
 
 
@@ -515,7 +522,7 @@ def sql_connection_roles_unbound(component: str, connection: str) -> AgentCompil
             f"to a caller identity"
         ),
         component=component,
-        field="capabilities.connection",
+        field=_FIELD_CAPABILITIES_CONNECTION,
     )
 
 
@@ -642,7 +649,7 @@ def skills_library_invalid(component: str, library: str, reason: str) -> AgentCo
         code=AgentErrorCode.SKILLS_LIBRARY_INVALID,
         message=f"{component}: skills library '{library}' is unusable: {reason}",
         component=component,
-        field="capabilities.library",
+        field=_FIELD_CAPABILITIES_LIBRARY,
     )
 
 
@@ -652,7 +659,7 @@ def skills_library_escapes(component: str, library: str) -> AgentCompilationIssu
         code=AgentErrorCode.SKILLS_LIBRARY_ESCAPES,
         message=f"{component}: skills library '{library}' escapes its own directory",
         component=component,
-        field="capabilities.library",
+        field=_FIELD_CAPABILITIES_LIBRARY,
     )
 
 
@@ -670,7 +677,7 @@ def skills_name_collision(
             f"'{first_library}' and '{second_library}'"
         ),
         component=component,
-        field="capabilities.library",
+        field=_FIELD_CAPABILITIES_LIBRARY,
     )
 
 
@@ -683,7 +690,7 @@ def skills_root_missing(component: str) -> AgentCompilationIssue:
             f"use './name' to resolve it beside the artifact instead"
         ),
         component=component,
-        field="capabilities.library",
+        field=_FIELD_CAPABILITIES_LIBRARY,
     )
 
 
@@ -693,7 +700,7 @@ def python_factory_unresolvable(component: str, factory: str, reason: str) -> Ag
         code=AgentErrorCode.PYTHON_FACTORY_UNRESOLVABLE,
         message=f"{component}: python factory '{factory}' cannot be imported: {reason}",
         component=component,
-        field="capabilities.factory",
+        field=_FIELD_CAPABILITIES_FACTORY,
     )
 
 
@@ -703,7 +710,7 @@ def python_factory_not_callable(component: str, factory: str) -> AgentCompilatio
         code=AgentErrorCode.PYTHON_FACTORY_NOT_CALLABLE,
         message=f"{component}: python factory '{factory}' does not satisfy ToolsetFactory",
         component=component,
-        field="capabilities.factory",
+        field=_FIELD_CAPABILITIES_FACTORY,
     )
 
 
@@ -728,7 +735,7 @@ def python_remote_not_granted(component: str, factory: str, server: str) -> Agen
             f"but agent '{component}' has no mcp grant on that server"
         ),
         component=component,
-        field="capabilities.factory",
+        field=_FIELD_CAPABILITIES_FACTORY,
     )
 
 
@@ -742,7 +749,7 @@ def python_factory_failed(component: str, factory: str, error: str) -> AgentComp
         code=AgentErrorCode.PYTHON_FACTORY_FAILED,
         message=f"{component}: python factory '{factory}' raised {error} while building",
         component=component,
-        field="capabilities.factory",
+        field=_FIELD_CAPABILITIES_FACTORY,
     )
 
 
@@ -848,7 +855,7 @@ def engine_not_found(name: str, available: Sequence[str]) -> AgentCompilationIss
         code=AgentErrorCode.ENGINE_NOT_FOUND,
         message=f"engine '{name}' is not installed; available engines: {known}",
         component=name,
-        field="ai.engine",
+        field=_FIELD_AI_ENGINE,
     )
 
 
@@ -860,7 +867,7 @@ def engine_duplicate(name: str, distributions: Sequence[str]) -> AgentCompilatio
             f"engine '{name}' is provided by more than one distribution: {', '.join(distributions)}"
         ),
         component=name,
-        field="ai.engine",
+        field=_FIELD_AI_ENGINE,
     )
 
 
@@ -871,7 +878,7 @@ def engine_api_mismatch(name: str, found: int, supported: Sequence[int]) -> Agen
         code=AgentErrorCode.ENGINE_API_MISMATCH,
         message=(f"engine '{name}' speaks handshake version {found}; supported versions: {known}"),
         component=name,
-        field="ai.engine",
+        field=_FIELD_AI_ENGINE,
     )
 
 

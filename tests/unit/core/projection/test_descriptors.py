@@ -202,6 +202,7 @@ class TestUnbackedDescriptor:
         self, unbacked_descriptor: type[Any]
     ) -> None:
         loader = unbacked_descriptor(model=_Note)
+        step = _FakeRelationStep()
 
         with pytest.raises(ValueError, match="no SQL-path loader factory"):
-            make_sql_loader(loader, _FakeRelationStep())
+            make_sql_loader(loader, step)

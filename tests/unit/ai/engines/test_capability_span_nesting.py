@@ -92,9 +92,10 @@ async def test_a_timed_out_tool_closes_its_span_as_an_error_under_the_agent_span
     )
 
     agent = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
-    with agent.as_current(), pytest.raises(AgentRunError) as raised:
-        async with capability_call(context, "usecase", "create_order", _IDENTITY):
-            await asyncio.sleep(0.5)
+    with agent.as_current():  # noqa: SIM117 - separate blocks so only the call under test can raise
+        with pytest.raises(AgentRunError) as raised:
+            async with capability_call(context, "usecase", "create_order", _IDENTITY):
+                await asyncio.sleep(0.5)
     agent.end()
 
     assert raised.value.code is AgentRunErrorCode.TOOL_TIMEOUT

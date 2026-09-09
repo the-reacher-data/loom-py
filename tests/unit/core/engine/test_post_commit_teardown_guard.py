@@ -69,9 +69,10 @@ async def test_a_teardown_failure_after_commit_still_drains_instead_of_discardin
     factory = StubUnitOfWorkFactory(log)
     executor = RuntimeExecutor(UseCaseCompiler(), uow_factory=factory)
     monkeypatch.setattr(executor_module, "_active_uow", _FakeActiveUow(executor_module._active_uow))
+    action = _RecordingPriorityAction(log)
 
     with pytest.raises(RuntimeError, match="token reset boom"):
-        await executor.execute(_RecordingPriorityAction(log), params={"value": "x"})
+        await executor.execute(action, params={"value": "x"})
 
     # The commit happened and the teardown failure is what propagated (not
     # some other error), but the queued invalidation still ran rather than
@@ -133,9 +134,10 @@ async def test_a_late_enqueue_from_a_nested_execution_during_the_teardown_drain_
     factory = StubUnitOfWorkFactory(log)
     executor = RuntimeExecutor(UseCaseCompiler(), uow_factory=factory)
     monkeypatch.setattr(executor_module, "_active_uow", _FakeActiveUow(executor_module._active_uow))
+    action = _DispatchStartsNestedExecution(executor, log)
 
     with pytest.raises(RuntimeError, match="token reset boom"):
-        await executor.execute(_DispatchStartsNestedExecution(executor, log), params={"value": "x"})
+        await executor.execute(action, params={"value": "x"})
 
     assert "uow.commit" in log.entries
     assert "dispatch.finished" in log.entries
@@ -178,9 +180,7 @@ class TestDrainCommittedChannelLoggingFailure:
 
     async def test_a_cancellation_from_drain_is_not_swallowed(self) -> None:
         executor = RuntimeExecutor(UseCaseCompiler())
-        channel = _StubChannel(asyncio.CancelledError())
+        channel = cast(PostCommitChannel, _StubChannel(asyncio.CancelledError()))
 
         with pytest.raises(asyncio.CancelledError):
-            await executor._drain_committed_channel_logging_failure(
-                cast(PostCommitChannel, channel)
-            )
+            await executor._drain_committed_channel_logging_failure(channel)

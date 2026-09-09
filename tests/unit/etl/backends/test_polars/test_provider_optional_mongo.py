@@ -53,5 +53,7 @@ def test_mongo_source_without_pymongo_names_the_extra(
         mongo=MongoConfig(uri="mongodb://localhost:27017", database="app"),
     )
 
+    provider = PolarsProvider()
+
     with pytest.raises(ImportError, match=r"loom-kernel\[mongo\]"):
-        PolarsProvider().create_backends(config)
+        provider.create_backends(config)

@@ -414,8 +414,10 @@ class TestFailedBatch:
         recorder = build_recorder()
         messages = [_message(i, trace_id=_TRACES[i]) for i in range(2)]
 
+        sink = _sink(recorder, _RecordingPartition(fail=True))
+
         with pytest.raises(RuntimeError, match="sink down"):
-            _sink(recorder, _RecordingPartition(fail=True)).write_batch(messages)
+            sink.write_batch(messages)
 
         assert len(recorder.spans()) == 3
         for span in recorder.spans():

@@ -84,8 +84,11 @@ def test_backend_is_registered_under_its_name() -> None:
 
 
 def test_missing_section_is_a_config_error() -> None:
+    ctx = _ctx(None)
+    backend = MongoBackend()
+
     with pytest.raises(ConfigError, match="persistence.mongo"):
-        MongoBackend().build(_ctx(None), ())
+        backend.build(ctx, ())
 
 
 def test_wiring_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,8 +123,11 @@ def test_client_seam_forwards_only_the_options_set(monkeypatch: pytest.MonkeyPat
 
 
 def test_unknown_section_key_is_a_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    section = {**_SECTION, "transactoins": True}
+    client = FakeMongoClient()
+
     with pytest.raises(ConfigError, match="transactoins"):
-        _wiring(monkeypatch, FakeMongoClient(), {**_SECTION, "transactoins": True})
+        _wiring(monkeypatch, client, section)
 
 
 @pytest.mark.parametrize("transactions", [False, True])

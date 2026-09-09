@@ -111,8 +111,10 @@ class TestContribuidoresInvalidos:
         """A reference without ``:`` names no callable at all."""
         ref = ContributorRef(section="agents", contributor="loom.core.introspection", subject=())
 
+        app = _introspection(ref)
+
         with pytest.raises(IntrospectionError):
-            describe_app(_introspection(ref))
+            describe_app(app)
 
     def test_falla_cuando_el_modulo_no_existe(self) -> None:
         """An unimportable module is a wiring error, reported as such."""
@@ -122,8 +124,10 @@ class TestContribuidoresInvalidos:
             subject=(),
         )
 
+        app = _introspection(ref)
+
         with pytest.raises(IntrospectionError):
-            describe_app(_introspection(ref))
+            describe_app(app)
 
     def test_falla_cuando_el_atributo_no_existe(self, contributor_module: str) -> None:
         """A module that does not expose the named attribute is a wiring error."""
@@ -133,8 +137,10 @@ class TestContribuidoresInvalidos:
             subject=(),
         )
 
+        app = _introspection(ref)
+
         with pytest.raises(IntrospectionError):
-            describe_app(_introspection(ref))
+            describe_app(app)
 
     def test_falla_cuando_el_atributo_no_es_invocable(self, contributor_module: str) -> None:
         """A contributor must be callable; a plain value cannot project anything."""
@@ -144,8 +150,10 @@ class TestContribuidoresInvalidos:
             subject=(),
         )
 
+        app = _introspection(ref)
+
         with pytest.raises(IntrospectionError):
-            describe_app(_introspection(ref))
+            describe_app(app)
 
     def test_falla_cuando_dos_contribuidores_declaran_la_misma_seccion(
         self, contributor_module: str
@@ -157,8 +165,10 @@ class TestContribuidoresInvalidos:
             subject=(),
         )
 
+        app = _introspection(ref, ref)
+
         with pytest.raises(IntrospectionError):
-            describe_app(_introspection(ref, ref))
+            describe_app(app)
 
     def test_falla_cuando_la_seccion_es_app(self, contributor_module: str) -> None:
         """``app`` is reserved for the application identity."""
@@ -168,8 +178,10 @@ class TestContribuidoresInvalidos:
             subject=(),
         )
 
+        app = _introspection(ref)
+
         with pytest.raises(IntrospectionError):
-            describe_app(_introspection(ref))
+            describe_app(app)
 
 
 _FORBIDDEN_ROOTS: tuple[str, ...] = (

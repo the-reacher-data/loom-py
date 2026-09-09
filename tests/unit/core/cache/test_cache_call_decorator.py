@@ -97,8 +97,10 @@ class TestOnlyACoroutineFunctionMayBeMarked:
         def fetch_sync() -> str:
             return "x"
 
+        decorator = cache_call()
+
         with pytest.raises(TypeError, match="fetch_sync"):
-            cache_call()(fetch_sync)
+            decorator(fetch_sync)
 
     def test_a_generator_function_is_refused_naming_it(self) -> None:
         """A generator yields many values; a cached call stores one."""
@@ -106,8 +108,10 @@ class TestOnlyACoroutineFunctionMayBeMarked:
         def stream() -> Iterator[str]:
             yield "x"
 
+        decorator = cache_call()
+
         with pytest.raises(TypeError, match="stream"):
-            cache_call()(stream)
+            decorator(stream)
 
     def test_an_async_generator_function_is_refused_naming_it(self) -> None:
         """An async generator is not a coroutine function either."""
@@ -115,5 +119,7 @@ class TestOnlyACoroutineFunctionMayBeMarked:
         async def astream() -> AsyncIterator[str]:
             yield "x"
 
+        decorator = cache_call()
+
         with pytest.raises(TypeError, match="astream"):
-            cache_call()(astream)
+            decorator(astream)

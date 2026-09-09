@@ -149,9 +149,8 @@ def _version_issues(
     latest = max(versions)
     if version not in versions:
         raise AgentCompilationError([spec_version_unsupported(source, version, sorted(versions))])
-    if version < latest:
-        return (spec_version_deprecated(source, version, latest),)
-    return ()
+    issues = [spec_version_deprecated(source, version, latest)] if version < latest else []
+    return tuple(issues)
 
 
 def _decode_payload(

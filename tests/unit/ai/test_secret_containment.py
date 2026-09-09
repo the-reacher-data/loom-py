@@ -20,7 +20,7 @@ _CREDENTIALS_REF = "ref/to/secret-name"
 _OPTION_SENTINEL = "SENTINEL_OPT_VALUE"
 
 
-@pytest.fixture()
+@pytest.fixture
 def target() -> InferenceTarget:
     """Build a target carrying both redactable fields."""
     return InferenceTarget(
@@ -72,4 +72,5 @@ def test_encoding_json_no_expone_secretos_cuando_se_codifica_el_struct(
     except TypeError:
         return
     text = encoded.decode("utf-8")
-    assert _CREDENTIALS_REF not in text and _OPTION_SENTINEL not in text
+    assert _CREDENTIALS_REF not in text
+    assert _OPTION_SENTINEL not in text

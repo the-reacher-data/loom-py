@@ -116,8 +116,11 @@ class TestPolarsStepRunner:
         monkeypatch.setattr(ETLCompiler, "compile_step", _fake_compile_step)
         monkeypatch.setattr(ETLExecutor, "run_step", _fake_run_step)
 
+        dummy_step = type("DummyStep", (), {})
+        params = object()
+
         with pytest.raises(RuntimeError, match="Step produced no output"):
-            runner.run(type("DummyStep", (), {}), object())
+            runner.run(dummy_step, params)
 
 
 class TestStepResult:

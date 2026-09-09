@@ -437,8 +437,10 @@ class TestInlineIntoTopicDoesNotKillTheMessage:
         sink = _terminal_sink(None)
         sink.mark_inline_partition()
 
+        runtime = build_recorder().runtime
+
         with pytest.raises(RuntimeError, match="inline WithAsync partition was already built"):
-            sink.bind_terminal_tracing(build_recorder().runtime, _FLOW, "run-1")
+            sink.bind_terminal_tracing(runtime, _FLOW, "run-1")
 
     def test_an_inline_partition_from_a_traced_sink_is_refused(self) -> None:
         """Nothing fixes the order of the two wiring sites, so both directions guard."""
@@ -482,8 +484,10 @@ class TestReRaiseExit:
         recorder = build_recorder()
         partition = _terminal_sink(recorder).build("step", 0, 1)
 
+        messages = _messages()
+
         with pytest.raises(KafkaDeliveryError):
-            partition.write_batch(_messages())
+            partition.write_batch(messages)
 
         deaths = _terminal_spans(recorder)
         assert len(deaths) == 3, "a failed write must still record where each message ended"
@@ -502,8 +506,10 @@ class TestReRaiseExit:
         recorder = build_recorder()
         partition = _terminal_sink(recorder).build("step", 0, 1)
 
+        messages = _messages()
+
         with pytest.raises(KafkaDeliveryError):
-            partition.write_batch(_messages())
+            partition.write_batch(messages)
 
         terminal = recorder.collector.scoped(Scope.TERMINAL)
         starts = [event for event in terminal if event.kind is EventKind.START]

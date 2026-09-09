@@ -30,6 +30,7 @@ class NoneBackend:
         Returns:
             The no-persistence wiring.
         """
+        del ctx, models
         return PersistenceWiring(
             uow_factory=None,
             repo_registration_module=_register_no_repositories,

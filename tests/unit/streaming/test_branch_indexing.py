@@ -8,7 +8,7 @@ The parity tests here fail whenever any two of them stop agreeing.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, ClassVar
 
 import pytest
@@ -379,30 +379,39 @@ class TestForkKindConsistency:
     """A fork declares one dispatch family, so only that family's routes exist."""
 
     def test_keyed_fork_rejects_predicate_routes(self) -> None:
+        selector = _ChannelSelector()
+        routes: Mapping[object, Process[Any, Any]] = {
+            "a": Process(IntoTopic(_TOPIC_A, payload=_Routed))
+        }
+        predicate_routes = (
+            ForkRoute(
+                when=_IsChannelB(),
+                process=Process(IntoTopic(_TOPIC_B, payload=_Routed)),
+            ),
+        )
+
         with pytest.raises(ValueError, match="predicate_routes"):
             Fork(
                 kind=ForkKind.KEYED,
-                selector=_ChannelSelector(),
-                routes={"a": Process(IntoTopic(_TOPIC_A, payload=_Routed))},
-                predicate_routes=(
-                    ForkRoute(
-                        when=_IsChannelB(),
-                        process=Process(IntoTopic(_TOPIC_B, payload=_Routed)),
-                    ),
-                ),
+                selector=selector,
+                routes=routes,
+                predicate_routes=predicate_routes,
             )
 
     def test_predicate_fork_rejects_keyed_routes(self) -> None:
+        routes = {"a": Process(IntoTopic(_TOPIC_A, payload=_Routed))}
+        predicate_routes = (
+            ForkRoute(
+                when=_IsChannelB(),
+                process=Process(IntoTopic(_TOPIC_B, payload=_Routed)),
+            ),
+        )
+
         with pytest.raises(ValueError, match="routes"):
             Fork(
                 kind=ForkKind.PREDICATE,
-                routes={"a": Process(IntoTopic(_TOPIC_A, payload=_Routed))},
-                predicate_routes=(
-                    ForkRoute(
-                        when=_IsChannelB(),
-                        process=Process(IntoTopic(_TOPIC_B, payload=_Routed)),
-                    ),
-                ),
+                routes=routes,
+                predicate_routes=predicate_routes,
             )
 
 

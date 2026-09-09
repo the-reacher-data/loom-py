@@ -382,8 +382,10 @@ class TestSpanAcrossAsendBoundaries:
 
         assert await asyncio.create_task(frames.asend(None)) == "first"
         assert await asyncio.create_task(frames.asend(None)) == "second"
+        final_frame = frames.asend(None)
+
         with pytest.raises(StopAsyncIteration):
-            await asyncio.create_task(frames.asend(None))
+            await asyncio.create_task(final_frame)
 
         assert self._detach_failures(caplog) == []
         spans = exporter.get_finished_spans()

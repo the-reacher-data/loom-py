@@ -1055,8 +1055,10 @@ class TestEntityScopeValidation:
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
     ) -> None:
+        unresolvable_id = cast(int, None)
+
         with pytest.raises(TypeError, match="count_related_notes.*first positional argument"):
-            await wrapped_repository.count_related_notes(cast(int, None))
+            await wrapped_repository.count_related_notes(unresolvable_id)
 
         repo = wrapped_repository._repository
         assert isinstance(repo, _FakeRepository)
@@ -1114,13 +1116,15 @@ class TestDelegationPrecondition:
         self, cache_config: CacheConfig
     ) -> None:
         cache = _MemoryCacheBackend()
+        repository = cast(Any, _ReadOnlyRepository())
+        dependency_resolver = GenerationalDependencyResolver(cache)
 
         with pytest.raises(RuntimeError, match="_ReadOnlyRepository") as info:
             CachedRepository(
-                cast(Any, _ReadOnlyRepository()),
+                repository,
                 config=cache_config,
                 cache=cache,
-                dependency_resolver=GenerationalDependencyResolver(cache),
+                dependency_resolver=dependency_resolver,
             )
 
         message = str(info.value)

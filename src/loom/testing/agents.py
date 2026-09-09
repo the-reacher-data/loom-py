@@ -134,6 +134,7 @@ class FakeAgentEngine:
         Raises:
             FakeAgentRunError: If the script ends in an ``ErrorEvent``.
         """
+        del prompt, identity, conversation
         if isinstance(self._terminal, ErrorEvent):
             raise FakeAgentRunError(self._terminal.code, self._terminal.message)
         return AgentResult(
@@ -164,6 +165,7 @@ class FakeAgentEngine:
         Returns:
             An async context manager yielding the scripted event stream.
         """
+        del prompt, identity, conversation
         return self._stream()
 
     async def health(self) -> HealthStatus:

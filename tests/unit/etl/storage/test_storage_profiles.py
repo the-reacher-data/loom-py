@@ -228,8 +228,10 @@ def test_profile_with_unknown_field_is_rejected_naming_the_field() -> None:
         "tables": {"orders": {"path": {"uri": "/lake/orders", "profile": "large"}}},
     }
 
+    normalised = normalise_storage_section(raw)
+
     with pytest.raises(msgspec.ValidationError, match="writter"):
-        convert_storage_config(normalise_storage_section(raw))
+        convert_storage_config(normalised)
 
 
 def test_profile_with_uri_is_rejected() -> None:

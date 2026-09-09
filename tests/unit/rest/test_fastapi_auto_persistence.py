@@ -317,9 +317,10 @@ def test_build_bootstrap_rejects_autocrud_without_model_on_any_backend(
         ),
     )
     ctx = _ctx() if persistence is None else _ctx(persistence=persistence)
+    app_config = _AppConfig(name="demo")
 
     with pytest.raises(RuntimeError, match="OrphanOnAnyBackend") as exc_info:
-        _build_bootstrap(_AppConfig(name="demo"), ctx)
+        _build_bootstrap(app_config, ctx)
 
     assert "PersistenceNoneRecord" in str(exc_info.value)
     assert "app.discovery" in str(exc_info.value)

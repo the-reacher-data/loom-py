@@ -130,7 +130,8 @@ class TestRelatedStructs:
         )
         ticket_sa = get_compiled(_Ticket)
         customer_sa = get_compiled(_Customer)
-        assert ticket_sa is not None and customer_sa is not None
+        assert ticket_sa is not None
+        assert customer_sa is not None
         ticket = ticket_sa(id=1, customer_id=7)
         ticket.customer = customer_sa(id=7, full_name="Ann")
 
@@ -155,7 +156,8 @@ class TestRelatedStructs:
         tag = await tags.create(_CreateTag(ticket_id=ticket.id, label_text="urgent"))
         ticket_sa = get_compiled(_Ticket)
         tag_sa = get_compiled(_Tag)
-        assert ticket_sa is not None and tag_sa is not None
+        assert ticket_sa is not None
+        assert tag_sa is not None
         in_memory = ticket_sa(id=ticket.id, customer_id=customer.id)
         in_memory.tags = [tag_sa(id=tag.id, ticket_id=ticket.id, label_text="urgent")]
 

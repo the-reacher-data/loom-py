@@ -210,8 +210,9 @@ class TestCicloDeVida:
             await runtime.__aexit__(None, None, None)
 
         try:
+            task = asyncio.create_task(_exit_elsewhere())
             with pytest.raises(RuntimeError):
-                await asyncio.create_task(_exit_elsewhere())
+                await task
         finally:
             await runtime.__aexit__(None, None, None)
 
@@ -279,8 +280,10 @@ class TestArranqueConcurrente:
 
         # The outer timeout is twice the declared budget: if start-up hangs the
         # test fails on TimeoutError instead of blocking the suite.
+        budget = asyncio.timeout(0.1)
+
         with pytest.raises(AgentCompilationError) as failure:
-            async with asyncio.timeout(0.1):
+            async with budget:
                 await runtime.__aenter__()
 
         assert _SERVER_A in str(failure.value)
@@ -309,8 +312,10 @@ class TestArranqueConcurrente:
             config_kwargs={"startup_timeout_ms": 50},
         )
 
+        budget = asyncio.timeout(0.1)
+
         with pytest.raises(AgentCompilationError) as failure:
-            async with asyncio.timeout(0.1):
+            async with budget:
                 await runtime.__aenter__()
 
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
@@ -578,7 +583,8 @@ class TestFiltroDeHerramientas:
             await runtime.__aenter__()
 
         message = str(failure.value)
-        assert _SERVER_A in message and mcp_server_url(_SERVER_A) not in message
+        assert _SERVER_A in message
+        assert mcp_server_url(_SERVER_A) not in message
 
 
 class TestDerivaDeSoloLectura:

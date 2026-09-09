@@ -48,10 +48,11 @@ def test_known_field_in_source_path_passes() -> None:
 
 
 def test_unknown_field_in_source_path_raises() -> None:
+    sources = (_file_source("s3://raw/{nope}.csv"),)
+    target = _table_target()
+
     with pytest.raises(ETLCompilationError) as excinfo:
-        validate_file_path_templates(
-            _Step, _P, (_file_source("s3://raw/{nope}.csv"),), _table_target()
-        )
+        validate_file_path_templates(_Step, _P, sources, target)
     assert excinfo.value.code is ETLErrorCode.UNKNOWN_TEMPLATE_FIELD
     assert excinfo.value.field == "nope"
 
@@ -94,9 +95,10 @@ def test_property_in_source_path_passes() -> None:
 
 
 def test_unknown_field_still_raises_with_property_params() -> None:
+    sources = (_file_source("s3://raw/{nope}.csv"),)
+    target = _table_target()
+
     with pytest.raises(ETLCompilationError) as excinfo:
-        validate_file_path_templates(
-            _Step, _PWithProperty, (_file_source("s3://raw/{nope}.csv"),), _table_target()
-        )
+        validate_file_path_templates(_Step, _PWithProperty, sources, target)
     assert excinfo.value.code is ETLErrorCode.UNKNOWN_TEMPLATE_FIELD
     assert excinfo.value.field == "nope"
