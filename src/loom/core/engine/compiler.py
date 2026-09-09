@@ -16,6 +16,7 @@ from loom.core.engine.plan import (
     ExistsStep,
     InputBinding,
     LoadStep,
+    McpBinding,
     ParamBinding,
     RuleStep,
 )
@@ -29,6 +30,7 @@ from loom.core.use_case.markers import (
     _InputMarker,
     _LoadByIdMarker,
     _LoadMarker,
+    _McpMarker,
 )
 
 
@@ -52,6 +54,7 @@ class _SignatureBindings:
     load_steps: list[LoadStep] = field(default_factory=list)
     exists_steps: list[ExistsStep] = field(default_factory=list)
     agent_bindings: list[AgentBinding] = field(default_factory=list)
+    mcp_bindings: list[McpBinding] = field(default_factory=list)
     input_binding: InputBinding | None = None
     caller_binding: CallerBinding | None = None
 
@@ -169,6 +172,7 @@ class UseCaseCompiler:
             read_only=bool(getattr(use_case_type, "read_only", False)),
             caller_binding=bindings.caller_binding,
             agent_bindings=tuple(bindings.agent_bindings),
+            mcp_bindings=tuple(bindings.mcp_bindings),
         )
         use_case_type.__execution_plan__ = plan
         return plan
@@ -222,6 +226,10 @@ class UseCaseCompiler:
 
         if isinstance(marker, _AgentMarker):
             self._collect_agent(name, annotation, marker, bindings)
+            return
+
+        if isinstance(marker, _McpMarker):
+            self._collect_mcp(name, marker, bindings)
             return
 
         if isinstance(marker, _LoadByIdMarker):
@@ -300,6 +308,25 @@ class UseCaseCompiler:
             AgentBinding(name=name, agent=marker.name, annotation=annotation)
         )
         self._logger.info(f"[BOOT]  - Detected Agent: {marker.name!r} -> {name}")
+
+    def _collect_mcp(
+        self,
+        name: str,
+        marker: _McpMarker,
+        bindings: _SignatureBindings,
+    ) -> None:
+        """Record one ``Mcp()`` marker; several may appear in one signature.
+
+        Only the parameter name, the declared server name and the declared
+        ``include`` are kept here. Whether that server exists cannot be
+        checked here: this compiler runs regardless of whether the optional
+        AI pillar is even installed, the same reason ``_collect_agent``
+        cannot validate the agent name either.
+        """
+        bindings.mcp_bindings.append(
+            McpBinding(name=name, server=marker.server, include=marker.include)
+        )
+        self._logger.info(f"[BOOT]  - Detected Mcp: {marker.server!r} -> {name}")
 
     @staticmethod
     def _build_load_by_id_step(name: str, marker: _LoadByIdMarker[Any]) -> LoadStep:

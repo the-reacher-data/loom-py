@@ -291,18 +291,21 @@ extend-immutable-calls = [
     "Input",
     "Load",
     "LoadById",
+    "Mcp",
     "loom.core.use_case.Agent",
     "loom.core.use_case.Caller",
     "loom.core.use_case.Exists",
     "loom.core.use_case.Input",
     "loom.core.use_case.Load",
     "loom.core.use_case.LoadById",
+    "loom.core.use_case.Mcp",
     "loom.core.use_case.markers.Agent",
     "loom.core.use_case.markers.Caller",
     "loom.core.use_case.markers.Exists",
     "loom.core.use_case.markers.Input",
     "loom.core.use_case.markers.Load",
     "loom.core.use_case.markers.LoadById",
+    "loom.core.use_case.markers.Mcp",
 ]
 
 [tool.pyright]

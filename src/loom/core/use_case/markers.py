@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any, Generic, TypeVar
 
@@ -79,6 +80,33 @@ class _AgentMarker:
 
     def __init__(self, name: str) -> None:
         self.name = name
+
+
+class _McpMarker:
+    """Marks a parameter as a named MCP server handle bound to this execution.
+
+    Carries only the server name and the tool filter — no output type, like
+    ``_AgentMarker``. Unlike ``_AgentMarker``, though, ``McpHandle`` carries
+    no type parameter (``loom.ai.abc.McpHandle``): there is no output shape
+    for a start-up pass to check the parameter's annotation against, so the
+    annotation on this marker's parameter names the protocol only, never a
+    generic argument. This class must never import :mod:`loom.ai`, for the
+    same containment reason ``_AgentMarker`` gives.
+
+    Example::
+
+        async def execute(
+            self,
+            caller: Identity = Caller(),
+            search: McpHandle = Mcp("docs-server", include=["search", "fetch"]),
+        ) -> Report: ...
+    """
+
+    __slots__ = ("server", "include")
+
+    def __init__(self, server: str, include: tuple[str, ...]) -> None:
+        self.server = server
+        self.include = include
 
 
 class _LoadByIdMarker(Generic[EntityT]):
@@ -230,6 +258,75 @@ def Agent(name: str) -> Any:
             ...
     """
     return _AgentMarker(name)
+
+
+def Mcp(server: str, *, include: Sequence[str]) -> Any:
+    """Factory returning the runtime marker for a named MCP server handle parameter.
+
+    Once an MCP resolver is wired into the executor, it will resolve
+    *server* against the MCP servers compiled for this deployment and
+    inject an ``McpHandle`` bound to this execution's verified caller — the
+    only way a use case is meant to reach an MCP server (constructor
+    injection is not offered for this resource). No resolver is wired yet:
+    a compiled use case that declares this marker fails fast with a
+    ``RuntimeError`` at its first execution instead of receiving the raw
+    marker object. Names in *include* are globs, and once resolution ships
+    they will be matched by the same ``select_names``/``admits`` the model's
+    own toolset filter uses; there is no ``exclude`` in this version because
+    no caller has asked for one and a short allow-list already expresses
+    every case on the table.
+
+    Unlike :func:`Agent`, no output type is **ever** checked against the
+    parameter's annotation: ``McpHandle`` carries no type parameter, so there
+    is no declared shape to compare it with. Once start-up verification is
+    wired — it is not in this version — it will check the server's name and
+    that *include* matches at least one published tool; neither is checked
+    today, so a misspelled server name reaches the ``RuntimeError`` above
+    rather than aborting the boot.
+
+    Returned value is intentionally typed as ``Any`` to avoid ``mypy``
+    default-argument incompatibility in signatures like:
+    ``search: McpHandle = Mcp("docs-server", include=["search"])``.
+
+    Args:
+        server: Name of a configured MCP server, as declared under
+            ``ai.mcp_servers``.
+        include: Glob patterns naming the tools this handle may call.
+            Keyword-only and required: everywhere this include/exclude
+            shape is used, an empty ``include`` means "every name" — the
+            filter only narrows when it carries at least one pattern — so an
+            empty sequence here would
+            silently grant the *entire server*, not the handful of tools the
+            signature names. ``Mcp()`` raises ``ValueError`` instead of
+            widening the grant behind the caller's back. A bare ``str`` is
+            rejected the same way: ``str`` satisfies ``Sequence[str]``, so
+            ``include="search"`` would type-check yet split into six
+            single-character glob patterns at runtime.
+
+    Raises:
+        ValueError: If *include* is empty, or is a single string instead of
+            a sequence of patterns.
+
+    Example::
+
+        async def execute(
+            self,
+            caller: Identity = Caller(),
+            docs: McpHandle = Mcp("docs-server", include=["search", "fetch"]),
+        ) -> Report:
+            names = docs.tools()
+            ...
+    """
+    if isinstance(include, str):
+        raise ValueError(
+            "Mcp() include must be a sequence of glob patterns, not a single "
+            f"string; got include={include!r}. Wrap it in a list: "
+            f"include=[{include!r}]."
+        )
+    normalized = tuple(include)
+    if not normalized:
+        raise ValueError("Mcp() requires a non-empty include")
+    return _McpMarker(server, normalized)
 
 
 def LoadById(

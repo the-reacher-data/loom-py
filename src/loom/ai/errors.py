@@ -139,6 +139,9 @@ class AgentErrorCode(StrEnum):
     AGENT_MARKER_UNKNOWN = "AGENT_MARKER_UNKNOWN"
     AGENT_MARKER_OUTPUT_MISMATCH = "AGENT_MARKER_OUTPUT_MISMATCH"
 
+    # Use-case MCP markers
+    MCP_MARKER_UNKNOWN = "MCP_MARKER_UNKNOWN"
+
     # Compatibility
     SPEC_VERSION_DEPRECATED = "SPEC_VERSION_DEPRECATED"
     UNSPECIFIED = "UNSPECIFIED"
@@ -1132,11 +1135,14 @@ def spec_version_deprecated(component: str, found: int, latest: int) -> AgentCom
 
 
 # ---------------------------------------------------------------------------
-# Use-case agent marker factories
+# Use-case marker factories (Agent() and Mcp())
 # ---------------------------------------------------------------------------
 
 _AGENT_MARKER_FIELD_TEMPLATE: Final[str] = "parameters.{parameter}"
-"""Field-path template shared by both use-case agent marker issues."""
+"""Field-path template shared by all four use-case marker issues below:
+two for ``Agent()`` (:func:`agent_marker_unknown`,
+:func:`agent_marker_output_mismatch`) and two for ``Mcp()``
+(:func:`mcp_marker_unknown`, :func:`use_case_tool_filter_matches_nothing`)."""
 
 
 def agent_marker_unknown(
@@ -1157,6 +1163,70 @@ def agent_marker_unknown(
         message=(
             f"{usecase}: parameter '{parameter}' names unknown agent '{agent}'; "
             f"compiled agents: {known}"
+        ),
+        component=usecase,
+        field=_AGENT_MARKER_FIELD_TEMPLATE.format(parameter=parameter),
+    )
+
+
+def mcp_marker_unknown(
+    usecase: str, parameter: str, server: str, available: Sequence[str]
+) -> AgentCompilationIssue:
+    """A use case's :func:`~loom.core.use_case.markers.Mcp` marker names a
+    server no engine compiled.
+
+    The existing :func:`mcp_server_unknown` cannot serve this condition: it
+    carries neither the parameter nor the available server names, both of
+    which this message needs to point someone at the right signature.
+
+    Args:
+        usecase: Registered key of the use case declaring the marker.
+        parameter: Name of the ``execute`` parameter carrying the marker.
+        server: Server name the marker declared.
+        available: Names of the servers actually configured for this
+            deployment.
+    """
+    known = ", ".join(available) if available else "none"
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_MARKER_UNKNOWN,
+        message=(
+            f"{usecase}: parameter '{parameter}' names unknown mcp server '{server}'; "
+            f"configured servers: {known}"
+        ),
+        component=usecase,
+        field=_AGENT_MARKER_FIELD_TEMPLATE.format(parameter=parameter),
+    )
+
+
+def use_case_tool_filter_matches_nothing(
+    usecase: str, parameter: str, server: str
+) -> AgentCompilationIssue:
+    """A use case's :func:`~loom.core.use_case.markers.Mcp` ``include`` matches
+    no tool the named server publishes.
+
+    A standalone factory, not a variant selected inside ``filter_issues``:
+    the use-case check runs over the marker's own parameter, something
+    ``filter_issues`` never carries a name for. It reuses
+    :attr:`AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING` rather than minting a
+    new code — one condition, one code — and differs from
+    :func:`tool_filter_matches_nothing` in both message and ``field``: this
+    one carries ``parameters.{parameter}`` (via
+    :data:`_AGENT_MARKER_FIELD_TEMPLATE`) instead of
+    ``capabilities.include``. That ``field`` difference is what makes reusing
+    the shared code safe: it is the only thing that lets a caller filtering
+    on :attr:`AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING` tell an
+    agent-artifact issue apart from a use-case-parameter one.
+
+    Args:
+        usecase: Registered key of the use case declaring the marker.
+        parameter: Name of the ``execute`` parameter carrying the marker.
+        server: Server name the marker declared.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING,
+        message=(
+            f"{usecase}: parameter '{parameter}' declares an include filter for mcp "
+            f"server '{server}' that matches no tool"
         ),
         component=usecase,
         field=_AGENT_MARKER_FIELD_TEMPLATE.format(parameter=parameter),

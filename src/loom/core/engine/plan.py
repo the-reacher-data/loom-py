@@ -83,6 +83,34 @@ class AgentBinding:
 
 
 @dataclass(frozen=True)
+class McpBinding:
+    """One ``Mcp(server, include=...)`` marker parameter declared in ``execute``.
+
+    Once an MCP resolver is wired into the executor, it will resolve
+    *server* against the MCP servers compiled for this deployment and
+    inject a handle bound to this execution's verified caller. No resolver
+    is wired yet: the executor raises ``RuntimeError`` at the first
+    execution of a use case carrying this binding instead of handing back
+    the raw marker object. Like :class:`AgentBinding`, several may appear
+    in one signature — a use case may reach more than one named server.
+
+    The parameter's annotation is not carried here, unlike ``AgentBinding``:
+    ``McpHandle`` has no type parameter, so nothing downstream reads a type
+    argument out of it, and storing an unread field is the abstraction the
+    project's rules forbid.
+
+    Args:
+        name: Parameter name as declared in the signature.
+        server: MCP server name the marker declared.
+        include: Glob patterns naming the tools this handle may call.
+    """
+
+    name: str
+    server: str
+    include: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class LoadStep:
     """An entity prefetch step marked with ``LoadById`` or ``Load``.
 
@@ -174,6 +202,8 @@ class ExecutionPlan:
             declares no ``Caller()`` parameter.
         agent_bindings: ``Agent()`` marker bindings, in declaration order;
             empty when the use case declares none.
+        mcp_bindings: ``Mcp()`` marker bindings, in declaration order; empty
+            when the use case declares none.
         load_steps: Entity prefetch steps, in declaration order.
         exists_steps: Boolean existence checks, in declaration order.
         compute_steps: Compute transformations, in declaration order.
@@ -215,3 +245,4 @@ class ExecutionPlan:
     read_only: bool = False
     caller_binding: CallerBinding | None = None
     agent_bindings: tuple[AgentBinding, ...] = ()
+    mcp_bindings: tuple[McpBinding, ...] = ()

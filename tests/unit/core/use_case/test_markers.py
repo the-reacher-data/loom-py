@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from loom.core.use_case.markers import Agent, Exists, Input, Load, LoadById, OnMissing, SourceKind
+import loom.core.use_case as use_case
+from loom.core.use_case.markers import (
+    Agent,
+    Exists,
+    Input,
+    Load,
+    LoadById,
+    Mcp,
+    OnMissing,
+    SourceKind,
+)
 
 
 class FakeEntity:
@@ -25,6 +35,31 @@ class TestAgent:
         marker = Agent("incident-triage")
 
         assert type(marker).__slots__ == ("name",)
+
+
+class TestMcp:
+    def test_stores_the_server_name_and_normalizes_include_to_a_tuple(self) -> None:
+        marker = Mcp("docs-server", include=["search", "fetch"])
+
+        assert marker.server == "docs-server"
+        assert marker.include == ("search", "fetch")
+
+    def test_has_no_extra_attributes(self) -> None:
+        marker = Mcp("docs-server", include=["search"])
+
+        assert type(marker).__slots__ == ("server", "include")
+
+    def test_empty_include_raises(self) -> None:
+        with pytest.raises(ValueError, match="include"):
+            Mcp("docs-server", include=[])
+
+    def test_a_bare_string_include_raises_instead_of_being_split_into_chars(self) -> None:
+        with pytest.raises(ValueError, match="sequence"):
+            Mcp("docs-server", include="search")
+
+    def test_is_pinned_as_public(self) -> None:
+        assert "Mcp" in use_case.__all__
+        assert use_case.Mcp is Mcp
 
 
 class TestLoad:

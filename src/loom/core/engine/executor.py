@@ -539,6 +539,7 @@ class RuntimeExecutor:
         self._bind_params(plan, inputs.params or {}, bound)
         self._bind_caller(plan, inputs.identity, bound)
         self._bind_agents(plan, inputs.identity, bound)
+        self._reject_mcp_bindings(plan)
         fields_set = self._build_command(plan, inputs.payload, bound)
         await self._execute_loads(
             plan, compilable, bound, inputs.dependencies, inputs.load_overrides
@@ -708,6 +709,36 @@ class RuntimeExecutor:
             )
         for binding in plan.agent_bindings:
             bound[binding.name] = self._agent_resolver(binding.agent, identity)
+
+    @staticmethod
+    def _reject_mcp_bindings(plan: ExecutionPlan) -> None:
+        """Refuse a plan carrying ``Mcp()`` bindings, before any side effect.
+
+        It runs after :meth:`_bind_agents` has filled its own entries, so
+        "before injection" would be wrong; what it guarantees is that no
+        command is built and no repository load runs, leaving nothing
+        half-done behind the refusal.
+
+
+        No MCP resolver exists on this executor yet — resolving a binding
+        into a live ``McpHandle`` is future work. Without this guard,
+        ``execute`` would receive Python's default-argument value for an
+        unbound parameter: the raw ``_McpMarker`` object itself, which fails
+        later with an opaque ``AttributeError`` the first time the use case
+        calls a handle method on it. Mirrors :meth:`_bind_agents`'s own
+        ``RuntimeError`` for the same reason: a use case declaring a marker
+        this executor cannot honor must fail at the boundary, naming what is
+        missing, not deep inside unrelated business logic.
+        """
+        if not plan.mcp_bindings:
+            return
+        names = ", ".join(binding.name for binding in plan.mcp_bindings)
+        raise RuntimeError(
+            f"{plan.use_case_type.__qualname__}.execute declares Mcp() "
+            f"parameter(s) ({names}), but MCP marker resolution is not "
+            "available in this version of loom. There is no resolver to "
+            "bind: remove the marker, or upgrade once it ships."
+        )
 
     @staticmethod
     def _coerce_param(
