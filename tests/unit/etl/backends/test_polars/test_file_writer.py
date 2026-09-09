@@ -76,9 +76,10 @@ def test_streaming_csv_write_applies_options(tmp_path: Path) -> None:
 def test_a_format_polars_cannot_write_fails_with_a_coded_error() -> None:
     writer = PolarsFileWriter()
     spec = FileSpec(path="out.xlsx", format=Format.XLSX)
+    frame = pl.DataFrame({"id": [1]}).lazy()
 
     with pytest.raises(UnsupportedFormatError) as excinfo:
-        writer.write(pl.DataFrame({"id": [1]}).lazy(), spec, streaming=False)
+        writer.write(frame, spec, streaming=False)
 
     assert excinfo.value.code == "unsupported_format"
     assert "xlsx" in str(excinfo.value)
@@ -88,9 +89,10 @@ def test_a_format_polars_cannot_write_fails_with_a_coded_error() -> None:
 def test_a_format_polars_cannot_stream_fails_with_a_coded_error() -> None:
     writer = PolarsFileWriter()
     spec = FileSpec(path="out.xlsx", format=Format.XLSX)
+    frame = pl.DataFrame({"id": [1]}).lazy()
 
     with pytest.raises(UnsupportedFormatError) as excinfo:
-        writer.write(pl.DataFrame({"id": [1]}).lazy(), spec, streaming=True)
+        writer.write(frame, spec, streaming=True)
 
     assert excinfo.value.code == "unsupported_format"
     assert "xlsx" in str(excinfo.value)
@@ -99,16 +101,18 @@ def test_a_format_polars_cannot_stream_fails_with_a_coded_error() -> None:
 def test_an_unwritable_format_stays_catchable_as_a_value_error() -> None:
     writer = PolarsFileWriter()
     spec = FileSpec(path="out.xlsx", format=Format.XLSX)
+    frame = pl.DataFrame({"id": [1]}).lazy()
 
     with pytest.raises(ValueError, match="Unsupported format: xlsx"):
-        writer.write(pl.DataFrame({"id": [1]}).lazy(), spec, streaming=False)
+        writer.write(frame, spec, streaming=False)
 
 
 def test_an_unwritable_streaming_format_names_the_supported_formats() -> None:
     writer = PolarsFileWriter()
     spec = FileSpec(path="out.xlsx", format=Format.XLSX)
+    frame = pl.DataFrame({"id": [1]}).lazy()
 
     with pytest.raises(UnsupportedFormatError) as excinfo:
-        writer.write(pl.DataFrame({"id": [1]}).lazy(), spec, streaming=True)
+        writer.write(frame, spec, streaming=True)
 
     assert excinfo.value.supported == (Format.CSV, Format.JSON, Format.PARQUET)

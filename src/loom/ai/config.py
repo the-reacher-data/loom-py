@@ -58,7 +58,9 @@ _URL_USERINFO_RE = re.compile(r"://[^/]*@")
 _MCP_TRANSPORTS: tuple[str, ...] = ("http", "stdio")
 
 # A valid environment variable name, as every POSIX shell and libc define it.
-_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# ``re.ASCII`` keeps ``\w`` restricted to ``[A-Za-z0-9_]`` — POSIX names are
+# ASCII-only, so the concise class must not admit Unicode word characters.
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_]\w*$", re.ASCII)
 
 # Why ``headers_ref`` and ``auth`` are refused under ``transport: stdio``.
 _STDIO_CREDENTIALS_REASON = (

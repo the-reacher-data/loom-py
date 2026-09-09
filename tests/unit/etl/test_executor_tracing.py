@@ -124,8 +124,10 @@ def test_a_failing_step_marks_its_whole_branch_as_an_error() -> None:
     executor, exporter = _executor()
     plan = ETLCompiler().compile(FailingSales)
 
+    params = TracingParams(run_date=date(2024, 1, 5))
+
     with pytest.raises(ValueError):
-        executor.run_pipeline(plan, TracingParams(run_date=date(2024, 1, 5)))
+        executor.run_pipeline(plan, params)
 
     spans = exporter.get_finished_spans()
     assert {span.name for span in spans} == {

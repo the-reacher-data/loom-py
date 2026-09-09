@@ -30,8 +30,13 @@ from loom.core.engine.plan import ExecutionPlan
 _MAX_TOOL_NAME = 64
 """Longest tool name providers accept (``^[a-zA-Z0-9_-]{1,64}$``)."""
 
-_NON_TOOL_NAME = re.compile(r"[^A-Za-z0-9_]")
-"""Every character a tool name may not carry (design R2)."""
+_NON_TOOL_NAME = re.compile(r"\W", re.ASCII)
+"""Every character a tool name may not carry (design R2).
+
+``re.ASCII`` keeps ``\\W`` restricted to non-``[A-Za-z0-9_]`` characters —
+provider tool names are ASCII-only, so the concise class must not treat
+Unicode letters as word characters.
+"""
 
 
 _JSON_TYPES: Mapping[type[Any], str] = MappingProxyType(
@@ -51,15 +56,17 @@ def published_names(capability: CompiledCapability) -> tuple[tuple[str, str], ..
     ``mcp`` and ``python`` name their own tools, so their names are not derived
     here and cannot be validated at build; ``skills`` and ``native`` publish no tool at all.
     """
+    pairs: list[tuple[str, str]]
     match capability:
         case CompiledUsecaseCapability():
-            return tuple((tool_name("usecase", key), key) for key in capability.keys)
+            pairs = [(tool_name("usecase", key), key) for key in capability.keys]
         case CompiledSqlCapability():
-            return ((tool_name("sql", capability.connection), capability.connection),)
+            pairs = [(tool_name("sql", capability.connection), capability.connection)]
         case CompiledA2ACapability():
-            return ((tool_name("a2a", capability.agent), capability.agent),)
+            pairs = [(tool_name("a2a", capability.agent), capability.agent)]
         case _:
-            return ()
+            pairs = []
+    return tuple(pairs)
 
 
 def reject_unusable_names(capabilities: Sequence[CompiledCapability], agent: str) -> None:

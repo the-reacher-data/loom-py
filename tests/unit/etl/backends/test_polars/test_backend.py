@@ -350,8 +350,10 @@ def test_writer_replace_physical_partitions_refuses_an_unpartitioned_table(
         partition_cols=("year",),
         require_physical=True,
     )
+    frame = pl.DataFrame({"year": [2024], "v": [99]}).lazy()
+
     with pytest.raises(ValueError, match="partitioned by nothing but the write asked"):
-        writer.write(pl.DataFrame({"year": [2024], "v": [99]}).lazy(), spec, None)
+        writer.write(frame, spec, None)
 
 
 def test_writer_replace_physical_partitions_refuses_an_unpartitioned_table_when_streaming(
@@ -366,8 +368,10 @@ def test_writer_replace_physical_partitions_refuses_an_unpartitioned_table_when_
         require_physical=True,
         streaming=True,
     )
+    frame = pl.DataFrame({"year": [2024], "v": [99]}).lazy()
+
     with pytest.raises(ValueError, match="partitioned by nothing but the write asked"):
-        writer.write(pl.DataFrame({"year": [2024], "v": [99]}).lazy(), spec, None)
+        writer.write(frame, spec, None)
 
 
 def test_writer_replace_physical_partitions_writes_on_a_partitioned_table(

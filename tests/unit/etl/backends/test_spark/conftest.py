@@ -42,9 +42,9 @@ def step_runner(spark: SparkSession) -> SparkStepRunner:
 
 
 @pytest.fixture
-def spark_root(tmp_path: Path) -> Generator[Path, None, None]:
-    """Temporary Delta catalog root, cleaned up after each test."""
-    yield tmp_path
+def spark_root(tmp_path: Path) -> Path:
+    """Temporary Delta catalog root, cleaned up after each test by pytest's ``tmp_path``."""
+    return tmp_path
 
 
 @pytest.fixture

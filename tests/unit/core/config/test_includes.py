@@ -340,22 +340,26 @@ class _SentinelResolver:
 def test_include_error_names_literal_entry_not_resolved_secret(tmp_path: Path) -> None:
     main = tmp_path / "a.yaml"
     main.write_text("includes:\n  - ${secrets:/x}/base.yaml\n")
+    main_path = str(main)
+    resolvers = [_SentinelResolver()]
 
     with pytest.raises(ConfigError) as info:
-        load_config(str(main), resolvers=[_SentinelResolver()])
+        load_config(main_path, resolvers=resolvers)
 
     message = str(info.value)
     assert "SENTINEL" not in message
     assert "'${secrets:/x}/base.yaml'" in message
-    assert f"(included from {str(main)!r})" in message
+    assert f"(included from {main_path!r})" in message
 
 
 def test_glob_no_match_names_literal_entry_not_resolved_secret(tmp_path: Path) -> None:
     main = tmp_path / "a.yaml"
     main.write_text("includes:\n  - ${secrets:/x}/*.yaml\n")
+    main_path = str(main)
+    resolvers = [_SentinelResolver()]
 
     with pytest.raises(ConfigError) as info:
-        load_config(str(main), resolvers=[_SentinelResolver()])
+        load_config(main_path, resolvers=resolvers)
 
     message = str(info.value)
     assert "SENTINEL" not in message
@@ -384,9 +388,11 @@ def test_parse_error_behind_interpolated_include_hides_resolved_path(tmp_path: P
             "a.yaml": "includes:\n  - ${secrets:/x}/base.yaml\n",
         },
     )
+    main_path = str(tmp_path / "a.yaml")
+    resolvers = [_SentinelResolver()]
 
     with pytest.raises(ConfigError) as info:
-        load_config(str(tmp_path / "a.yaml"), resolvers=[_SentinelResolver()])
+        load_config(main_path, resolvers=resolvers)
 
     message = str(info.value)
     assert "SENTINEL" not in message
@@ -405,9 +411,11 @@ def test_keyed_duplicate_across_interpolated_includes_names_literal_entries(
             "a.yaml": "includes:\n  - ${secrets:/x}/left.yaml\n  - ${secrets:/x}/right.yaml\n",
         },
     )
+    main_path = str(tmp_path / "a.yaml")
+    resolvers = [_SentinelResolver()]
 
     with pytest.raises(ConfigError) as info:
-        load_config(str(tmp_path / "a.yaml"), resolvers=[_SentinelResolver()], keyed=("tables",))
+        load_config(main_path, resolvers=resolvers, keyed=("tables",))
 
     message = str(info.value)
     assert "SENTINEL" not in message

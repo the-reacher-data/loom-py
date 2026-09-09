@@ -73,8 +73,10 @@ def test_openai_y_anthropic_admiten_busqueda_web(provider: str) -> None:
 
 def test_falla_nombrando_los_proveedores_cuando_el_vendor_es_desconocido() -> None:
     """An unknown provider is refused before any tool is considered."""
+    target = InferenceTarget(provider="unheard-of", model="x")
+
     with pytest.raises(AgentCompilationError) as failure:
-        supported_native_tools(InferenceTarget(provider="unheard-of", model="x"))
+        supported_native_tools(target)
 
     assert failure.value.issues[0].code is AgentErrorCode.PROVIDER_UNKNOWN
 
@@ -182,5 +184,8 @@ def test_falla_nombrando_el_kind_cuando_un_grant_no_tiene_builder() -> None:
         policies = PolicySpec()
         capabilities = (cast("CompiledCapability", _Unserved()),)
 
+    plan = _PlanWithUnserved()
+    container = LoomContainer()
+
     with pytest.raises(AgentCompilationError, match="telepathy"):
-        build_capabilities(_PlanWithUnserved(), LoomContainer())  # type: ignore[arg-type]
+        build_capabilities(plan, container)  # type: ignore[arg-type]

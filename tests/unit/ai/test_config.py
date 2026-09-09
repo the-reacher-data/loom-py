@@ -230,7 +230,7 @@ class TestAgentEndpointConfig:
 
 
 class TestAiConfigDefaults:
-    @pytest.fixture()
+    @pytest.fixture
     def config(self) -> AiConfig:
         """Build a minimal valid config relying on every default."""
         return _config({"default": _complete_target()})
@@ -281,21 +281,21 @@ class TestMcpServerRegistry:
     @pytest.mark.parametrize("url", _UNSAFE_URLS, ids=_UNSAFE_URL_IDS)
     def test_falla_con_mcp_url_invalid_cuando_la_url_no_es_segura(self, url: str) -> None:
         """Only a plain ``https`` URL without userinfo or query string is accepted."""
+        mcp_servers = {"knowledge": McpServerConfig(url=url)}
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            _config_with(mcp_servers={"knowledge": McpServerConfig(url=url)})
+            _config_with(mcp_servers=mcp_servers)
 
         assert AgentErrorCode.MCP_URL_INVALID in _codes(excinfo.value)
 
     def test_el_mensaje_no_contiene_el_userinfo_cuando_se_rechaza_la_url(self) -> None:
         """The rejection must not leak the credential embedded in the URL."""
+        mcp_servers = {
+            "knowledge": McpServerConfig(url="https://user:s3cr3t@knowledge.example.com/mcp")
+        }
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            _config_with(
-                mcp_servers={
-                    "knowledge": McpServerConfig(
-                        url="https://user:s3cr3t@knowledge.example.com/mcp"
-                    )
-                }
-            )
+            _config_with(mcp_servers=mcp_servers)
 
         assert "s3cr3t" not in str(excinfo.value)
 
@@ -419,8 +419,10 @@ class TestMcpStdioTransport:
         self, overrides: dict[str, object]
     ) -> None:
         """stdio requires a non-empty ``command`` and refuses ``url`` (FR-004)."""
+        mcp_servers = {"search": _stdio_server(**overrides)}
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            _config_with(mcp_servers={"search": _stdio_server(**overrides)})
+            _config_with(mcp_servers=mcp_servers)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
 
@@ -440,9 +442,10 @@ class TestMcpStdioTransport:
         """http requires ``url`` and refuses the subprocess fields (FR-003)."""
         fields: dict[str, object] = {"url": "https://search.example.com/mcp"}
         fields.update(overrides)
+        mcp_servers = {"search": McpServerConfig(**fields)}  # type: ignore[arg-type]
 
         with pytest.raises(AgentCompilationError) as excinfo:
-            _config_with(mcp_servers={"search": McpServerConfig(**fields)})  # type: ignore[arg-type]
+            _config_with(mcp_servers=mcp_servers)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
 
@@ -514,8 +517,10 @@ class TestA2AAgentRegistry:
     @pytest.mark.parametrize("url", _UNSAFE_URLS, ids=_UNSAFE_URL_IDS)
     def test_falla_con_a2a_url_invalid_cuando_la_url_no_es_segura(self, url: str) -> None:
         """Remote agents are held to the same URL rules as remote tool servers."""
+        a2a_agents = {"translations": A2AAgentConfig(url=url)}
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            _config_with(a2a_agents={"translations": A2AAgentConfig(url=url)})
+            _config_with(a2a_agents=a2a_agents)
 
         assert AgentErrorCode.A2A_URL_INVALID in _codes(excinfo.value)
 
@@ -560,13 +565,11 @@ class TestSkillsRoot:
 class TestAggregatedRegistryIssues:
     def test_acumula_una_incidencia_por_registro_invalido_cuando_ambos_fallan(self) -> None:
         """One raise reports every faulty entry, never the first one only (FR-011)."""
+        mcp_servers = {"knowledge": McpServerConfig(url="http://knowledge.example.com/mcp")}
+        a2a_agents = {"translations": A2AAgentConfig(url="http://translations.example.com/a2a")}
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            _config_with(
-                mcp_servers={"knowledge": McpServerConfig(url="http://knowledge.example.com/mcp")},
-                a2a_agents={
-                    "translations": A2AAgentConfig(url="http://translations.example.com/a2a")
-                },
-            )
+            _config_with(mcp_servers=mcp_servers, a2a_agents=a2a_agents)
 
         assert set(_codes(excinfo.value)) == {
             AgentErrorCode.MCP_URL_INVALID,

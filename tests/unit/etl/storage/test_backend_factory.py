@@ -170,7 +170,8 @@ def test_load_backend_provider_names_the_registered_engines_when_rejecting() -> 
         load_backend_provider("duckdb")
 
     message = str(excinfo.value)
-    assert "polars" in message and "spark" in message
+    assert "polars" in message
+    assert "spark" in message
 
 
 def test_load_backend_provider_legacy_entry_points_mapping(monkeypatch: pytest.MonkeyPatch) -> None:

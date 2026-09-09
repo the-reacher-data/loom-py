@@ -943,12 +943,12 @@ class TestBindPublishesTheCoroutineMethods:
         assert await summarise("hi") == "HI"
         assert not getattr(summarise, "__cache_call_wrapped__", False)
 
-    async def test_two_instances_share_one_entry(self) -> None:
+    async def test_two_instances_share_one_entry(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The key is the arguments, so a stateless toolset caches across instances."""
         calls = _calls(_gateway("calls_two_instances"))
         first = calls.bind(_Tools())[0]
         second = calls.bind(_Tools())[0]
-        _Tools.calls_made = 0
+        monkeypatch.setattr(_Tools, "calls_made", 0)
 
         await first("q")
         await second("q")
@@ -1006,18 +1006,18 @@ class TestBindPublishesStaticAndClassMethods:
             "instance_method",
         ]
 
-    async def test_a_marked_static_method_is_cached(self) -> None:
+    async def test_a_marked_static_method_is_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         wrapped = _calls(_gateway("calls_static_method")).bind(_StaticTools())[0]
-        _StaticTools.static_calls = 0
+        monkeypatch.setattr(_StaticTools, "static_calls", 0)
 
         assert await wrapped("q") == Doc(title="q")
         assert await wrapped("q") == Doc(title="q")
 
         assert _StaticTools.static_calls == 1
 
-    async def test_a_marked_class_method_is_cached(self) -> None:
+    async def test_a_marked_class_method_is_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         wrapped = _calls(_gateway("calls_class_method")).bind(_StaticTools())[1]
-        _StaticTools.class_calls = 0
+        monkeypatch.setattr(_StaticTools, "class_calls", 0)
 
         assert await wrapped("q") == Doc(title="q")
         assert await wrapped("q") == Doc(title="q")

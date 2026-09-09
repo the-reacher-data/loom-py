@@ -397,7 +397,7 @@ def _coerce_settings(strategy: Any, settings: dict[str, str]) -> dict[str, objec
         # pointed at different objects to describe the same parameters.
         annotated: Any = getattr(strategy, "__init__") if isinstance(strategy, type) else strategy  # noqa: B009
         hints = get_type_hints(annotated)
-    except Exception:  # noqa: BLE001 - introspection is best effort, see below
+    except Exception:  # noqa: BLE001
         # A callable whose signature or annotations cannot be resolved -- a
         # C builtin, a partial, an annotation naming a TYPE_CHECKING-only
         # import -- behaves exactly as it did before this function existed.

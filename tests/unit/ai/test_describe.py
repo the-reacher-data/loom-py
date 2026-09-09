@@ -365,8 +365,10 @@ class TestHookDeCodificacion:
         ``_RedactedOptions`` exists so msgspec cannot encode a resolved
         inference target; a protocol-wide hook would defeat that.
         """
+        options = _RedactedOptions({"temperature": "secret"})
+
         with pytest.raises(IntrospectionError):
-            _as_builtin(_RedactedOptions({"temperature": "secret"}))
+            _as_builtin(options)
 
     def test_convierte_un_mappingproxy_cuando_lo_recibe(self) -> None:
         """The read-only mapping a compiled schema carries becomes a plain dict."""

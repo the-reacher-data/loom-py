@@ -110,7 +110,8 @@ class TestConfiguracionDelBloqueAuth:
 
         message = str(excinfo.value)
         assert "nobody-registers-this" in message
-        assert "oauth" in message and "static" in message
+        assert "oauth" in message
+        assert "static" in message
 
     def test_falla_con_auth_strategy_unknown_cuando_el_bloque_no_declara_kind(self) -> None:
         """A block without ``kind`` names no strategy at all."""
@@ -440,9 +441,10 @@ class TestFallosDeResolucionDeLaEstrategia:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._install(monkeypatch, ("loom-auth-alpha", "loom-auth-beta"))
+        auth = CompiledRemoteAuth(kind="agent-session", settings=())
 
         with pytest.raises(AgentCompilationError) as excinfo:
-            shared_mcp_auth("orders", CompiledRemoteAuth(kind="agent-session", settings=()))
+            shared_mcp_auth("orders", auth)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
@@ -450,21 +452,24 @@ class TestFallosDeResolucionDeLaEstrategia:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._install(monkeypatch, ("loom-auth-alpha", "loom-auth-beta"))
+        auth = CompiledRemoteAuth(kind="agent-session", settings=())
 
         with pytest.raises(AgentCompilationError) as excinfo:
-            shared_mcp_auth("orders", CompiledRemoteAuth(kind="agent-session", settings=()))
+            shared_mcp_auth("orders", auth)
 
         message = str(excinfo.value)
-        assert "loom-auth-alpha" in message and "loom-auth-beta" in message
+        assert "loom-auth-alpha" in message
+        assert "loom-auth-beta" in message
 
     def test_falla_con_auth_strategy_invalid_cuando_ya_no_esta_registrada(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A distribution uninstalled between decode and start-up is named, not crashed on."""
         self._install(monkeypatch, ())
+        auth = CompiledRemoteAuth(kind="agent-session", settings=())
 
         with pytest.raises(AgentCompilationError) as excinfo:
-            shared_mcp_auth("orders", CompiledRemoteAuth(kind="agent-session", settings=()))
+            shared_mcp_auth("orders", auth)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
@@ -489,7 +494,8 @@ class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
 
         message = str(excinfo.value)
         assert "nobody-registers-this" in message
-        assert "bearer" in message and "static" in message
+        assert "bearer" in message
+        assert "static" in message
 
     def test_falla_con_credentials_inline_cuando_un_ajuste_lleva_un_secreto_literal(self) -> None:
         agent = A2AAgentConfig(

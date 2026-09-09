@@ -67,7 +67,10 @@ def test_falla_en_compilacion_cuando_falta_la_base_de_datos_del_sink(
         ),
     )
 
+    flow = _flow()
+    context = ConfigContext(cast(DictConfig, config))
+
     with pytest.raises(CompilationError) as failure:
-        compile_flow(_flow(), config=ConfigContext(cast(DictConfig, config)))
+        compile_flow(flow, config=context)
 
     assert any("results_sink" in issue.message for issue in failure.value.issues)

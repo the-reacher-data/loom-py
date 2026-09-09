@@ -127,7 +127,8 @@ class AppInvoker:
             bound = invoker.for_identity(caller)
             await bound.invoke(ReadInvoice, params={"id": 7})
         """
-        return replace(self, identity=identity)
+        bound: AppInvoker = replace(self, identity=identity)
+        return bound
 
     async def invoke(
         self,

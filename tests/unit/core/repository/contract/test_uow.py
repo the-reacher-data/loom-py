@@ -27,9 +27,12 @@ async def test_rollback_discards_writes(case: BackendCase, repository: Any) -> N
     if not case.transactions:
         pytest.skip(f"{case.name} does not roll back writes")
 
-    with pytest.raises(_Abort):
+    async def _create_then_abort() -> None:
         async with case.unit_of_work(repository):
             await repository.create(SEED[0])
             raise _Abort
+
+    with pytest.raises(_Abort):
+        await _create_then_abort()
 
     assert await repository.get_by_id(SEED[0].id) is None

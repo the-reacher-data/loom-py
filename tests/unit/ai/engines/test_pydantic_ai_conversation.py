@@ -174,8 +174,10 @@ class TestMalformedHistory:
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen)
 
+        conversation = _conversation(b"not json")
+
         with pytest.raises(AgentRunError) as failure:
-            await engine.run(_PROMPT, identity=_IDENTITY, conversation=_conversation(b"not json"))
+            await engine.run(_PROMPT, identity=_IDENTITY, conversation=conversation)
 
         assert failure.value.code is AgentRunErrorCode.CONVERSATION_LOAD_FAILED
         assert str(failure.value) == CONVERSATION_LOAD_FAILED_MESSAGE
@@ -207,9 +209,10 @@ class TestMalformedHistory:
         must not overwrite that last provider outcome, so health stays put.
         """
         engine = await _engine_after_outage()
+        conversation = _conversation(b"not json")
 
         with pytest.raises(AgentRunError) as failure:
-            await engine.run(_PROMPT, identity=_IDENTITY, conversation=_conversation(b"not json"))
+            await engine.run(_PROMPT, identity=_IDENTITY, conversation=conversation)
 
         assert failure.value.code is AgentRunErrorCode.CONVERSATION_LOAD_FAILED
         assert (await engine.health()).status == "unavailable"
@@ -228,11 +231,10 @@ class TestMalformedHistory:
 
     async def test_run_falla_cuando_el_historial_no_es_una_lista_de_mensajes(self) -> None:
         engine = _engine([])
+        conversation = _conversation(b'{"kind": "request"}')
 
         with pytest.raises(AgentRunError) as failure:
-            await engine.run(
-                _PROMPT, identity=_IDENTITY, conversation=_conversation(b'{"kind": "request"}')
-            )
+            await engine.run(_PROMPT, identity=_IDENTITY, conversation=conversation)
 
         assert failure.value.code is AgentRunErrorCode.CONVERSATION_LOAD_FAILED
 

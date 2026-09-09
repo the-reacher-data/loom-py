@@ -260,7 +260,8 @@ class TestMissingEntryPoint:
             load_entry_point(_GROUP, _NAME, on_duplicate="error")
 
         message = str(excinfo.value)
-        assert _GROUP in message and _NAME in message
+        assert _GROUP in message
+        assert _NAME in message
 
 
 class TestApiVersionHandshake:
@@ -294,13 +295,14 @@ class TestApiVersionHandshake:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         self._install_target(monkeypatch, _Engine("alpha"))
+        requirement = self._requirement()
 
         with pytest.raises(ApiVersionMismatchError):
             load_entry_point(
                 _GROUP,
                 _NAME,
                 on_duplicate="error",
-                api_version=self._requirement(),
+                api_version=requirement,
             )
 
     def test_mismatch_message_nombra_atributo_y_soportadas_cuando_falta_el_atributo(
@@ -308,17 +310,19 @@ class TestApiVersionHandshake:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         self._install_target(monkeypatch, _Engine("alpha"))
+        requirement = self._requirement()
 
         with pytest.raises(ApiVersionMismatchError) as excinfo:
             load_entry_point(
                 _GROUP,
                 _NAME,
                 on_duplicate="error",
-                api_version=self._requirement(),
+                api_version=requirement,
             )
 
         message = str(excinfo.value)
-        assert self.ATTRIBUTE in message and "1" in message
+        assert self.ATTRIBUTE in message
+        assert "1" in message
 
     def test_lanza_mismatch_cuando_la_version_no_esta_soportada(
         self,
@@ -327,13 +331,14 @@ class TestApiVersionHandshake:
         engine = _Engine("alpha")
         engine.LOOM_AI_ENGINE_API = 99  # type: ignore[attr-defined]
         self._install_target(monkeypatch, engine)
+        requirement = self._requirement()
 
         with pytest.raises(ApiVersionMismatchError):
             load_entry_point(
                 _GROUP,
                 _NAME,
                 on_duplicate="error",
-                api_version=self._requirement(),
+                api_version=requirement,
             )
 
     def test_mismatch_message_nombra_el_valor_visto_cuando_la_version_no_esta_soportada(
@@ -362,13 +367,14 @@ class TestApiVersionHandshake:
         engine = _Engine("alpha")
         engine.LOOM_AI_ENGINE_API = True  # type: ignore[attr-defined]
         self._install_target(monkeypatch, engine)
+        requirement = self._requirement()
 
         with pytest.raises(ApiVersionMismatchError):
             load_entry_point(
                 _GROUP,
                 _NAME,
                 on_duplicate="error",
-                api_version=self._requirement(),
+                api_version=requirement,
             )
 
     def test_no_valida_version_cuando_no_se_pide_handshake(
@@ -531,13 +537,17 @@ class TestCheckApiVersion:
         assert excinfo.value.declared == 99
 
     def test_mismatch_error_carries_none_when_the_attribute_is_absent(self) -> None:
+        engine = _Engine("alpha")
+
         with pytest.raises(ApiVersionMismatchError) as excinfo:
-            check_api_version(_Engine("alpha"), self.REQUIREMENT)
+            check_api_version(engine, self.REQUIREMENT)
 
         assert excinfo.value.declared is None
 
     def test_mismatch_error_carries_the_requirement_it_was_checked_against(self) -> None:
+        engine = _Engine("alpha")
+
         with pytest.raises(ApiVersionMismatchError) as excinfo:
-            check_api_version(_Engine("alpha"), self.REQUIREMENT)
+            check_api_version(engine, self.REQUIREMENT)
 
         assert excinfo.value.requirement is self.REQUIREMENT

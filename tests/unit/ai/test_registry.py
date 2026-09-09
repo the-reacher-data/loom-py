@@ -141,7 +141,7 @@ class TestHandshakeOnTheInstance:
 
 
 class TestEngineDuplicate:
-    @pytest.fixture()
+    @pytest.fixture
     def duplicate_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -170,7 +170,8 @@ class TestEngineDuplicate:
     ) -> None:
         message = str(duplicate_error)
 
-        assert "loom-engine-alpha" in message and "loom-engine-beta" in message
+        assert "loom-engine-alpha" in message
+        assert "loom-engine-beta" in message
 
 
 class TestEngineApiMismatch:

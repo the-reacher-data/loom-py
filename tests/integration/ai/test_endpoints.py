@@ -353,10 +353,12 @@ class TestMontaje:
             container=container,
         )
 
+        app = FastAPI()
+
         async with runtime:
             with pytest.raises(ConfigError):
                 bind_agent_endpoints(
-                    FastAPI(), runtime=runtime, config=config, authenticator=None, prefix=_PREFIX
+                    app, runtime=runtime, config=config, authenticator=None, prefix=_PREFIX
                 )
 
     async def test_avisa_con_warning_cuando_monta_un_agente(
@@ -1357,7 +1359,8 @@ class TestHealth:
         ):
             body = (await client.get(f"{_PREFIX}/{_AGENT}/health")).text
 
-            assert "tools.internal" not in body and "mcp:" not in body
+            assert "tools.internal" not in body
+            assert "mcp:" not in body
 
     async def test_devuelve_checks_cuando_el_llamador_esta_autenticado(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity

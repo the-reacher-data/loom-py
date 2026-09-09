@@ -164,7 +164,8 @@ class TestCreateMany:
         assert created[0].token == "given"
         assert created[1].token.startswith("tok-")
         stored = await repository.get_by_id(created[1].id)
-        assert stored is not None and stored.token == created[1].token
+        assert stored is not None
+        assert stored.token == created[1].token
         assert sum(statement.startswith("INSERT") for statement in statements) == 1
 
     async def test_server_default_applies_to_the_row_that_omits_it(
@@ -182,4 +183,5 @@ class TestCreateMany:
         assert created[1].created_at is not None
         assert selects == 1
         stored = await repository.get_by_id(created[1].id)
-        assert stored is not None and stored.created_at == created[1].created_at
+        assert stored is not None
+        assert stored.created_at == created[1].created_at

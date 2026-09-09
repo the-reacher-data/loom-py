@@ -212,8 +212,10 @@ class TestUnusableAnnotations:
         cache_config: CacheConfig,
         method_name: str,
     ) -> None:
+        repository = CodecRepository(_widgets(ROW_COUNT), Widget)
+
         with pytest.warns(DeprecationWarning) as records:
-            wrap_with_cache(CodecRepository(_widgets(ROW_COUNT), Widget), cache_config)
+            wrap_with_cache(repository, cache_config)
 
         messages = [str(record.message) for record in records]
         assert any(
@@ -264,11 +266,13 @@ class TestUnusableAnnotations:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """``DeprecationWarning`` is filtered out by default; the log line is not."""
+        repository = CodecRepository(_widgets(ROW_COUNT), Widget)
+
         with (
             caplog.at_level(logging.WARNING, logger=repository_module.__name__),
             pytest.warns(DeprecationWarning),
         ):
-            wrap_with_cache(CodecRepository(_widgets(ROW_COUNT), Widget), cache_config)
+            wrap_with_cache(repository, cache_config)
 
         assert "CacheQueryReturnTypeUnusable" in caplog.text
         assert "out_of_grammar" in caplog.text
@@ -277,8 +281,10 @@ class TestUnusableAnnotations:
         self,
         cache_config: CacheConfig,
     ) -> None:
+        repository = CodecRepository(_widgets(ROW_COUNT), Widget)
+
         with pytest.warns(DeprecationWarning) as records:
-            wrap_with_cache(CodecRepository(_widgets(ROW_COUNT), Widget), cache_config)
+            wrap_with_cache(repository, cache_config)
 
         named = [str(record.message) for record in records]
         assert not [message for message in named if "stats_list" in message], named
@@ -458,18 +464,19 @@ class TestUnmarkedOverride:
 
     @pytest.fixture
     def override_env(self, cache_config: CacheConfig) -> CachedEnv[Widget]:
+        repository = UnmarkedOverrideRepository(_widgets(ROW_COUNT), Widget)
+
         with pytest.warns(DeprecationWarning):
-            return wrap_with_cache(
-                UnmarkedOverrideRepository(_widgets(ROW_COUNT), Widget),
-                cache_config,
-            )
+            return wrap_with_cache(repository, cache_config)
 
     def test_the_base_annotation_of_an_overridden_read_deprecates_nothing(
         self,
         cache_config: CacheConfig,
     ) -> None:
+        repository = UnmarkedOverrideRepository(_widgets(ROW_COUNT), Widget)
+
         with pytest.warns(DeprecationWarning) as records:
-            wrap_with_cache(UnmarkedOverrideRepository(_widgets(ROW_COUNT), Widget), cache_config)
+            wrap_with_cache(repository, cache_config)
 
         messages = [str(record.message) for record in records]
         assert not [message for message in messages if "out_of_grammar" in message], messages

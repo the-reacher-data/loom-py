@@ -340,10 +340,11 @@ def _gate_autocrud_capabilities(
             pruned.update(_gate_interface(interface, interface.auto_crud_model, wiring, backend))
     mounted = {route.use_case for iface in discovered.interfaces for route in iface.routes}
     dropped = pruned - mounted
-    return dataclasses.replace(
+    gated: DiscoveryResult = dataclasses.replace(
         discovered,
         use_cases=tuple(uc for uc in discovered.use_cases if uc not in dropped),
     )
+    return gated
 
 
 def _gate_interface(

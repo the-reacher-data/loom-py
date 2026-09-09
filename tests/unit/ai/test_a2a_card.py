@@ -386,7 +386,8 @@ def test_card_declara_default_output_modes_cuando_se_construye() -> None:
 def test_card_publica_una_unica_skill_cuando_el_plan_es_un_agente() -> None:
     """One plan projects to exactly one skill."""
     skills = _card()["skills"]
-    assert isinstance(skills, Sequence) and len(skills) == 1
+    assert isinstance(skills, Sequence)
+    assert len(skills) == 1
 
 
 def test_card_usa_el_nombre_del_plan_como_skill_id_cuando_se_construye() -> None:

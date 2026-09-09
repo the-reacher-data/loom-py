@@ -104,7 +104,8 @@ def _with_recorded_env(plan: _DeploymentPlan, config_uri: str) -> _DeploymentPla
     """Record the declaration file under ``job_variables.env`` for the worker."""
     user_env = plan.job_variables.get("env") or {}
     env = {**user_env, LOOM_ETL_CONFIG: config_uri}
-    return replace(plan, job_variables={**plan.job_variables, "env": env})
+    updated: _DeploymentPlan = replace(plan, job_variables={**plan.job_variables, "env": env})
+    return updated
 
 
 @contextmanager

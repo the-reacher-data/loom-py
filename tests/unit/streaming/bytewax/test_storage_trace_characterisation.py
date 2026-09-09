@@ -153,8 +153,11 @@ class TestStorageBatchTraceAttribution:
     def test_a_failed_write_still_closes_every_message_and_re_raises(self) -> None:
         recorder = _RecordingObserver()
 
+        sink = _sink(_RecordingPartition(fail=True), recorder)
+        messages = [_message(0), _message(1)]
+
         with pytest.raises(RuntimeError, match="sink down"):
-            _sink(_RecordingPartition(fail=True), recorder).write_batch([_message(0), _message(1)])
+            sink.write_batch(messages)
 
         terminals = _of_scope(recorder, Scope.TERMINAL)
         assert [event.kind for event in terminals] == [

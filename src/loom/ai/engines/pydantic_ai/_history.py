@@ -58,7 +58,7 @@ def decode_conversation(conversation: Conversation | None) -> RunConversation | 
     try:
         history = ModelMessagesTypeAdapter.validate_json(conversation.history)
     except pydantic.ValidationError as error:
-        _logger.error(
+        _logger.exception(
             "the history of conversation %r is not a pydantic-ai message list: %d error(s) %s",
             conversation.conversation_id,
             error.error_count(),

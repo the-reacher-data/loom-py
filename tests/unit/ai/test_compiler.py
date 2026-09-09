@@ -94,8 +94,9 @@ def compiler(
 
 @pytest.fixture
 def triple_fault_error(compiler: AgentCompiler) -> AgentCompilationError:
+    spec = _triple_fault_spec()
     with pytest.raises(AgentCompilationError) as excinfo:
-        compiler.compile(_triple_fault_spec(), source_path=BROKEN_SOURCE)
+        compiler.compile(spec, source_path=BROKEN_SOURCE)
     return excinfo.value
 
 
@@ -152,8 +153,10 @@ class TestCompileAll:
     def test_compile_all_reports_duplicate_name_when_two_specs_share_a_name(
         self, compiler: AgentCompiler
     ) -> None:
+        specs = [_spec(name="dup-agent"), _spec(name="dup-agent")]
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            compiler.compile_all([_spec(name="dup-agent"), _spec(name="dup-agent")])
+            compiler.compile_all(specs)
         assert AgentErrorCode.AGENT_NAME_DUPLICATE in {issue.code for issue in excinfo.value.issues}
 
     def test_compile_all_names_the_artifacts_when_two_files_share_a_name(
@@ -180,13 +183,13 @@ class TestCompileAll:
         self, compiler: AgentCompiler
     ) -> None:
         """A spec handed over as an object has no path; it is named, not dropped."""
+        specs = [
+            DecodedSpec(spec=_spec(name="dup-agent"), source_path="agents/triage.yaml"),
+            _spec(name="dup-agent"),
+        ]
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            compiler.compile_all(
-                [
-                    DecodedSpec(spec=_spec(name="dup-agent"), source_path="agents/triage.yaml"),
-                    _spec(name="dup-agent"),
-                ]
-            )
+            compiler.compile_all(specs)
         issue = next(
             item
             for item in excinfo.value.issues
@@ -320,8 +323,10 @@ class TestTypeRefOutput:
     def test_compile_reports_unsupported_when_type_ref_resolves_to_non_struct(
         self, compiler: AgentCompiler, ref: str
     ) -> None:
+        spec = _spec(output=TypeRefOutput(ref=ref))
+
         with pytest.raises(AgentCompilationError) as excinfo:
-            compiler.compile(_spec(output=TypeRefOutput(ref=ref)))
+            compiler.compile(spec)
         assert [issue.code for issue in excinfo.value.issues] == [
             AgentErrorCode.OUTPUT_TYPE_REF_UNSUPPORTED
         ]

@@ -32,7 +32,9 @@ Importing them is safe without boto3: both modules guard the import and fail
 with the install hint when the resolver is actually used.
 """
 
-KEY_REF_RESOLVERS: tuple[str, ...] = tuple(sorted(_KEY_REF_RESOLVER_FACTORIES))
+_SORTED_KEY_REF_RESOLVERS: list[str] = sorted(_KEY_REF_RESOLVER_FACTORIES)
+
+KEY_REF_RESOLVERS: tuple[str, ...] = tuple(_SORTED_KEY_REF_RESOLVERS)
 """Resolver prefixes a ``private_key_ref`` may name, derived from the factories."""
 
 MAX_ISSUER_TTL_SECONDS = 3600
@@ -481,7 +483,7 @@ def _require_valid_key_ref(ref: str) -> None:
     if not separator or name not in _KEY_REF_RESOLVER_FACTORIES or not key.strip():
         raise ConfigError(
             "'private_key_ref' must be '<resolver>:<key>' with resolver "
-            f"in {list(KEY_REF_RESOLVERS)}."
+            f"in {_SORTED_KEY_REF_RESOLVERS}."
         )
 
 

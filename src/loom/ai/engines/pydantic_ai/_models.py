@@ -36,6 +36,9 @@ from loom.ai.errors import AgentCompilationError, provider_unknown
 from loom.ai.inference import InferenceTarget
 from loom.ai.registry import require_provider_sdk, require_provider_setting
 
+_OPENAI_MODULE = "pydantic_ai.models.openai"
+"""Module the OpenAI-compatible model lives in, shared by ``openai`` and ``gateway``."""
+
 
 class ModelResolver(Protocol):
     """Builds the engine model that serves one resolved binding.
@@ -102,7 +105,7 @@ def _api_key(target: InferenceTarget) -> str | None:
 
 
 def _openai_model(target: InferenceTarget) -> Model:
-    require_provider_sdk("openai", "pydantic_ai.models.openai", "ai-openai")
+    require_provider_sdk("openai", _OPENAI_MODULE, "ai-openai")
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -146,13 +149,11 @@ _BINDINGS: Mapping[str, _Binding] = MappingProxyType(
         "bedrock": _Binding(
             "bedrock", "pydantic_ai.models.bedrock", "BedrockConverseModel", _bedrock_model
         ),
-        "openai": _Binding("openai", "pydantic_ai.models.openai", "OpenAIChatModel", _openai_model),
+        "openai": _Binding("openai", _OPENAI_MODULE, "OpenAIChatModel", _openai_model),
         "anthropic": _Binding(
             "anthropic", "pydantic_ai.models.anthropic", "AnthropicModel", _anthropic_model
         ),
-        "gateway": _Binding(
-            "openai", "pydantic_ai.models.openai", "OpenAIChatModel", _gateway_model
-        ),
+        "gateway": _Binding("openai", _OPENAI_MODULE, "OpenAIChatModel", _gateway_model),
     }
 )
 

@@ -177,5 +177,7 @@ class TestConfigValidation:
     def test_an_unusable_setting_is_rejected_rather_than_silently_ignored(
         self, kwargs: dict[str, Any], message: str
     ) -> None:
+        config = OtelConfig(**kwargs)
+
         with pytest.raises(ValueError, match=message):
-            OtelConfig(**kwargs).validate()
+            config.validate()
