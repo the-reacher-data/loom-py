@@ -31,7 +31,12 @@ from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.invoker import AppInvoker
 from loom.core.use_case.registry import UseCaseRegistry
 from loom.core.use_case.use_case import UseCase
-from loom.rest.fastapi.auto import _AiWiring, _bind_agent_resolver, _verify_agent_markers
+from loom.rest.fastapi.auto import (
+    _AiWiring,
+    _bind_agent_resolver,
+    _bind_mcp_resolver,
+    _verify_agent_markers,
+)
 
 
 def _plan(name: str, *, output_type: type[Any] = dict) -> AgentPlan:
@@ -241,3 +246,31 @@ class TestElResolverSeLigaSoloConRuntimeDeIa:
         assert resolver is not None
         handle = resolver("triage", Identity(subject="ada", mechanism="test"))
         assert handle._observability is None  # noqa: SLF001
+
+
+class TestElResolverDeMcpSeLigaSoloConRuntimeDeIa:
+    """Mirrors ``TestElResolverSeLigaSoloConRuntimeDeIa`` for ``_bind_mcp_resolver`` (S7).
+
+    ``_bind_mcp_resolver`` is a second, differently-typed wiring call, never
+    exercised by any test above: deleting it entirely still passes every
+    ``Agent()`` test in this module and every start-up check, and leaves the
+    ``Mcp()`` marker dead in production (H4).
+    """
+
+    def test_sin_seccion_ai_el_executor_no_recibe_resolver_mcp(self) -> None:
+        result = _kernel_runtime()
+        ai = _AiWiring(config=None, runtime=None)
+
+        _bind_mcp_resolver(result, ai)
+
+        assert result.executor._mcp_resolver is None  # noqa: SLF001 - white-box wiring test
+
+    def test_con_runtime_de_ia_el_resolver_de_mcp_queda_ligado(self) -> None:
+        result = _kernel_runtime()
+        ai = _AiWiring(config=None, runtime=_fake_agent_runtime())
+
+        _bind_mcp_resolver(result, ai)
+
+        assert result.executor._mcp_resolver is not None  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="more than once"):
+            result.executor.bind_mcp_resolver(lambda server, include, identity: object())

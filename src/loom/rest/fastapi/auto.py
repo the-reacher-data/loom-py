@@ -876,6 +876,29 @@ def _bind_agent_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
     result.executor.bind_agent_resolver(resolver)
 
 
+def _bind_mcp_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
+    """Wire the executor's ``Mcp()`` marker resolver, once the AI runtime exists.
+
+    Mirrors :func:`_bind_agent_resolver`, on the executor's second resolver
+    (S7): a no-op when no ``ai:`` section is present, so a use case
+    declaring ``Mcp()`` in that deployment still compiles and fails
+    informatively — naming ``bind_mcp_resolver`` — at its first execution
+    instead of here.
+    """
+    if ai.runtime is None:
+        return
+    # Local import: same containment rule as '_bind_agent_resolver'.
+    from loom.ai.runtime._handle import mcp_marker_resolver
+
+    observability = (
+        result.container.resolve(ObservabilityRuntime)
+        if result.container.is_registered(ObservabilityRuntime)
+        else None
+    )
+    resolver = mcp_marker_resolver(ai.runtime, observability=observability)
+    result.executor.bind_mcp_resolver(resolver)
+
+
 def _verify_agent_markers(
     use_cases: Sequence[type[Compilable]],
     compiler: UseCaseCompiler,
@@ -1595,6 +1618,7 @@ def create_app(
     )
     _verify_agent_markers(discovered.use_cases, result.compiler, result.registry, ai)
     _bind_agent_resolver(result, ai)
+    _bind_mcp_resolver(result, ai)
     # Last: every service a use case may inject is registered by now.
     result.factory.verify()
 

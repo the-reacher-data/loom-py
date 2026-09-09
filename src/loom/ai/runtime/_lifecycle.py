@@ -130,9 +130,13 @@ class UseCaseMcpGrant:
     server name has already been verified against ``ai.mcp_servers``, and
     handed to :class:`AgentRuntime` so the server it names joins the set the
     runtime opens even when no agent plan declares it. ``capability`` carries
-    this binding's own ``include`` — the filter :meth:`_use_case_filter_issues`
-    checks at start-up and the resolver reads at call time (PR3) — which is
-    why one instance exists per binding rather than per server; the *shared*
+    this binding's own ``include`` — read only by :meth:`_use_case_filter_issues`,
+    to check it at start-up against the server's real tool list. At call
+    time the resolver never reads this ``include`` back: it receives its own
+    from the resolving :class:`~loom.core.engine.plan.McpBinding`, via the
+    executor, which is why one instance of this class exists per binding
+    rather than per server, even though start-up and call time end up
+    checking the same value on two different objects. The *shared*
     grant a server's live session and full catalogue are read from is a
     separate, server-keyed :class:`~loom.ai.runtime._grants.McpGrant` built by
     :meth:`_build_use_case_grants`, whose own capability carries no ``include``
@@ -971,9 +975,10 @@ class AgentRuntime:
         whichever binding happened to be folded in last. Two use cases naming
         the same server can declare different ``include``s without either
         one's filter leaking into the other or into this shared grant: each
-        binding's own filter lives on its own :class:`UseCaseMcpGrant`
-        (checked by :meth:`_use_case_filter_issues`, applied by the resolver
-        at call time in PR3), never on the value returned here.
+        binding's own filter is checked at start-up by
+        :meth:`_use_case_filter_issues` and applied at call time from its
+        own :class:`~loom.core.engine.plan.McpBinding`, via the executor —
+        never from the value returned here.
 
         Built through the existing :meth:`_mcp_grant`, so a tolerated
         unreachable server yields ``None`` here exactly as it does for an
@@ -999,9 +1004,10 @@ class AgentRuntime:
         catalogue — every binding on *server* shares; it is **not** any one
         caller's filtered view, and its own capability carries an explicitly
         empty ``include``/``exclude`` (see :meth:`_build_use_case_grants`). A
-        caller's own filter comes from its own binding at resolution time,
-        which the PR3 resolver reads from :class:`UseCaseMcpGrant`, not from
-        the value this method returns.
+        caller's own filter comes from its own
+        :class:`~loom.core.engine.plan.McpBinding`, passed to the resolver
+        by the executor at resolution time, never from the value this
+        method returns.
 
         Args:
             server: MCP server name a marker declared.

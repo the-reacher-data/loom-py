@@ -150,6 +150,11 @@ class RuntimeExecutor:
             verified caller of this execution. ``None`` until
             :meth:`bind_agent_resolver` is called — see that method for why
             it is bound after construction rather than passed in here.
+        mcp_resolver: Optional callable resolving an ``Mcp()`` marker
+            parameter to a handle, given the marker's server name, its own
+            declared ``include`` and the verified caller of this execution.
+            ``None`` until :meth:`bind_mcp_resolver` is called, for the same
+            reason ``agent_resolver`` is bound after construction.
 
     Example::
 
@@ -175,6 +180,7 @@ class RuntimeExecutor:
         metrics: MetricsAdapter | None = None,
         repo_resolver: Callable[[type[Any]], Any] | None = None,
         agent_resolver: Callable[[str, Identity], Any] | None = None,
+        mcp_resolver: Callable[[str, tuple[str, ...], Identity], Any] | None = None,
     ) -> None:
         self._compiler = compiler
         self._uow_factory = uow_factory
@@ -183,6 +189,7 @@ class RuntimeExecutor:
         self._metrics = metrics
         self._repo_resolver = repo_resolver
         self._agent_resolver = agent_resolver
+        self._mcp_resolver = mcp_resolver
 
     def bind_agent_resolver(self, resolver: Callable[[str, Identity], Any]) -> None:
         """Bind the resolver used by every ``Agent()`` marker parameter.
@@ -206,6 +213,32 @@ class RuntimeExecutor:
         if self._agent_resolver is not None:
             raise RuntimeError("RuntimeExecutor.bind_agent_resolver() called more than once")
         self._agent_resolver = resolver
+
+    def bind_mcp_resolver(self, resolver: Callable[[str, tuple[str, ...], Identity], Any]) -> None:
+        """Bind the resolver used by every ``Mcp()`` marker parameter.
+
+        A second resolver, not an overload of :meth:`bind_agent_resolver`:
+        that one is typed to two arguments (the agent name and the verified
+        caller), this one to three (the server name, the marker's own
+        ``include`` and the verified caller). Serving both kinds through one
+        callable would need a discriminant argument telling them apart,
+        which is the multi-behaviour flag this project's engineering rules
+        forbid — so this is a distinct method, bound separately, the same
+        way :meth:`bind_agent_resolver` is bound separately from
+        construction: the AI runtime it depends on exists only once the AI
+        pillar has built it.
+
+        Args:
+            resolver: Builds one MCP handle from the marker's server name,
+                its own declared ``include`` and the verified caller of one
+                execution.
+
+        Raises:
+            RuntimeError: If a resolver is already bound.
+        """
+        if self._mcp_resolver is not None:
+            raise RuntimeError("RuntimeExecutor.bind_mcp_resolver() called more than once")
+        self._mcp_resolver = resolver
 
     async def run(
         self,
@@ -539,7 +572,7 @@ class RuntimeExecutor:
         self._bind_params(plan, inputs.params or {}, bound)
         self._bind_caller(plan, inputs.identity, bound)
         self._bind_agents(plan, inputs.identity, bound)
-        self._reject_mcp_bindings(plan)
+        self._bind_mcp(plan, inputs.identity, bound)
         fields_set = self._build_command(plan, inputs.payload, bound)
         await self._execute_loads(
             plan, compilable, bound, inputs.dependencies, inputs.load_overrides
@@ -710,35 +743,38 @@ class RuntimeExecutor:
         for binding in plan.agent_bindings:
             bound[binding.name] = self._agent_resolver(binding.agent, identity)
 
-    @staticmethod
-    def _reject_mcp_bindings(plan: ExecutionPlan) -> None:
-        """Refuse a plan carrying ``Mcp()`` bindings, before any side effect.
+    def _bind_mcp(
+        self,
+        plan: ExecutionPlan,
+        identity: Identity | None,
+        bound: dict[str, Any],
+    ) -> None:
+        """Inject one handle per ``Mcp()`` marker, closed over this caller.
 
-        It runs after :meth:`_bind_agents` has filled its own entries, so
-        "before injection" would be wrong; what it guarantees is that no
-        command is built and no repository load runs, leaving nothing
-        half-done behind the refusal.
-
-
-        No MCP resolver exists on this executor yet — resolving a binding
-        into a live ``McpHandle`` is future work. Without this guard,
-        ``execute`` would receive Python's default-argument value for an
-        unbound parameter: the raw ``_McpMarker`` object itself, which fails
-        later with an opaque ``AttributeError`` the first time the use case
-        calls a handle method on it. Mirrors :meth:`_bind_agents`'s own
-        ``RuntimeError`` for the same reason: a use case declaring a marker
-        this executor cannot honor must fail at the boundary, naming what is
-        missing, not deep inside unrelated business logic.
+        Mirrors :meth:`_bind_agents`: an explicit identity is required for
+        the same reason — substituting ``ANONYMOUS`` for a missing one would
+        turn a transport bug into a silently unauthenticated tool call — and
+        an unbound resolver fails loud, naming :meth:`bind_mcp_resolver`,
+        instead of handing the raw marker object back to the use case, which
+        would only fail later with an opaque ``AttributeError``.
         """
         if not plan.mcp_bindings:
             return
-        names = ", ".join(binding.name for binding in plan.mcp_bindings)
-        raise RuntimeError(
-            f"{plan.use_case_type.__qualname__}.execute declares Mcp() "
-            f"parameter(s) ({names}), but MCP marker resolution is not "
-            "available in this version of loom. There is no resolver to "
-            "bind: remove the marker, or upgrade once it ships."
-        )
+        if identity is None:
+            raise Unauthenticated(
+                f"{plan.use_case_type.__qualname__}.execute declares an Mcp() "
+                "parameter but this execution carried no identity. The transport "
+                "must pass identity=... to the executor (pass ANONYMOUS explicitly "
+                "to run without a caller)."
+            )
+        if self._mcp_resolver is None:
+            raise RuntimeError(
+                f"{plan.use_case_type.__qualname__}.execute declares an Mcp() "
+                "parameter but no MCP resolver is bound on this executor. Call "
+                "RuntimeExecutor.bind_mcp_resolver() once the AI runtime exists."
+            )
+        for binding in plan.mcp_bindings:
+            bound[binding.name] = self._mcp_resolver(binding.server, binding.include, identity)
 
     @staticmethod
     def _coerce_param(

@@ -263,18 +263,16 @@ def Agent(name: str) -> Any:
 def Mcp(server: str, *, include: Sequence[str]) -> Any:
     """Factory returning the runtime marker for a named MCP server handle parameter.
 
-    Once an MCP resolver is wired into the executor, it will resolve
-    *server* against the MCP servers compiled for this deployment and
-    inject an ``McpHandle`` bound to this execution's verified caller — the
-    only way a use case is meant to reach an MCP server (constructor
-    injection is not offered for this resource). No resolver is wired yet:
-    a compiled use case that declares this marker fails fast with a
-    ``RuntimeError`` at its first execution instead of receiving the raw
-    marker object. Names in *include* are globs, and once resolution ships
-    they will be matched by the same ``select_names``/``admits`` the model's
-    own toolset filter uses; there is no ``exclude`` in this version because
-    no caller has asked for one and a short allow-list already expresses
-    every case on the table.
+    The executor resolves *server* against the MCP servers compiled for
+    this deployment and injects an ``McpHandle`` bound to this execution's
+    verified caller — the only way a use case reaches an MCP server
+    (constructor injection is not offered for this resource). Names in
+    *include* are globs, matched by the same ``select_names``/``admits`` the
+    model's own toolset filter uses; there is no ``exclude`` in this version
+    because no caller has asked for one and a short allow-list already
+    expresses every case on the table. Under ``ai.remote_clients: optional``,
+    a server tolerated unreachable at start-up still resolves to a handle —
+    every call on it fails with ``TOOL_UNAVAILABLE`` instead.
 
     Unlike :func:`Agent`, no output type is **ever** checked against the
     parameter's annotation: ``McpHandle`` carries no type parameter, so there
@@ -288,11 +286,6 @@ def Mcp(server: str, *, include: Sequence[str]) -> Any:
     ``ai.remote_clients: optional`` a server that never connected is skipped
     rather than failing: a tolerated outage means the filter goes unverified,
     not that it verified clean.
-
-    Resolution is a separate thing and is **not** wired: the handle is never
-    built or injected, which is why a compiled use case declaring this marker
-    still hits the ``RuntimeError`` above at its first execution rather than
-    receiving a live ``McpHandle``.
 
     Returned value is intentionally typed as ``Any`` to avoid ``mypy``
     default-argument incompatibility in signatures like:

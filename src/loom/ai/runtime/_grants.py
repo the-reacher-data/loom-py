@@ -18,8 +18,12 @@ never a second filter:
   lives, called by the model's own ``sql`` capability too, with no
   caller-supplied role.
 
-Both bound one call by the plan's own ``tool_timeout_ms``, inside a span —
-the neutral counterpart of
+Both bound one call by a deadline, inside a span — the agent path by the
+plan's own ``tool_timeout_ms``, the ``Mcp()`` marker path (T302) by the
+server's own ``timeout_ms``, since a marker-driven call has no plan for
+``tool_timeout_ms`` to belong to. The span carries ``agent`` or
+``mcp_server`` depending on which path resolved the view
+(``span_attributes``), never both — the neutral counterpart of
 :func:`~loom.ai.engines.pydantic_ai._guards.capability_call`, since this
 package stays free of any one engine. What is deliberately **not** carried
 over from the model-facing path is turning a failure into a refusal *value*
@@ -53,9 +57,9 @@ from loom.core.sql.service import SqlQueryService
 _T = TypeVar("_T")
 
 
-def _tool_allowed(name: str, capability: CompiledMcpCapability) -> bool:
+def _tool_allowed(name: str, *, include: tuple[str, ...], exclude: tuple[str, ...]) -> bool:
     """Same include-then-exclude rule the model's own toolset filter applies."""
-    return admits(name, include=capability.include, exclude=capability.exclude)
+    return admits(name, include=include, exclude=exclude)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,27 +120,68 @@ class AgentGrants:
 
 
 class McpGrantView:
-    """The concrete :class:`~loom.ai.abc.McpHandle` an ``AgentHandle.mcp()`` returns."""
+    """The concrete :class:`~loom.ai.abc.McpHandle` an ``AgentHandle.mcp()`` returns.
+
+    ``include``/``exclude`` are taken as explicit arguments rather than read
+    off ``capability`` — even though ``capability`` carries its own
+    ``include``/``exclude`` fields — because the two callers of this
+    constructor do not agree on which capability's filter applies. The
+    agent path's capability *is* the filter: it was compiled from the
+    artefact's own declaration. The use-case path's capability is the
+    shared, server-keyed substrate every ``Mcp()`` binding on that server
+    reads its session and catalogue from (FR-15); its own ``include`` is
+    explicitly empty, and the caller's actual filter lives on its own
+    binding instead. Reading ``capability.include`` here would silently
+    admit the full catalogue for a use case that declared a narrower one —
+    the authorization gap hostile verification measured during this
+    feature's own planning (``plan.md``'s "Where the caller's include comes
+    from") — so there is no shorter way to build this view that does not
+    also state the filter.
+
+    Args:
+        span_attributes: The one caller-identifying attribute this view's
+            tool spans carry — ``{"agent": name}`` on the agent path,
+            ``{"mcp_server": name}`` on the ``Mcp()`` marker path — never
+            both.
+        capability: Compiled ``mcp`` capability this view calls through;
+            only its ``server`` name and ``timeout_ms`` are read here, never
+            its own ``include``/``exclude`` (see above).
+        include: Glob patterns naming the tools this view admits.
+        exclude: Glob patterns naming the tools this view refuses even if
+            ``include`` would otherwise admit them.
+        session: The server's shared, already-open session this view calls
+            through — never a second connection.
+        catalogue: The server's already-listed tool catalogue this view
+            filters — never a second listing.
+        timeout_s: Deadline bounding one call, in seconds.
+        identity: Verified caller this view's queries and spans are bound
+            to.
+        observability: Runtime this view's own span opens on, or ``None``.
+    """
 
     def __init__(
         self,
         *,
-        agent: str,
+        span_attributes: Mapping[str, str],
         capability: CompiledMcpCapability,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...],
         session: SharedMcpSession,
         catalogue: Sequence[McpToolInfo],
         timeout_s: float,
         identity: Identity,
         observability: ObservabilityRuntime | None,
     ) -> None:
-        self._agent = agent
+        self._span_attributes = span_attributes
         self._capability = capability
         self._session = session
         self._identity = identity
         self._observability = observability
         self._timeout_s = timeout_s
         self._tools: dict[str, McpToolInfo] = {
-            info.name: info for info in catalogue if _tool_allowed(info.name, capability)
+            info.name: info
+            for info in catalogue
+            if _tool_allowed(info.name, include=include, exclude=exclude)
         }
 
     def tools(self) -> tuple[str, ...]:
@@ -213,7 +258,7 @@ class McpGrantView:
 
     @asynccontextmanager
     async def _guard(self, tool: str) -> AsyncIterator[None]:
-        """Bound one call by the plan's tool timeout, inside its own span."""
+        """Bound one call by this view's own tool timeout, inside its own span."""
         with self._span(tool):
             try:
                 async with asyncio.timeout(self._timeout_s):
@@ -221,7 +266,8 @@ class McpGrantView:
             except TimeoutError as exc:
                 raise AgentRunError(
                     AgentRunErrorCode.TOOL_TIMEOUT,
-                    f"tool {tool!r} exceeded the {self._timeout_s:.3f}s tool timeout",
+                    f"tool {tool!r} of mcp server {self._capability.server!r} exceeded "
+                    f"the {self._timeout_s:.3f}s tool timeout",
                 ) from exc
 
     def _span(self, tool: str) -> AbstractContextManager[None]:
@@ -230,7 +276,7 @@ class McpGrantView:
         return self._observability.span(
             Scope.TOOL,
             tool,
-            agent=self._agent,
+            **self._span_attributes,
             capability="mcp",
             subject=self._identity.subject,
         )

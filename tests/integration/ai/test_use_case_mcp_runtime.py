@@ -133,8 +133,10 @@ class TestServidorSoloDeclaradoPorUnCasoDeUso:
             # from the shared substrate grant this runtime hands back — see
             # 'plan.md's "Where the caller's include comes from" note.
             view = McpGrantView(
-                agent=_USECASE,
+                span_attributes={"mcp_server": _SERVER_A},
                 capability=binding.capability,
+                include=binding.capability.include,
+                exclude=binding.capability.exclude,
                 session=grant.session,
                 catalogue=grant.catalogue,
                 timeout_s=1.0,
@@ -247,8 +249,10 @@ class TestServidorCompartidoConUnAgente:
         async with runtime:
             agent_grant = runtime.grants("analyst").mcp[_SERVER_A]
             agent_view = McpGrantView(
-                agent="analyst",
+                span_attributes={"agent": "analyst"},
                 capability=agent_grant.capability,
+                include=agent_grant.capability.include,
+                exclude=agent_grant.capability.exclude,
                 session=agent_grant.session,
                 catalogue=agent_grant.catalogue,
                 timeout_s=1.0,
@@ -262,8 +266,10 @@ class TestServidorCompartidoConUnAgente:
             # Same note as above: the caller's own filter is its own
             # binding's 'include', not the shared substrate grant's.
             use_case_view = McpGrantView(
-                agent=_USECASE,
+                span_attributes={"mcp_server": _SERVER_A},
                 capability=binding.capability,
+                include=binding.capability.include,
+                exclude=binding.capability.exclude,
                 session=use_case_grant.session,
                 catalogue=use_case_grant.catalogue,
                 timeout_s=1.0,

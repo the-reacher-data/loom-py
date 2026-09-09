@@ -23,6 +23,7 @@ import pytest
 import yaml
 
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
+from loom.core.engine.executor import RuntimeExecutor
 from loom.core.plugins import entrypoints as entrypoints_module
 from loom.rest.fastapi.auto import create_app
 from tests.integration.ai._entrypoints import fake_entry_points
@@ -183,3 +184,30 @@ class TestSoloMcpSinArtefactosDeAgente:
         codes = _codes(failure.value)
         assert AgentErrorCode.MCP_MARKER_UNKNOWN in codes
         assert AgentErrorCode.MCP_SERVER_UNKNOWN not in codes
+
+    @pytest.mark.usefixtures("fake_engine")
+    def test_create_app_actually_calls_bind_mcp_resolver(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """H4: pins the ``create_app`` call site itself, not just the function it calls.
+
+        ``tests/unit/rest/test_fastapi_auto_agent_markers.py`` covers
+        ``_bind_mcp_resolver``'s own behaviour by calling it directly, which
+        would stay green even if ``create_app`` stopped calling it at all —
+        exactly the mutation that leaves the ``Mcp()`` marker dead in
+        production. This wraps the real method to record whether ``create_app``
+        itself ever reaches it.
+        """
+        calls: list[Any] = []
+        original = RuntimeExecutor.bind_mcp_resolver
+
+        def _recording_bind(self: RuntimeExecutor, resolver: Any) -> None:
+            calls.append(resolver)
+            original(self, resolver)
+
+        monkeypatch.setattr(RuntimeExecutor, "bind_mcp_resolver", _recording_bind)
+        config_path = _write_project(tmp_path, declares_use_case=True)
+
+        create_app(config_path)
+
+        assert calls, "create_app never called RuntimeExecutor.bind_mcp_resolver"

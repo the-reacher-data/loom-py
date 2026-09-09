@@ -86,13 +86,14 @@ class AgentBinding:
 class McpBinding:
     """One ``Mcp(server, include=...)`` marker parameter declared in ``execute``.
 
-    Once an MCP resolver is wired into the executor, it will resolve
-    *server* against the MCP servers compiled for this deployment and
-    inject a handle bound to this execution's verified caller. No resolver
-    is wired yet: the executor raises ``RuntimeError`` at the first
-    execution of a use case carrying this binding instead of handing back
-    the raw marker object. Like :class:`AgentBinding`, several may appear
-    in one signature — a use case may reach more than one named server.
+    The executor resolves *server* against the MCP servers compiled for
+    this deployment and injects a handle bound to this execution's verified
+    caller, through the resolver ``bind_mcp_resolver`` wires onto the
+    executor. A use case carrying this binding fails with ``RuntimeError``
+    at its first execution only if that resolver was never bound — naming
+    ``bind_mcp_resolver`` in the message. Like :class:`AgentBinding`,
+    several may appear in one signature — a use case may reach more than one
+    named server.
 
     The parameter's annotation is not carried here, unlike ``AgentBinding``:
     ``McpHandle`` has no type parameter, so nothing downstream reads a type
