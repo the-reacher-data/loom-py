@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, get_args
+from typing import TYPE_CHECKING, Any, Final
 
 import msgspec
 import prometheus_client
@@ -58,6 +58,7 @@ from loom.core.sql import (
     SqlQueryService,
 )
 from loom.core.sql.config import roles_need_identity_binding
+from loom.core.use_case.agent_markers import declaring_agent_bindings
 from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.invoker import AppInvoker
 from loom.core.use_case.registry import UseCaseRegistry
@@ -98,9 +99,7 @@ if TYPE_CHECKING:
     # run time solely by the branch that needs them.
     from loom.ai.compiler import AgentPlan
     from loom.ai.config import AiConfig
-    from loom.ai.errors import AgentCompilationIssue
     from loom.ai.runtime import AgentRuntime
-    from loom.core.engine.plan import AgentBinding
     from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
 
 
@@ -679,7 +678,10 @@ def _verify_agent_markers(
     every compiled agent plan already exists here, whether or not an ``ai:``
     section is present — an absent section means ``ai.plans`` is simply
     empty, so every declared agent is reported unknown the same way a typo
-    would be.
+    would be. The check itself is shared with the Celery worker bootstrap
+    (T402), which calls the same :func:`~loom.ai._startup.verify_agent_markers`
+    with an always-empty ``plans_by_name``, since a task worker never builds
+    an AI runtime at all.
 
     Args:
         use_cases: Every use case compiled for this deployment.
@@ -692,12 +694,7 @@ def _verify_agent_markers(
             and per mismatched output type, so a single run reports every
             problem at once.
     """
-    declaring = [
-        (uc_type, plan.agent_bindings)
-        for uc_type in use_cases
-        for plan in (compiler.get_plan(uc_type),)
-        if plan is not None and plan.agent_bindings
-    ]
+    declaring = declaring_agent_bindings(use_cases, compiler)
     if not declaring:
         # No use case declares Agent(): importing 'loom.ai' here, only to
         # find nothing to check, would be exactly the containment leak
@@ -707,58 +704,10 @@ def _verify_agent_markers(
         return
 
     # Local import: same containment rule as '_resolve_ai'.
-    from loom.ai.errors import AgentCompilationError
+    from loom.ai._startup import verify_agent_markers
 
     plans_by_name = {plan.name: plan for plan in ai.plans}
-    issues: list[AgentCompilationIssue] = [
-        issue
-        for uc_type, agent_bindings in declaring
-        for issue in _agent_binding_issues(
-            registry.key_for(uc_type) or uc_type.__qualname__, agent_bindings, plans_by_name
-        )
-    ]
-    if issues:
-        raise AgentCompilationError(issues)
-
-
-def _agent_binding_issues(
-    uc_name: str,
-    agent_bindings: Sequence[AgentBinding],
-    plans_by_name: Mapping[str, AgentPlan],
-) -> Iterator[AgentCompilationIssue]:
-    """Yield one issue per ``Agent()`` binding that start-up cannot satisfy.
-
-    Args:
-        uc_name: Registered key (or qualname) of the declaring use case.
-        agent_bindings: Every ``Agent()`` parameter that use case declares.
-        plans_by_name: Every compiled agent plan, by its own name.
-    """
-    # Local import: same containment rule as '_verify_agent_markers'.
-    from loom.ai.errors import agent_marker_output_mismatch, agent_marker_unknown
-
-    available = tuple(plans_by_name)
-    for binding in agent_bindings:
-        agent_plan = plans_by_name.get(binding.agent)
-        if agent_plan is None:
-            yield agent_marker_unknown(uc_name, binding.name, binding.agent, available)
-            continue
-        expected_args = get_args(binding.annotation)
-        if not expected_args:
-            # No type argument to check against — e.g. a bare 'AgentHandle'
-            # annotation with no subscript. Nothing this pass can compare,
-            # so it is not reported as a mismatch.
-            continue
-        expected = expected_args[0]
-        declared = agent_plan.output.decoder.type
-        if expected is declared:
-            continue
-        yield agent_marker_output_mismatch(
-            uc_name,
-            binding.name,
-            binding.agent,
-            expected=getattr(expected, "__name__", str(expected)),
-            declared=getattr(declared, "__name__", str(declared)),
-        )
+    verify_agent_markers(declaring, registry, plans_by_name)
 
 
 def _bind_agent_surface(

@@ -81,7 +81,7 @@ from loom.celery.runner import (
     _make_job_task,
 )
 from loom.core.async_bridge import build_backend_options
-from loom.core.bootstrap import create_kernel
+from loom.core.bootstrap import KernelRuntime, create_kernel
 from loom.core.cache.wiring import cache_module_for
 from loom.core.config import (
     ConfigContext,
@@ -100,6 +100,7 @@ from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import shutdown_runner
 from loom.core.uow.abc import UnitOfWorkFactory
+from loom.core.use_case.agent_markers import declaring_agent_bindings
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.autocrud import build_auto_routes
 
@@ -722,6 +723,49 @@ class WorkerBootstrapResult:
 
 
 # ---------------------------------------------------------------------------
+# Agent() marker refusal (T402)
+# ---------------------------------------------------------------------------
+
+
+def _reject_agent_markers(
+    compilables: Sequence[type[Compilable]],
+    kernel: KernelRuntime,
+) -> None:
+    """Abort worker start-up when a compiled use case declares an ``Agent()`` marker.
+
+    A task worker never builds an AI runtime — nothing in this module
+    constructs one, unlike the FastAPI bootstrap's optional ``ai:`` section
+    (:func:`loom.rest.fastapi.auto._resolve_ai`) — so a use case declaring
+    the marker would compile here and only fail once a task actually invoked
+    it. Refusing at start-up instead reuses the same check the FastAPI
+    bootstrap runs, :func:`loom.ai._startup.verify_agent_markers`, called
+    with no compiled agent plans at all, which reports every declared agent
+    as unknown by name.
+
+    Args:
+        compilables: Every use case and job compiled for this worker.
+        kernel: The just-built kernel runtime, whose compiler already holds
+            each of their plans and whose registry names them in the error.
+
+    Raises:
+        AgentCompilationError: Naming each declaring use case and its
+            ``Agent()`` parameter, when at least one declares the marker.
+    """
+    declaring = declaring_agent_bindings(compilables, kernel.compiler)
+    if not declaring:
+        # No use case declares Agent(): importing 'loom.ai' here, only to
+        # find nothing to check, would pull the AI pillar into every worker
+        # process regardless of whether any job or use case ever reaches it.
+        return
+
+    # Local import: the AI pillar is optional and this branch only runs once
+    # a declaring use case is already known to exist.
+    from loom.ai._startup import verify_agent_markers
+
+    verify_agent_markers(declaring, kernel.registry, {})
+
+
+# ---------------------------------------------------------------------------
 # bootstrap_worker
 # ---------------------------------------------------------------------------
 
@@ -842,6 +886,7 @@ def bootstrap_worker(
         metrics=metrics,
         uow_factory=uow_factory,
     )
+    _reject_agent_markers(resolved.compilables, kernel)
     kernel.factory.verify()
     celery_app = create_celery_app(celery_cfg)
 
