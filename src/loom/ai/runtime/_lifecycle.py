@@ -1193,11 +1193,15 @@ def _fold_use_case_mcp(
     case, that guard would otherwise fire on the agent-only ``mcp`` tuple and
     nothing would ever open.
 
-    Agent capabilities keep precedence — the same ``setdefault`` rule
-    :func:`_remote_capabilities` already applies across plans. No conflict is
-    possible between the two sources here: both resolve from the same
-    ``ai.mcp_servers`` mapping in one deployment, so two connections under one
-    server name are unrepresentable.
+    Both sources compile from the same ``ai.mcp_servers`` entry for a given
+    server name and differ only in ``include``/``exclude``. Neither field
+    reaches anything on this path: the client is keyed by
+    ``f"mcp:{server}"`` alone (:func:`~loom.ai.runtime._mcp.mcp_key`), and
+    the factory that opens it never reads a filter — the filtering is a view
+    built later, per grant. So whichever of the two capabilities wins opens
+    the same client, and ``setdefault`` here is a de-duplication rule, not a
+    precedence one, exactly like the one :func:`_remote_capabilities` already
+    applies across plans.
 
     Args:
         mcp: MCP capabilities every compiled agent plan declares, de-duplicated.

@@ -138,6 +138,10 @@ class TestElResolvedorAplicaElFiltroDelBindingQueResuelve:
 
             assert first.tools() == ("search",)
             assert second.tools() == ("delete",)
+            # Both bindings resolve over the very same session object
+            # (FR-15): neither a second connection nor a second listing
+            # served either one.
+            assert first._session is second._session  # noqa: SLF001
 
     async def test_mutar_para_leer_el_include_del_grant_compartido_deja_esto_en_rojo(
         self,

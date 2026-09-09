@@ -25,6 +25,7 @@ from loom.core.config import ConfigContext
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.plan import McpBinding
 from loom.core.use_case import Mcp, UseCase
+from loom.core.use_case.keys import use_case_key
 from loom.core.use_case.mcp_markers import DeclaringMcpBindings
 from loom.core.use_case.registry import UseCaseRegistry
 from loom.rest.fastapi.auto import _compile_use_case_mcp, _verify_mcp_markers
@@ -191,3 +192,25 @@ class TestCompileUseCaseMcpPreservaElInclude:
 
         assert grant.capability.include == ("search_*", "fetch")
         assert grant.parameter == "gateway"
+
+    def test_el_grant_lleva_la_clave_registrada_no_el_qualname(self) -> None:
+        """Sin este caso, ``registry.key_for(uc_type) or uc_type.__qualname__``
+        colapsando a ``uc_type.__qualname__`` sobrevive: el resto de la suite
+        solo ejercita clases sin clave registrada, donde ambas ramas
+        coinciden."""
+
+        @use_case_key("known.gateway")
+        class RegisteredGatewayUseCase(UseCase[object, object]):
+            async def execute(
+                self, gateway: McpHandle = Mcp(_KNOWN_SERVER, include=["search_*"])
+            ) -> object:
+                return gateway
+
+        registry = UseCaseRegistry.build([RegisteredGatewayUseCase])
+        servers = {_KNOWN_SERVER: McpServerConfig(url=f"https://{_KNOWN_SERVER}.example.com/mcp")}
+        binding = McpBinding(name="gateway", server=_KNOWN_SERVER, include=("search_*",))
+        declaring: DeclaringMcpBindings = [(RegisteredGatewayUseCase, (binding,))]
+
+        (grant,) = _compile_use_case_mcp(declaring, registry, servers)
+
+        assert grant.usecase == "known.gateway"
