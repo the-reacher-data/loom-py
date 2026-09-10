@@ -8,10 +8,12 @@ never a second filter:
   advertises with the same include/exclude rule
   :func:`~loom.ai.engines.pydantic_ai._capabilities._tool_predicate` applies
   to the model's own toolset, over the same
-  :class:`~loom.ai.runtime._mcp.SharedMcpSession`
-  :class:`~loom.ai.runtime.AgentRuntime` opened at start-up. There is no
-  second filter that could diverge from the model's, because there is no
-  second filter.
+  :class:`~loom.ai.abc.McpSession` :class:`~loom.ai.runtime.AgentRuntime`
+  opened at start-up — serialised behind
+  :class:`~loom.ai.runtime._mcp.SharedMcpSession` unless it declares itself
+  already safe for concurrent calls (see
+  :func:`~loom.ai.runtime._mcp.mcp_session_for`). There is no second filter
+  that could diverge from the model's, because there is no second filter.
 * :class:`SqlGrantView` runs under the grant's own row and byte bounds, with
   roles resolved from the verified caller through
   :func:`~loom.ai._roles.bound_query_roles` — the one place that binding
@@ -44,10 +46,9 @@ import msgspec
 
 from loom.ai._filters import admits
 from loom.ai._roles import bound_query_roles
-from loom.ai.abc import McpHandle, McpToolInfo, SqlGrantHandle
+from loom.ai.abc import McpHandle, McpSession, McpToolInfo, SqlGrantHandle
 from loom.ai.compiler import CompiledMcpCapability, CompiledSqlCapability
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
-from loom.ai.runtime._mcp import SharedMcpSession
 from loom.core.identity import Identity
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
@@ -73,7 +74,7 @@ class McpGrant:
     """
 
     capability: CompiledMcpCapability
-    session: SharedMcpSession
+    session: McpSession
     catalogue: tuple[McpToolInfo, ...]
 
 
@@ -166,7 +167,7 @@ class McpGrantView:
         capability: CompiledMcpCapability,
         include: tuple[str, ...],
         exclude: tuple[str, ...],
-        session: SharedMcpSession,
+        session: McpSession,
         catalogue: Sequence[McpToolInfo],
         timeout_s: float,
         identity: Identity,

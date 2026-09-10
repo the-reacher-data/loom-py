@@ -9,12 +9,15 @@ MCP toolset, no model and no network.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import anyio
 import pytest
 from pydantic_ai.toolsets import FunctionToolset
 
@@ -27,10 +30,12 @@ from loom.ai.compiler._plan import (
 )
 from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai import _capabilities, _mcp
-from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
-from loom.ai.errors import AgentCompilationError, AgentErrorCode
+from loom.ai.engines.pydantic_ai._guards import BuildContext, capability_call
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets, _ToolsetSession
+from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunError, AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
+from loom.core.identity import Identity
 from tests.helpers.pydantic_ai_engine import OPEN_OBJECT_SCHEMA, compiled_output
 
 FACTORY_REF = "myapp.tools.geo:build_geo_toolset"
@@ -313,3 +318,85 @@ def test_abc_imports_on_a_fresh_interpreter() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+@dataclass
+class _SlowFakeFastmcpClient:
+    """Stand-in for the ``fastmcp.Client``: answers only after ``delay_s``."""
+
+    delay_s: float
+
+    async def call_tool_mcp(self, name: str, arguments: dict[str, Any]) -> _FakeProtocolResult:
+        """Sleep ``delay_s`` before answering, the way a hung gateway would."""
+        del name, arguments
+        await asyncio.sleep(self.delay_s)
+        return _FakeProtocolResult(structured_content=None)
+
+
+class _SlowFakeMcpToolset:
+    """Stand-in for ``MCPToolset``: a real refcount behind a real lock, and an
+    ``__aexit__`` that actually awaits at refcount zero (O2) -- mirroring
+    ``MCPToolset`` closely enough that a cancelled call leaving the refcount
+    unbalanced would show up here, not just by construction."""
+
+    def __init__(self, delay_s: float) -> None:
+        self.client = _SlowFakeFastmcpClient(delay_s)
+        self._lock = anyio.Lock()
+        self.running_count = 0
+
+    async def __aenter__(self) -> _SlowFakeMcpToolset:
+        async with self._lock:
+            self.running_count += 1
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        async with self._lock:
+            self.running_count -= 1
+            if self.running_count == 0:
+                await asyncio.sleep(0)
+
+
+class TestKindPythonRespectsToolTimeout:
+    """B1 (hotfix regression): a ``kind: python`` factory that calls
+    ``context.remote(server).call_tool(...)`` must still be cut off by the
+    plan's ``tool_timeout_ms``, exactly as a ``usecase`` or ``mcp`` tool is.
+
+    Before the fix, ``_ToolsetSession.call_tool`` shielded the whole round
+    trip from cancellation, so ``capability_call``'s ``asyncio.timeout`` fired
+    but the call kept running underneath it until the remote itself answered
+    -- unbounded against a hung gateway. This drives the two real pieces of
+    that route together: ``capability_call`` (the plan's own timeout) wrapping
+    a real ``_ToolsetSession.call_tool`` (what a python factory's
+    ``context.remote(server)`` returns), against a remote six times slower
+    than the timeout.
+    """
+
+    async def test_a_hung_remote_is_cut_off_at_the_plan_timeout_not_at_its_own_delay(
+        self,
+    ) -> None:
+        timeout_s = 0.05
+        remote_delay_s = 0.3
+        context = BuildContext(
+            agent=AGENT,
+            container=LoomContainer(),
+            observability=None,
+            timeout_s=timeout_s,
+            mcp=SharedMcpToolsets(),
+            mcp_grants=(),
+        )
+        toolset = _SlowFakeMcpToolset(remote_delay_s)
+        session = _ToolsetSession(toolset)  # type: ignore[arg-type]
+
+        start = time.monotonic()
+        with pytest.raises(AgentRunError) as raised:
+            async with capability_call(context, "python", "lookup", Identity(subject="tester")):
+                await session.call_tool("lookup", {})
+        elapsed = time.monotonic() - start
+
+        assert raised.value.code is AgentRunErrorCode.TOOL_TIMEOUT
+        # Cut off near the plan's own timeout, nowhere near the remote's delay:
+        # this is exactly what the shielded round trip broke.
+        assert elapsed < remote_delay_s / 2
+        # And the toolset's own refcount is not left unbalanced by the timeout
+        # cancelling the call mid ``async with`` (O2).
+        assert toolset.running_count == 0

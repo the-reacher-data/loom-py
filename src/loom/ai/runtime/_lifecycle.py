@@ -73,12 +73,12 @@ from loom.ai.runtime._limits import cancel_task, supervised_events
 from loom.ai.runtime._mcp import (
     FilterTarget,
     McpClientFactory,
-    SharedMcpSession,
     connection_conflicts,
     filter_issues,
     filter_targets,
     listing_timeout_issues,
     mcp_key,
+    mcp_session_for,
 )
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
@@ -251,7 +251,7 @@ class AgentRuntime:
         self._stack: AsyncExitStack | None = None
         self._owner: asyncio.Task[Any] | None = None
         self._slots: dict[str, _AgentSlot] = {}
-        self._sessions: dict[str, SharedMcpSession] = {}
+        self._sessions: dict[str, McpSession] = {}
         self._tool_catalog: dict[str, tuple[McpToolInfo, ...]] = {}
         self._live: set[str] = set()
         self._health: dict[str, AgentHealth] = {}
@@ -683,7 +683,7 @@ class AgentRuntime:
             self._live.add(entry.key)
             if entry.key.startswith("mcp:"):
                 session: McpSession = entry.session  # type: ignore[assignment]
-                self._sessions[entry.key] = SharedMcpSession(session, label=entry.key)
+                self._sessions[entry.key] = mcp_session_for(session, label=entry.key)
 
     def _timeout_issues(
         self,

@@ -720,6 +720,38 @@ class McpSession(Protocol):
         ...
 
 
+class ConcurrentMcpSession:
+    """Declares an :class:`McpSession` implementation already safe for concurrent calls.
+
+    A JSON-RPC session is one framed stream: two callers writing into it at
+    the same time can interleave their frames, and a caller cancelled
+    mid-call can leave the stream desynchronised for whoever is waiting
+    beside it. That is why a session gets serialised behind one lock by
+    default. A session that already guards its own frames — one that
+    multiplexes concurrent calls by matching each response back to its own
+    request id, rather than writing straight through a single unmatched
+    stream — declares that guarantee by also subclassing this, in addition
+    to implementing :class:`McpSession`, and the runtime leaves it
+    unwrapped.
+
+    This class carries no members: subclassing it *is* the declaration. A
+    session that does not subclass it is treated exactly as every
+    :class:`McpSession` was before this class existed — wrapped and
+    serialised — because not declaring the guarantee is the safe default,
+    never a failure.
+
+    A subclass keeping this promise must (a) tolerate overlapping calls by
+    matching each response back to its own request id — the multiplexing
+    that makes the guarantee true in the first place — and (b) must **not**
+    shield a call from its own caller's cancellation the way the runtime's
+    locked wrapper does: with no shared frame to desynchronise, there is
+    nothing left to drain, and shielding would only stop the plan's own
+    ``tool_timeout_ms`` from bounding the call.
+    """
+
+    __slots__ = ()
+
+
 class ToolsetContext(Protocol):
     """What a ``kind: python`` factory may reach while building its toolset.
 
