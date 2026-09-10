@@ -343,22 +343,22 @@ def description(described_app: FastAPI) -> dict[str, Any]:
     return describe_fastapi_app(described_app)
 
 
-class TestDescripcionCompleta:
+class TestFullDescription:
     """Every declared agent is described with what it was really granted (T152)."""
 
-    def test_publica_la_identidad_de_la_app_cuando_hay_agentes(
+    def test_publishes_the_apps_identity_when_there_are_agents(
         self, description: dict[str, Any]
     ) -> None:
         """The ``app`` section carries the configured name and REST version."""
         assert description["app"] == {"name": _APP_NAME, "version": _APP_VERSION}
 
-    def test_lista_los_tres_agentes_cuando_los_tres_estan_declarados(
+    def test_lists_all_three_agents_when_all_three_are_declared(
         self, description: dict[str, Any]
     ) -> None:
         """No declared artifact is missing from the description."""
         assert sorted(_agents_by_name(description)) == sorted(_AGENTS)
 
-    def test_publica_la_descripcion_declarada_cuando_describe_un_agente(
+    def test_publishes_the_declared_description_when_describing_an_agent(
         self, description: dict[str, Any]
     ) -> None:
         """``description`` is the author's public sentence, published verbatim."""
@@ -366,7 +366,7 @@ class TestDescripcionCompleta:
 
         assert agent["description"] == _AGENT_SPECS[_AGENT_PLAIN]["description"]
 
-    def test_publica_la_version_de_spec_cuando_describe_un_agente(
+    def test_publishes_the_spec_version_when_describing_an_agent(
         self, description: dict[str, Any]
     ) -> None:
         """``spec_version`` is the artifact format each agent compiled from."""
@@ -374,7 +374,7 @@ class TestDescripcionCompleta:
 
         assert [agents[name]["spec_version"] for name in sorted(_AGENTS)] == [1, 1, 1]
 
-    def test_publica_el_esquema_de_salida_cuando_describe_un_agente(
+    def test_publishes_the_output_schema_when_describing_an_agent(
         self, description: dict[str, Any]
     ) -> None:
         """``output_schema`` is the contract callers code against."""
@@ -382,7 +382,7 @@ class TestDescripcionCompleta:
 
         assert _normalise(agent["output_schema"]) == _normalise(_output_schema("resolution"))
 
-    def test_publica_las_politicas_cuando_el_artefacto_las_declara(
+    def test_publishes_the_policies_when_the_artifact_declares_them(
         self, description: dict[str, Any]
     ) -> None:
         """The declared execution limits are published as they compiled."""
@@ -390,7 +390,7 @@ class TestDescripcionCompleta:
 
         assert dict(agent["policies"]) == dict(_PLAIN_POLICIES)
 
-    def test_publica_la_procedencia_cuando_el_artefacto_viene_de_un_fichero(
+    def test_publishes_the_provenance_when_the_artifact_comes_from_a_file(
         self, description: dict[str, Any]
     ) -> None:
         """``source_path`` names the artifact the agent was compiled from."""
@@ -398,7 +398,7 @@ class TestDescripcionCompleta:
 
         assert str(agent["source_path"]).endswith(f"{_AGENT_MCP}/agent.yaml")
 
-    def test_publica_las_claves_concedidas_cuando_la_capacidad_es_usecase(
+    def test_publishes_the_granted_keys_when_the_capability_is_usecase(
         self, description: dict[str, Any]
     ) -> None:
         """A ``usecase`` grant publishes the keys, never the resolved types."""
@@ -406,7 +406,7 @@ class TestDescripcionCompleta:
 
         assert _normalise(capability["settings"]) == {"keys": (_USECASE_KEY,)}
 
-    def test_publica_servidor_y_filtro_cuando_la_capacidad_es_mcp(
+    def test_publishes_the_server_and_filter_when_the_capability_is_mcp(
         self, description: dict[str, Any]
     ) -> None:
         """An ``mcp`` grant publishes the server name and its filter, never the URL."""
@@ -420,7 +420,7 @@ class TestDescripcionCompleta:
             "timeout_ms": 20000,
         }
 
-    def test_no_lista_capacidades_cuando_el_agente_no_declara_ninguna(
+    def test_lists_no_capabilities_when_the_agent_declares_none(
         self, description: dict[str, Any]
     ) -> None:
         """An agent with no grant is described with an empty capability list."""
@@ -429,10 +429,10 @@ class TestDescripcionCompleta:
         assert tuple(agent["capabilities"]) == ()
 
 
-class TestContencionDeSecretos:
+class TestSecretsContainment:
     """The description leaks neither configuration secrets nor private fields."""
 
-    def test_no_filtra_ningun_canario_cuando_se_serializa_la_descripcion(
+    def test_leaks_no_canary_when_the_description_is_serialized(
         self, description: dict[str, Any]
     ) -> None:
         """Not one seeded canary survives into the serialised description."""
@@ -441,7 +441,7 @@ class TestContencionDeSecretos:
         leaked = [canary for canary in _CANARIES if canary in payload]
         assert leaked == []
 
-    def test_no_expone_claves_privadas_cuando_se_recorre_la_descripcion(
+    def test_exposes_no_private_key_when_the_description_is_walked(
         self, description: dict[str, Any]
     ) -> None:
         """No excluded key appears at any depth of the description."""
@@ -450,49 +450,49 @@ class TestContencionDeSecretos:
         assert sorted(present & set(_FORBIDDEN_KEYS)) == []
 
 
-class TestCableadoAlcanzable:
+class TestWiringIsReachable:
     """The entry point is reachable from the pillar and works without agents."""
 
-    def test_se_exporta_desde_el_pilar_rest_cuando_se_importa_loom_rest_fastapi(self) -> None:
+    def test_is_exported_from_the_rest_pillar_when_loom_rest_fastapi_is_imported(self) -> None:
         """``describe_fastapi_app`` is public API of ``loom.rest.fastapi``."""
         import loom.rest.fastapi as rest_fastapi
 
         assert rest_fastapi.describe_fastapi_app is describe_fastapi_app
 
-    def test_se_declara_en_all_cuando_se_importa_loom_rest_fastapi(self) -> None:
+    def test_is_declared_in_all_when_loom_rest_fastapi_is_imported(self) -> None:
         """The re-export is declared, not merely reachable."""
         import loom.rest.fastapi as rest_fastapi
 
         assert "describe_fastapi_app" in rest_fastapi.__all__
 
-    def test_describe_la_app_cuando_no_hay_seccion_ai(self, tmp_path: Path) -> None:
+    def test_describes_the_app_when_there_is_no_ai_section(self, tmp_path: Path) -> None:
         """An application without agents still describes its identity."""
         app = create_app(_write_project_without_ai(tmp_path))
 
         assert describe_fastapi_app(app) == {"app": {"name": _APP_NAME, "version": _APP_VERSION}}
 
-    def test_no_publica_agentes_cuando_no_hay_seccion_ai(self, tmp_path: Path) -> None:
+    def test_publishes_no_agents_when_there_is_no_ai_section(self, tmp_path: Path) -> None:
         """The ``agents`` section is absent, not empty, when no pillar is wired."""
         app = create_app(_write_project_without_ai(tmp_path))
 
         assert "agents" not in describe_fastapi_app(app)
 
 
-class TestContratoDelContribuidor:
+class TestContributorContract:
     """The wiring literals of ``auto`` and the pillar's own must not drift."""
 
     # 'auto' restates these literals instead of importing them: importing
     # 'loom.ai.describe' there would pull the AI pillar into every app (FR-050).
 
-    def test_coincide_la_seccion_declarada_por_auto_con_la_del_pilar(self) -> None:
+    def test_the_section_declared_by_auto_matches_the_pillars_own(self) -> None:
         """Both sides name the same document section."""
         assert _AGENTS_SECTION == AGENTS_SECTION
 
-    def test_coincide_el_contribuidor_declarado_por_auto_con_el_del_pilar(self) -> None:
+    def test_the_contributor_declared_by_auto_matches_the_pillars_own(self) -> None:
         """Both sides name the same ``module:callable`` reference."""
         assert _AGENTS_CONTRIBUTOR == AGENTS_CONTRIBUTOR
 
-    def test_resuelve_a_describe_agents_cuando_se_importa_la_referencia(self) -> None:
+    def test_resolves_to_describe_agents_when_the_reference_is_imported(self) -> None:
         """The reference resolves to the pillar's contributor, not to a stale name."""
         module_name, _, attribute = _AGENTS_CONTRIBUTOR.partition(":")
 

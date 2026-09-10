@@ -281,10 +281,10 @@ def _frame(payload: str, name: str) -> dict[str, Any]:
     return dict(msgspec.json.decode(lines[position + 1][len("data: ") :]))
 
 
-class TestMontaje:
+class TestMounting:
     """Double opt-in: only ``enabled`` agents with a named ``auth`` mount (T095)."""
 
-    async def test_no_monta_ruta_cuando_el_agente_no_esta_en_endpoints(
+    async def test_mounts_no_route_when_the_agent_is_not_in_endpoints(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """An agent absent from ``ai.endpoints`` exposes no route at all."""
@@ -296,7 +296,7 @@ class TestMontaje:
         ) as (app, _client):
             assert f"{_PREFIX}/hidden/run" not in _route_paths(app)
 
-    async def test_responde_404_cuando_el_agente_no_esta_en_endpoints(
+    async def test_responds_404_when_the_agent_is_not_in_endpoints(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A compiled but unexposed agent is unreachable for a verified caller."""
@@ -310,7 +310,7 @@ class TestMontaje:
 
             assert response.status_code == 404
 
-    async def test_responde_interaction_id_nulo_cuando_falla_antes_de_la_admision(
+    async def test_responds_a_null_interaction_id_when_it_fails_before_admission(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A refusal before any run exists still carries the key, as ``null``."""
@@ -328,7 +328,7 @@ class TestMontaje:
                 "interaction_id": None,
             }
 
-    async def test_no_monta_ruta_cuando_el_agente_esta_deshabilitado(
+    async def test_mounts_no_route_when_the_agent_is_disabled(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """``enabled: false`` is an opt-out even with a named authentication."""
@@ -340,7 +340,7 @@ class TestMontaje:
         ) as (app, _client):
             assert f"{_PREFIX}/{_AGENT}/run" not in _route_paths(app)
 
-    async def test_falla_al_arrancar_cuando_no_hay_authenticator_utilizable(
+    async def test_fails_to_start_when_no_usable_authenticator_exists(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Opting in without an authenticator and without anonymous aborts start-up."""
@@ -361,7 +361,7 @@ class TestMontaje:
                     app, runtime=runtime, config=config, authenticator=None, prefix=_PREFIX
                 )
 
-    async def test_avisa_con_warning_cuando_monta_un_agente(
+    async def test_warns_when_mounting_an_agent(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -392,7 +392,7 @@ class TestMontaje:
                 pass
         return caplog.text
 
-    async def test_no_afirma_identidad_verificada_cuando_el_montaje_es_anonimo(
+    async def test_does_not_claim_a_verified_identity_when_the_mount_is_anonymous(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -406,7 +406,7 @@ class TestMontaje:
         assert "runs as that verified identity" not in text
         assert "NOT authenticated" in text
 
-    async def test_avisa_del_gasto_sin_identidad_cuando_el_montaje_es_anonimo(
+    async def test_warns_about_spend_without_identity_when_the_mount_is_anonymous(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -421,7 +421,7 @@ class TestMontaje:
         assert "max_concurrent_runs" in text
         assert "rate limit" in text
 
-    async def test_afirma_identidad_verificada_cuando_el_montaje_exige_auth(
+    async def test_claims_a_verified_identity_when_the_mount_requires_auth(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -435,10 +435,10 @@ class TestMontaje:
         assert "runs as that verified identity" in text
 
 
-class TestAutenticacionAntesDeExistencia:
+class TestAuthenticationBeforeExistence:
     """401 precedes 404 so the surface cannot enumerate agents (T089)."""
 
-    async def test_responde_401_cuando_el_agente_no_existe_y_el_llamador_es_anonimo(
+    async def test_responds_401_when_the_agent_does_not_exist_and_the_caller_is_anonymous(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An anonymous probe for an unknown agent gets 401, never 404 (FR-029b)."""
@@ -447,7 +447,7 @@ class TestAutenticacionAntesDeExistencia:
 
             assert response.status_code == 401
 
-    async def test_responde_401_cuando_el_agente_existe_y_el_llamador_es_anonimo(
+    async def test_responds_401_when_the_agent_exists_and_the_caller_is_anonymous(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An anonymous caller is refused before the agent is even resolved."""
@@ -460,7 +460,7 @@ class TestAutenticacionAntesDeExistencia:
 class TestRun:
     """``POST /run`` returns the decoded output and its usage (T087)."""
 
-    async def test_responde_200_cuando_la_identidad_es_valida(
+    async def test_responds_200_when_the_identity_is_valid(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A verified caller drives the agent to completion."""
@@ -469,7 +469,7 @@ class TestRun:
 
             assert response.status_code == 200
 
-    async def test_devuelve_output_y_usage_cuando_la_identidad_es_valida(
+    async def test_returns_output_and_usage_when_the_identity_is_valid(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The body carries the decoded output plus the run's usage, encoded once."""
@@ -494,7 +494,7 @@ class TestRun:
                 "hook_result": None,
             }
 
-    async def test_responde_422_cuando_el_cuerpo_lleva_una_clave_desconocida(
+    async def test_responds_422_when_the_body_carries_an_unknown_key(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The body accepts nothing beyond the documented keys."""
@@ -510,7 +510,7 @@ class TestRun:
 class TestConversationId:
     """``conversation_id`` is an opaque body field copied into the hook's command (AC12)."""
 
-    async def test_entrega_el_conversation_id_al_command_cuando_se_indica(
+    async def test_delivers_the_conversation_id_to_the_command_when_it_is_given(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -533,7 +533,7 @@ class TestConversationId:
                 "c-42"
             ]
 
-    async def test_entrega_none_cuando_no_se_indica_conversation_id(
+    async def test_delivers_none_when_no_conversation_id_is_given(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -552,7 +552,7 @@ class TestConversationId:
             assert [command.conversation_id for command in conversation_recorder.commands] == [None]
 
     @pytest.mark.parametrize("value", ["x" * 129, ""])
-    async def test_responde_422_cuando_el_conversation_id_esta_fuera_de_limites(
+    async def test_responds_422_when_the_conversation_id_is_out_of_bounds(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity, value: str
     ) -> None:
         """Out-of-bound values are refused at decode, before any run is admitted."""
@@ -566,10 +566,10 @@ class TestConversationId:
             assert response.json()["interaction_id"] is None
 
 
-class TestHookEnHttp:
+class TestHookOverHttp:
     """The output hook seen from the wire: ids, results and failures (AC13)."""
 
-    async def test_devuelve_interaction_id_y_hook_result_cuando_el_hook_completa(
+    async def test_returns_the_interaction_id_and_the_hook_result_when_the_hook_completes(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -592,7 +592,7 @@ class TestHookEnHttp:
                 body["interaction_id"]
             ]
 
-    async def test_emite_final_con_el_resultado_del_hook_cuando_se_hace_stream(
+    async def test_emits_final_with_the_hooks_result_when_it_streams(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -627,7 +627,7 @@ class TestHookEnHttp:
             assert len(final["interaction_id"]) == _INTERACTION_ID_LENGTH
             assert final["hook_result"] == {"triage_id": final["interaction_id"]}
 
-    async def test_responde_500_hook_failed_con_interaction_id_cuando_el_hook_lanza(
+    async def test_responds_500_hook_failed_with_the_interaction_id_when_the_hook_raises(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -650,7 +650,7 @@ class TestHookEnHttp:
             assert body == {"code": "HOOK_FAILED", "message": HOOK_FAILED_MESSAGE}
             assert "secret detail" not in response.text
 
-    async def test_emite_error_con_interaction_id_cuando_el_hook_lanza_en_stream(
+    async def test_emits_an_error_with_the_interaction_id_when_the_hook_raises_in_stream(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -673,7 +673,7 @@ class TestHookEnHttp:
             assert error == {"code": "HOOK_FAILED", "message": HOOK_FAILED_MESSAGE}
             assert "secret detail" not in response.text
 
-    async def test_confirma_una_vez_y_libera_el_permiso_cuando_el_cliente_abandona_durante_el_hook(
+    async def test_commits_once_and_releases_the_slot_when_the_client_abandons_during_the_hook(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -711,7 +711,7 @@ class TestHookEnHttp:
         assert conversation_deps.uow.log == ["begin", "commit", "begin", "commit"]
         assert "aclose" not in caplog.text
 
-    async def test_responde_403_cuando_las_reglas_del_hook_rechazan(
+    async def test_responds_403_when_the_hooks_rules_refuse(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -734,10 +734,10 @@ class TestHookEnHttp:
             assert len(body["interaction_id"]) == _INTERACTION_ID_LENGTH
 
 
-class TestSinHistorialEnElCable:
+class TestNoHistoryOverTheWire:
     """A run's new messages never reach the wire (006 AC13)."""
 
-    async def test_responde_solo_las_cuatro_claves_cuando_el_final_lleva_messages(
+    async def test_responds_with_only_the_four_keys_when_the_final_carries_messages(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """``/run`` projects the result explicitly: ``messages`` cannot leak as base64."""
@@ -752,7 +752,7 @@ class TestSinHistorialEnElCable:
             assert response.status_code == 200
             assert set(response.json()) == _RESULT_KEYS
 
-    async def test_emite_final_con_las_cuatro_claves_cuando_el_final_lleva_messages(
+    async def test_emits_final_with_the_four_keys_when_the_final_carries_messages(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The ``final`` frame keeps its published shape whatever the event carries."""
@@ -768,10 +768,10 @@ class TestSinHistorialEnElCable:
             assert set(_final_frame(response.text)) == _RESULT_KEYS
 
 
-class TestLoaderEnHttp:
+class TestLoaderOverHttp:
     """The conversation loader seen from the wire: failures and the caller (006 AC13)."""
 
-    async def test_responde_500_con_el_texto_fijo_cuando_el_loader_falla(
+    async def test_responds_500_with_the_fixed_text_when_the_loader_fails(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -798,7 +798,7 @@ class TestLoaderEnHttp:
                 "message": CONVERSATION_LOAD_FAILED_MESSAGE,
             }
 
-    async def test_emite_un_unico_error_cuando_el_loader_falla_en_stream(
+    async def test_emits_a_single_error_when_the_loader_fails_in_stream(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -825,7 +825,7 @@ class TestLoaderEnHttp:
                 "message": CONVERSATION_LOAD_FAILED_MESSAGE,
             }
 
-    async def test_emite_un_unico_error_cuando_el_loader_agota_su_tiempo_en_stream(
+    async def test_emits_a_single_error_when_the_loader_times_out_in_stream(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -852,7 +852,7 @@ class TestLoaderEnHttp:
                 "message": CONVERSATION_LOAD_TIMEOUT_MESSAGE,
             }
 
-    async def test_responde_403_cuando_las_reglas_del_loader_rechazan(
+    async def test_responds_403_when_the_loaders_rules_refuse(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -876,7 +876,7 @@ class TestLoaderEnHttp:
             assert body["code"] == "UNAUTHORIZED"
             assert len(body["interaction_id"]) == _INTERACTION_ID_LENGTH
 
-    async def test_carga_como_anonymous_cuando_el_endpoint_permite_anonimos(
+    async def test_loads_as_anonymous_when_the_endpoint_allows_anonymous(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -898,10 +898,10 @@ class TestLoaderEnHttp:
             assert conversation_recorder.load_callers == [ANONYMOUS]
 
 
-class TestTopeDeCuerpo:
+class TestBodyCap:
     """The prompt cap is enforced while reading, never from the header (T088)."""
 
-    async def test_responde_413_cuando_el_cuerpo_supera_el_tope(
+    async def test_responds_413_when_the_body_exceeds_the_cap(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """An oversized honest body is rejected with 413."""
@@ -912,7 +912,7 @@ class TestTopeDeCuerpo:
 
             assert response.status_code == 413
 
-    async def test_codifica_prompt_too_large_cuando_el_cuerpo_supera_el_tope(
+    async def test_codes_prompt_too_large_when_the_body_exceeds_the_cap(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The 413 body carries the stable ``PROMPT_TOO_LARGE`` code."""
@@ -923,7 +923,7 @@ class TestTopeDeCuerpo:
 
             assert response.json()["code"] == "PROMPT_TOO_LARGE"
 
-    async def test_responde_413_cuando_el_content_length_miente(
+    async def test_responds_413_when_the_content_length_lies(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A body larger than its declared length is still rejected while reading."""
@@ -945,7 +945,7 @@ class TestTopeDeCuerpo:
             assert status == 413
 
 
-class TestMapeoDeErrores:
+class TestErrorMapping:
     """Run-error codes map to the published status codes (contract table)."""
 
     @pytest.mark.parametrize(
@@ -965,7 +965,7 @@ class TestMapeoDeErrores:
             (AgentRunErrorCode.COST_NOT_MEASURABLE, 500),
         ],
     )
-    async def test_mapea_el_status_cuando_la_ejecucion_falla(
+    async def test_maps_the_status_when_the_run_fails(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -993,7 +993,7 @@ class TestStream:
             FinalEvent(output={"answer": "42"}, usage=DEFAULT_USAGE),
         )
 
-    async def test_responde_text_event_stream_cuando_la_identidad_es_valida(
+    async def test_responds_text_event_stream_when_the_identity_is_valid(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The streaming endpoint advertises the SSE media type."""
@@ -1005,7 +1005,7 @@ class TestStream:
 
             assert response.headers["content-type"].startswith("text/event-stream")
 
-    async def test_emite_las_tramas_en_orden_cuando_la_identidad_es_valida(
+    async def test_emits_the_frames_in_order_when_the_identity_is_valid(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """Frames arrive in script order and end in the single terminal event."""
@@ -1017,7 +1017,7 @@ class TestStream:
 
             assert _sse_names(response.text) == ["text_delta", "final"]
 
-    async def test_responde_401_cuando_falla_antes_del_primer_byte(
+    async def test_responds_401_when_it_fails_before_the_first_byte(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A pre-stream failure is a status code, never an SSE frame."""
@@ -1026,7 +1026,7 @@ class TestStream:
 
             assert response.status_code == 401
 
-    async def test_emite_error_en_banda_cuando_falla_tras_el_primer_byte(
+    async def test_emits_an_in_band_error_when_it_fails_after_the_first_byte(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A failure after the first byte travels in-band as an ``error`` frame."""
@@ -1044,7 +1044,7 @@ class TestStream:
             assert _sse_names(response.text) == ["text_delta", "error"]
 
 
-class TestTrazaDelStream:
+class TestStreamTracing:
     """``POST /stream`` is attributed: exactly one agent span, never one per delta."""
 
     @staticmethod
@@ -1065,7 +1065,7 @@ class TestTrazaDelStream:
     ) -> list[LifecycleEvent]:
         """Drive one full ``/stream`` request and return the events it emitted."""
         recorder = RecordingObserver()
-        engine = ScriptedEngine(script=TestTrazaDelStream._script())
+        engine = ScriptedEngine(script=TestStreamTracing._script())
         async with _serving(
             deps=deps,
             container=container,
@@ -1082,7 +1082,7 @@ class TestTrazaDelStream:
             ]
         return recorder.events
 
-    async def test_emite_un_unico_span_de_agente_cuando_atiende_un_stream(
+    async def test_emits_a_single_agent_span_when_serving_a_stream(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """One run is one span: three deltas do not become three spans."""
@@ -1095,7 +1095,7 @@ class TestTrazaDelStream:
         ]
         assert len(starts) == 1
 
-    async def test_cierra_el_span_cuando_acaba_el_stream(
+    async def test_closes_the_span_when_the_stream_ends(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The span closes when the generator is exhausted, not when the handler returns."""
@@ -1146,7 +1146,7 @@ class TestTrazaDelStream:
         }
         await app(scope, receive, send)
 
-    async def test_cierra_el_span_cuando_el_cliente_abandona_el_stream(
+    async def test_closes_the_span_when_the_client_abandons_the_stream(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A disconnect terminates the span: an abandoned stream leaks no open span."""
@@ -1174,7 +1174,7 @@ class TestTrazaDelStream:
         assert agent_kinds[0] is EventKind.START
         assert agent_kinds[-1] in (EventKind.END, EventKind.ERROR)
 
-    async def test_atribuye_el_sujeto_cuando_atiende_un_stream(
+    async def test_attributes_the_subject_when_serving_a_stream(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The span carries who ran what, over which route: an audit needs all of it."""
@@ -1338,7 +1338,7 @@ class TestHealth:
             response = await client.get(path)
         return response
 
-    async def test_omite_checks_cuando_el_llamador_es_anonimo(
+    async def test_omits_checks_when_the_caller_is_anonymous(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An anonymous caller gets the aggregate only (FR-029c)."""
@@ -1351,7 +1351,7 @@ class TestHealth:
 
             assert "checks" not in response.json()
 
-    async def test_no_revela_dependencias_cuando_el_llamador_es_anonimo(
+    async def test_reveals_no_dependency_when_the_caller_is_anonymous(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """No dependency identifier appears anywhere in the anonymous body."""
@@ -1365,7 +1365,7 @@ class TestHealth:
             assert "tools.internal" not in body
             assert "mcp:" not in body
 
-    async def test_devuelve_checks_cuando_el_llamador_esta_autenticado(
+    async def test_returns_checks_when_the_caller_is_authenticated(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A verified caller gets the per-dependency breakdown."""
@@ -1378,7 +1378,7 @@ class TestHealth:
 
             assert "checks" in response.json()
 
-    async def test_responde_503_cuando_el_agente_esta_no_disponible(
+    async def test_responds_503_when_the_agent_is_unavailable(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """An ``unavailable`` aggregate is reported with a 503 status."""
@@ -1392,7 +1392,7 @@ class TestHealth:
 
             assert response.status_code == 503
 
-    async def test_reporta_probing_cuando_la_primera_sonda_no_ha_terminado(
+    async def test_reports_probing_when_the_first_probe_has_not_finished(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """Before the first probe completes the status is ``degraded``/``probing``."""
@@ -1408,7 +1408,7 @@ class TestHealth:
 
             assert (body["status"], body["detail"]) == ("degraded", "probing")
 
-    async def test_no_bloquea_cuando_la_primera_sonda_no_ha_terminado(
+    async def test_does_not_block_when_the_first_probe_has_not_finished(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """The scrape never waits on the probe: it answers from the cache."""
@@ -1474,7 +1474,7 @@ if leaked:
 """
 
 
-def test_no_importa_loom_ai_cuando_la_config_no_tiene_seccion_ai(tmp_path: Path) -> None:
+def test_does_not_import_loom_ai_when_the_config_has_no_ai_section(tmp_path: Path) -> None:
     """Neither building nor describing an app without ``ai:`` imports ``loom.ai`` (T098, SC-013).
 
     Covers both routes into the pillar — ``create_app`` and the
@@ -1514,7 +1514,7 @@ _A2A_PREFIX = "/a2a"
 _A2A_BASE_URL = "https://api.example.com"
 
 
-class TestExclusionesDeAutenticacion:
+class TestAuthenticationExclusions:
     """Only the card may be excluded from authentication (T141, FR-041b)."""
 
     @staticmethod
@@ -1558,7 +1558,7 @@ class TestExclusionesDeAutenticacion:
         "excluded",
         [_A2A_PREFIX, f"{_A2A_PREFIX}/{_AGENT}", _PREFIX, f"{_PREFIX}/{_AGENT}/run"],
     )
-    async def test_falla_al_arrancar_cuando_la_exclusion_cubre_una_invocacion(
+    async def test_fails_to_start_when_the_exclusion_covers_an_invocation(
         self, deps: StubDepsFactory, container: LoomContainer, excluded: str
     ) -> None:
         """Any exclusion under the A2A or agents prefix other than a card aborts start-up."""
@@ -1568,7 +1568,7 @@ class TestExclusionesDeAutenticacion:
         assert raised.value.issues[0].code is AgentErrorCode.AUTH_EXCLUSION_OVERLAPS_AGENTS
         assert excluded in raised.value.issues[0].message
 
-    async def test_arranca_cuando_la_unica_exclusion_es_la_card(
+    async def test_starts_when_the_only_exclusion_is_the_card(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The card path is the one exclusion this surface accepts."""
@@ -1578,7 +1578,7 @@ class TestExclusionesDeAutenticacion:
             exclude_paths=(card_path(_AGENT, prefix=_A2A_PREFIX),),
         )
 
-    async def test_arranca_cuando_la_exclusion_no_toca_los_agentes(
+    async def test_starts_when_the_exclusion_does_not_touch_the_agents(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Exclusions outside both prefixes are none of this surface's business."""

@@ -249,10 +249,10 @@ def _bearer() -> dict[str, str]:
 
 
 @pytest.mark.usefixtures("fake_engine", "manifest")
-class TestAppSoloAgentes:
+class TestAgentsOnlyApp:
     """AC4: a manifest with use cases and agents alone serves them without persistence."""
 
-    def test_el_agente_ejecuta_el_caso_de_uso_por_el_executor_sin_uow(
+    def test_the_agent_runs_the_use_case_through_the_executor_without_a_uow(
         self, tmp_path: Path, executed: list[type[Any]]
     ) -> None:
         """The endpoint answers, the side effect happens once, and no UoW is involved."""

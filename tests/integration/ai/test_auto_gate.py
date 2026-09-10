@@ -147,11 +147,11 @@ def _write_project(
     return str(config_path)
 
 
-class TestAudienciaJwtDelAgente:
+class TestTheAgentsJwtAudience:
     """An agent surface must not boot where the SQL surface already refuses (§4)."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_falla_al_arrancar_cuando_el_jwt_no_valida_audience(self, tmp_path: Path) -> None:
+    def test_fails_to_start_when_the_jwt_does_not_validate_audience(self, tmp_path: Path) -> None:
         """Without ``aud`` a token minted for a sibling service drives every capability."""
         config_path = _write_project(
             tmp_path,
@@ -163,7 +163,7 @@ class TestAudienciaJwtDelAgente:
             create_app(config_path)
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_nombra_el_agente_cuando_el_jwt_no_valida_audience(self, tmp_path: Path) -> None:
+    def test_names_the_agent_when_the_jwt_does_not_validate_audience(self, tmp_path: Path) -> None:
         """The operator is told which agent is exposed, not which connection."""
         config_path = _write_project(
             tmp_path,
@@ -177,7 +177,7 @@ class TestAudienciaJwtDelAgente:
         assert _AGENT in str(failure.value)
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_arranca_cuando_el_jwt_valida_audience(self, tmp_path: Path) -> None:
+    def test_starts_when_the_jwt_validates_audience(self, tmp_path: Path) -> None:
         """A validated ``aud`` is all the gate asks for."""
         config_path = _write_project(
             tmp_path,
@@ -198,7 +198,7 @@ _A2A_SECTION: dict[str, Any] = {
 _HTTP_OFF: dict[str, Any] = {"enabled": False, "auth": "identity"}
 
 
-class TestAudienciaJwtDelAgentePublicadoPorA2a:
+class TestTheJwtAudienceOfTheAgentPublishedOverA2a:
     """The public A2A surface is gated at least as strictly as the HTTP one (§4).
 
     An agent in ``ai.a2a.expose`` is announced to the internet with a card
@@ -208,7 +208,7 @@ class TestAudienciaJwtDelAgentePublicadoPorA2a:
     """
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_falla_al_arrancar_cuando_el_jwt_no_valida_audience(self, tmp_path: Path) -> None:
+    def test_fails_to_start_when_the_jwt_does_not_validate_audience(self, tmp_path: Path) -> None:
         """Publishing over A2A alone is enough to require the ``aud`` gate."""
         config_path = _write_project(
             tmp_path,
@@ -221,7 +221,7 @@ class TestAudienciaJwtDelAgentePublicadoPorA2a:
             create_app(config_path)
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_nombra_el_agente_cuando_el_jwt_no_valida_audience(self, tmp_path: Path) -> None:
+    def test_names_the_agent_when_the_jwt_does_not_validate_audience(self, tmp_path: Path) -> None:
         """The operator is told which exposed agent blocks start-up."""
         config_path = _write_project(
             tmp_path,
@@ -236,7 +236,7 @@ class TestAudienciaJwtDelAgentePublicadoPorA2a:
         assert _AGENT in str(failure.value)
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_arranca_cuando_el_jwt_valida_audience(self, tmp_path: Path) -> None:
+    def test_starts_when_the_jwt_validates_audience(self, tmp_path: Path) -> None:
         """A validated ``aud`` is all the gate asks for, here too."""
         config_path = _write_project(
             tmp_path,
@@ -248,7 +248,7 @@ class TestAudienciaJwtDelAgentePublicadoPorA2a:
         assert create_app(config_path) is not None
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_arranca_sin_audience_cuando_el_agente_publicado_es_anonimo(
+    def test_starts_without_audience_when_the_published_agent_is_anonymous(
         self, tmp_path: Path
     ) -> None:
         """An agent that verifies no caller has no ``aud`` to validate."""

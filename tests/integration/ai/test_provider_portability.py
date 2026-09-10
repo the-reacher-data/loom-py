@@ -97,7 +97,7 @@ def _vendor_free_fields(plan: AgentPlan) -> Mapping[str, Any]:
 
 
 class TestProviderPortability:
-    def test_los_planes_solo_difieren_en_inference_cuando_cambia_el_proveedor(self) -> None:
+    def test_the_plans_differ_only_in_inference_when_the_provider_changes(self) -> None:
         """SC-001: switching vendor is a configuration edit, nothing else."""
         plans = {name: _compile(target) for name, target in _TARGETS.items()}
 
@@ -105,7 +105,7 @@ class TestProviderPortability:
         for name, plan in plans.items():
             assert _vendor_free_fields(plan) == reference, f"{name} plan diverges beyond inference"
 
-    def test_cada_plan_lleva_su_binding_cuando_cambia_el_proveedor(self) -> None:
+    def test_each_plan_carries_its_own_binding_when_the_provider_changes(self) -> None:
         """SC-002: the binding — and only it — carries the vendor facts."""
         plans = {name: _compile(target) for name, target in _TARGETS.items()}
 
@@ -114,7 +114,7 @@ class TestProviderPortability:
         assert plans["openai"].inference.model == "gpt-5.2"
         assert plans["anthropic"].inference.provider == "anthropic"
 
-    def test_el_artefacto_no_nombra_proveedor_cuando_se_compila(self) -> None:
+    def test_the_artifact_names_no_provider_when_it_compiles(self) -> None:
         """FR-002: no vendor string reaches the artifact, in any field."""
         encoded = str(_spec()).lower()
 
@@ -123,7 +123,7 @@ class TestProviderPortability:
 
 
 class TestNoProviderFallback:
-    async def test_el_run_falla_y_no_se_reenruta_cuando_el_proveedor_se_agota(self) -> None:
+    async def test_the_run_fails_and_is_not_rerouted_when_the_provider_is_exhausted(self) -> None:
         """FR-019a: an exhausted provider fails the run; no vendor takeover."""
         resolved: list[InferenceTarget] = []
         plan = make_plan(retries=1)
@@ -151,7 +151,7 @@ def _rate_limited() -> Exception:
 
 
 class TestRuntimeWiring:
-    async def test_el_motor_se_construye_una_vez_por_plan_cuando_arranca_el_runtime(
+    async def test_the_engine_is_built_once_per_plan_when_the_runtime_starts(
         self,
     ) -> None:
         """``create_engine`` runs once per plan, in ``__aenter__`` (FR-026)."""

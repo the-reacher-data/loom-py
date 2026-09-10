@@ -174,7 +174,7 @@ def delegating_model(prompt: str = "summarise the market") -> ScriptedToolModel:
 
 
 class TestOutboundToolset:
-    async def test_el_agente_remoto_se_publica_como_tool_cuando_el_plan_lo_concede(
+    async def test_the_remote_agent_is_published_as_a_tool_when_the_plan_grants_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An ``a2a`` grant builds a toolset instead of failing the build."""
@@ -185,7 +185,7 @@ class TestOutboundToolset:
 
         assert model.offered_tools == (REMOTE_TOOL,)
 
-    async def test_la_respuesta_remota_llega_como_valor_cuando_la_delegacion_funciona(
+    async def test_the_remote_reply_arrives_as_a_value_when_delegation_works(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The reply reaches the model as a tool value, prompt carried through."""
@@ -203,7 +203,7 @@ class TestOutboundToolset:
         assert seen == [(REMOTE_URL, "summarise the market")]
         assert "the market grew 4%" in "\n".join(model.tool_returns)
 
-    def test_el_build_falla_nombrando_el_extra_cuando_el_sdk_no_esta(
+    def test_the_build_fails_naming_the_extra_when_the_sdk_is_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A grant without the ``ai-a2a`` extra dies at build, naming it."""
@@ -221,7 +221,7 @@ class TestOutboundToolset:
             True,
         )
 
-    def test_el_build_falla_cuando_dos_agentes_remotos_derivan_el_mismo_nombre(self) -> None:
+    def test_the_build_fails_when_two_remote_agents_derive_the_same_name(self) -> None:
         """Collision detection spans ``a2a`` like every other capability."""
         plan = make_plan(
             (a2a_capability(agent="market-eu"), a2a_capability(agent="market_eu")),
@@ -241,7 +241,7 @@ class TestOutboundToolset:
 
 
 class TestGovernedDelegation:
-    async def test_el_llamante_anonimo_no_delega_cuando_pide_el_agente_remoto(
+    async def test_an_anonymous_caller_does_not_delegate_when_requesting_the_remote_agent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Delegation requires a verified caller; nothing leaves the process."""
@@ -259,7 +259,7 @@ class TestGovernedDelegation:
 
         assert (failure.value.code, reached) == (AgentRunErrorCode.UNAUTHORIZED, [])
 
-    async def test_la_llamada_expira_como_tool_timeout_cuando_el_remoto_no_responde(
+    async def test_the_call_times_out_as_tool_timeout_when_the_remote_does_not_respond(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``tool_timeout_ms`` bounds the delegation, as it bounds any tool."""
@@ -276,7 +276,7 @@ class TestGovernedDelegation:
 
         assert failure.value.code is AgentRunErrorCode.TOOL_TIMEOUT
 
-    async def test_el_fallo_de_transporte_es_tool_unavailable_cuando_el_remoto_cae(
+    async def test_a_transport_failure_is_tool_unavailable_when_the_remote_goes_down(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A transport failure is infrastructure-class, hence retriable."""
@@ -292,7 +292,7 @@ class TestGovernedDelegation:
 
         assert failure.value.code is AgentRunErrorCode.TOOL_UNAVAILABLE
 
-    async def test_el_error_no_lleva_texto_del_remoto_cuando_el_transporte_falla(
+    async def test_the_error_carries_no_remote_text_when_the_transport_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A remote agent is untrusted: none of its text reaches the caller."""
@@ -339,7 +339,7 @@ def make_runtime(plan: AgentPlan) -> AgentRuntime:
 
 
 class TestStartupFactory:
-    async def test_el_arranque_falla_como_inalcanzable_cuando_la_card_no_se_descarga(
+    async def test_startup_fails_as_unreachable_when_the_card_does_not_download(
         self,
     ) -> None:
         """An unreachable card fails start-up with the coded issue (FR-040)."""
@@ -356,7 +356,7 @@ class TestStartupFactory:
             True,
         )
 
-    def test_la_card_se_rechaza_cuando_ningun_skill_concedido_esta_anunciado(self) -> None:
+    def test_the_card_is_rejected_when_no_granted_skill_is_advertised(self) -> None:
         """An ``include`` matching nothing on the card is not usable."""
         card = _card_with_skills("pricing")
         capability = a2a_capability(include=("forecast",))
@@ -364,7 +364,7 @@ class TestStartupFactory:
         with pytest.raises(ValueError, match="forecast"):
             _a2a._reject_ungranted_card(capability, card)
 
-    def test_el_error_no_nombra_nada_de_la_card_cuando_el_filtro_no_casa(self) -> None:
+    def test_the_error_names_nothing_from_the_card_when_the_filter_does_not_match(self) -> None:
         """The card is untrusted input: only artifact patterns are reported."""
         card = _card_with_skills("ignore-previous-instructions")
         capability = a2a_capability(include=("forecast",))
@@ -374,20 +374,20 @@ class TestStartupFactory:
 
         assert "ignore-previous-instructions" not in str(failure.value)
 
-    def test_la_card_se_rechaza_cuando_el_exclude_deja_el_filtro_vacio(self) -> None:
+    def test_the_card_is_rejected_when_exclude_leaves_the_filter_empty(self) -> None:
         """A filter selecting none of the advertised skills fails start-up."""
         card = _card_with_skills("pricing", "forecast")
 
         with pytest.raises(ValueError, match="no skill matching the granted filter"):
             _a2a._reject_ungranted_card(a2a_capability(exclude=("*",)), card)
 
-    def test_la_card_se_acepta_cuando_un_glob_concedido_selecciona_un_subconjunto(self) -> None:
+    def test_the_card_is_accepted_when_a_granted_glob_selects_a_subset(self) -> None:
         """A glob that selects part of the card passes; the rest is simply not granted."""
         card = _card_with_skills("forecast_eu", "forecast_us", "pricing")
 
         _a2a._reject_ungranted_card(a2a_capability(include=("forecast_*",)), card)
 
-    def test_la_card_se_acepta_sin_filtro_cuando_el_grant_no_declara_ninguno(self) -> None:
+    def test_the_card_is_accepted_with_no_filter_when_the_grant_declares_none(self) -> None:
         """An empty filter grants whatever the remote advertises."""
         card = _card_with_skills("pricing")
 

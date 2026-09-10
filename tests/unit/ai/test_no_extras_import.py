@@ -39,7 +39,7 @@ def _run_in_clean_interpreter(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_import_loom_ai_funciona_cuando_no_hay_extras_instalados() -> None:
+def test_import_loom_ai_works_with_no_extras_installed() -> None:
     """``import loom.ai`` must succeed with no optional engine extra installed."""
     result = _run_in_clean_interpreter(_IMPORT_AI_SCRIPT)
 

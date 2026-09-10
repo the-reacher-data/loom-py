@@ -333,32 +333,32 @@ def _import_roots(source_path: Path) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_card_declara_protocol_version_cuando_se_construye() -> None:
+def test_card_declares_the_protocol_version() -> None:
     """The card announces the implemented A2A protocol version."""
     assert _card()["protocolVersion"] == PROTOCOL_VERSION
 
 
-def test_card_publica_name_cuando_el_plan_tiene_nombre() -> None:
+def test_card_publishes_the_plan_name() -> None:
     """``plan.name`` is published verbatim as the card name."""
     assert _card()["name"] == _AGENT_NAME
 
 
-def test_card_publica_description_cuando_el_plan_tiene_descripcion() -> None:
+def test_card_publishes_the_plan_description() -> None:
     """``plan.description`` is published verbatim as the card description."""
     assert _card()["description"] == _AGENT_DESCRIPTION
 
 
-def test_card_deriva_version_cuando_el_plan_declara_spec_version() -> None:
+def test_card_derives_version_as_a_string_from_spec_version() -> None:
     """``version`` is the string form of ``plan.spec_version``, never an int."""
     assert _card(_plan(spec_version=7))["version"] == "7"
 
 
-def test_card_deriva_url_cuando_la_config_declara_base_url() -> None:
+def test_card_derives_url_from_the_configured_base_url() -> None:
     """``url`` is the agent's public endpoint under the A2A prefix."""
     assert _card()["url"] == f"{_BASE_URL}{DEFAULT_A2A_PREFIX}/{_AGENT_NAME}"
 
 
-def test_card_declara_capabilities_exactas_cuando_se_construye() -> None:
+def test_card_declares_the_exact_transport_capabilities() -> None:
     """The advertised transport capabilities match what the runtime serves (FR-039b)."""
     assert _card()["capabilities"] == {
         "streaming": True,
@@ -368,44 +368,44 @@ def test_card_declara_capabilities_exactas_cuando_se_construye() -> None:
 
 
 @pytest.mark.parametrize("unsupported", ["pushNotifications", "stateTransitionHistory"])
-def test_card_no_anuncia_capacidad_cuando_no_hay_estado_de_tarea(unsupported: str) -> None:
+def test_card_does_not_advertise_task_state_capabilities(unsupported: str) -> None:
     """Task-state features are absent, so the card must not advertise them (R-006)."""
     assert _capability_named(_card(), unsupported) is False
 
 
-def test_card_declara_default_input_modes_cuando_se_construye() -> None:
+def test_card_declares_default_input_modes() -> None:
     """The agent accepts plain text prompts."""
     assert _card()["defaultInputModes"] == ["text/plain"]
 
 
-def test_card_declara_default_output_modes_cuando_se_construye() -> None:
+def test_card_declares_default_output_modes() -> None:
     """The agent answers with the structured JSON output it was compiled for."""
     assert _card()["defaultOutputModes"] == ["application/json"]
 
 
-def test_card_publica_una_unica_skill_cuando_el_plan_es_un_agente() -> None:
+def test_card_publishes_exactly_one_skill() -> None:
     """One plan projects to exactly one skill."""
     skills = _card()["skills"]
     assert isinstance(skills, Sequence)
     assert len(skills) == 1
 
 
-def test_card_usa_el_nombre_del_plan_como_skill_id_cuando_se_construye() -> None:
+def test_card_uses_the_plan_name_as_the_skill_id() -> None:
     """``skills[].id`` is the agent name."""
     assert _only_skill(_card())["id"] == _AGENT_NAME
 
 
-def test_card_usa_el_nombre_del_plan_como_skill_name_cuando_se_construye() -> None:
+def test_card_uses_the_plan_name_as_the_skill_name() -> None:
     """``skills[].name`` is the agent name."""
     assert _only_skill(_card())["name"] == _AGENT_NAME
 
 
-def test_card_usa_la_descripcion_del_plan_como_skill_description_cuando_se_construye() -> None:
+def test_card_uses_the_plan_description_as_the_skill_description() -> None:
     """``skills[].description`` is the agent description."""
     assert _only_skill(_card())["description"] == _AGENT_DESCRIPTION
 
 
-def test_card_usa_tags_constantes_cuando_el_plan_trae_metadata() -> None:
+def test_card_uses_fixed_skill_tags_regardless_of_metadata() -> None:
     """``skills[].tags`` is a fixed constant, never derived from ``metadata``."""
     assert _only_skill(_card(_canary_plan()))["tags"] == list(SKILL_TAGS)
 
@@ -420,14 +420,14 @@ def test_card_usa_tags_constantes_cuando_el_plan_trae_metadata() -> None:
         ("something-unknown", {}),
     ],
 )
-def test_card_deriva_security_schemes_cuando_hay_mecanismo(
+def test_card_derives_security_schemes_from_the_mechanism(
     mechanism: str | None, expected: Mapping[str, object]
 ) -> None:
     """``securitySchemes`` follows the mechanism in use; an undescribable one is omitted."""
     assert _card(mechanism=mechanism)["securitySchemes"] == expected
 
 
-def test_card_expone_exactamente_las_claves_del_contrato_cuando_se_construye() -> None:
+def test_card_exposes_exactly_the_contract_key_set() -> None:
     """The card carries the contract's key set and nothing else."""
     assert frozenset(_card().keys()) == _EXPECTED_CARD_KEYS
 
@@ -438,13 +438,13 @@ def test_card_expone_exactamente_las_claves_del_contrato_cuando_se_construye() -
 
 
 @pytest.mark.parametrize("canary", _CANARY_STRINGS)
-def test_card_no_publica_interno_cuando_el_plan_lo_contiene(canary: str) -> None:
+def test_card_does_not_leak_internal_values_from_the_plan(canary: str) -> None:
     """No instruction, model binding, metadata label or capability wiring reaches the card."""
     assert canary not in json.dumps(_card(_canary_plan(), mechanism="jwt"))
 
 
 @pytest.mark.parametrize("internal_key", _INTERNAL_KEYS)
-def test_card_no_expone_seccion_interna_cuando_se_serializa(internal_key: str) -> None:
+def test_card_does_not_expose_internal_plan_sections(internal_key: str) -> None:
     """Internal plan sections are not projected under any key of the card."""
     assert internal_key not in json.dumps(_card(_canary_plan(), mechanism="jwt"))
 
@@ -455,7 +455,7 @@ def test_card_no_expone_seccion_interna_cuando_se_serializa(internal_key: str) -
 
 
 @pytest.mark.parametrize("module_file", _PURE_MODULE_FILES)
-def test_modulo_no_importa_transporte_cuando_se_analiza_su_fuente(module_file: str) -> None:
+def test_projection_module_imports_no_transport_dependency(module_file: str) -> None:
     """The projection is pure: no A2A SDK and no web framework on its import path."""
     source = _REPO_ROOT / "src" / "loom" / "ai" / "a2a" / module_file
 
@@ -467,33 +467,33 @@ def test_modulo_no_importa_transporte_cuando_se_analiza_su_fuente(module_file: s
 # ---------------------------------------------------------------------------
 
 
-def test_text_delta_proyecta_un_unico_artifact_update_cuando_se_proyecta() -> None:
+def test_text_delta_projects_a_single_artifact_update() -> None:
     """``text_delta`` maps one-for-one to an artifact update."""
     projected = _project([TextDeltaEvent(text="hello")])
 
     assert [event["kind"] for event in projected] == ["artifact-update"]
 
 
-def test_text_delta_publica_el_texto_cuando_se_proyecta() -> None:
+def test_text_delta_publishes_the_text_unmodified() -> None:
     """The model's text is passed through unmodified."""
     assert _texts_in(_project([TextDeltaEvent(text="hello")])) == ["hello"]
 
 
-def test_text_delta_marca_append_cuando_se_proyecta() -> None:
+def test_text_delta_marks_the_artifact_as_appended_and_open() -> None:
     """Text chunks append to the open artifact and never close it."""
     event = _project([TextDeltaEvent(text="hello")])[0]
 
     assert (event["append"], event["lastChunk"]) == (True, False)
 
 
-def test_text_delta_correlaciona_la_tarea_cuando_se_proyecta() -> None:
+def test_text_delta_carries_the_task_and_context_ids() -> None:
     """Every projected event carries the task and context ids of the run."""
     event = _project([TextDeltaEvent(text="hello")])[0]
 
     assert (event["taskId"], event["contextId"]) == (_TASK_ID, _CONTEXT_ID)
 
 
-def test_tool_call_proyecta_status_working_cuando_se_proyecta() -> None:
+def test_tool_call_projects_a_non_final_working_status() -> None:
     """``tool_call`` maps to a non-final ``working`` status update."""
     event = _project([ToolCallEvent(tool="t", call_id="c1", arguments={})])[0]
 
@@ -504,7 +504,7 @@ def test_tool_call_proyecta_status_working_cuando_se_proyecta() -> None:
     )
 
 
-def test_tool_call_publica_solo_un_ordinal_opaco_cuando_se_proyecta() -> None:
+def test_tool_call_publishes_only_an_opaque_step_ordinal() -> None:
     """The only text a tool call publishes is its opaque ordinal (FR-030a)."""
     projected = _project([ToolCallEvent(tool="t", call_id="c1", arguments={})])
 
@@ -512,7 +512,7 @@ def test_tool_call_publica_solo_un_ordinal_opaco_cuando_se_proyecta() -> None:
 
 
 @pytest.mark.parametrize("canary", ["canary.usecase.key", "CANARY-ARG", "c1"])
-def test_tool_call_no_publica_cableado_de_capacidad_cuando_se_proyecta(canary: str) -> None:
+def test_tool_call_does_not_leak_capability_wiring(canary: str) -> None:
     """Neither the capability key, its arguments nor the correlation id are projected."""
     projected = _project(
         [
@@ -527,7 +527,7 @@ def test_tool_call_no_publica_cableado_de_capacidad_cuando_se_proyecta(canary: s
     assert canary not in json.dumps(projected)
 
 
-def test_ordinal_crece_cuando_hay_varias_llamadas_a_herramienta() -> None:
+def test_step_ordinal_increases_across_consecutive_tool_calls() -> None:
     """Consecutive tool calls are numbered 1-based against the iteration ceiling."""
     calls: list[AgentEvent] = [
         ToolCallEvent(tool="t", call_id=f"c{index}", arguments={}) for index in range(3)
@@ -540,7 +540,7 @@ def test_ordinal_crece_cuando_hay_varias_llamadas_a_herramienta() -> None:
     ]
 
 
-def test_tool_result_proyecta_status_working_cuando_se_proyecta() -> None:
+def test_tool_result_projects_a_single_non_final_working_status() -> None:
     """``tool_result`` maps to a single non-final ``working`` status update."""
     projected = _project([ToolResultEvent(call_id="c1", ok=True, summary="done")])
 
@@ -549,7 +549,7 @@ def test_tool_result_proyecta_status_working_cuando_se_proyecta() -> None:
     ]
 
 
-def test_tool_result_no_lleva_mensaje_cuando_se_proyecta() -> None:
+def test_tool_result_carries_no_message() -> None:
     """A tool result carries no summary and no payload — only the state change."""
     event = _project([ToolResultEvent(call_id="c1", ok=True, summary="done")])[0]
 
@@ -557,35 +557,35 @@ def test_tool_result_no_lleva_mensaje_cuando_se_proyecta() -> None:
 
 
 @pytest.mark.parametrize("canary", ["CANARY-SUMMARY", "c1"])
-def test_tool_result_no_publica_resumen_ni_correlacion_cuando_se_proyecta(canary: str) -> None:
+def test_tool_result_does_not_leak_summary_or_correlation_id(canary: str) -> None:
     """The tool's outcome summary and correlation id stay inside the process."""
     projected = _project([ToolResultEvent(call_id="c1", ok=True, summary="CANARY-SUMMARY")])
 
     assert canary not in json.dumps(projected)
 
 
-def test_final_proyecta_artifact_y_status_en_orden_cuando_termina_bien() -> None:
+def test_final_projects_artifact_then_status_on_success() -> None:
     """``final`` emits the output artifact first, then the terminal status."""
     projected = _project([FinalEvent(output={"answer": 42}, usage=_usage())])
 
     assert [event["kind"] for event in projected] == ["artifact-update", "status-update"]
 
 
-def test_final_publica_el_output_cuando_termina_bien() -> None:
+def test_final_publishes_the_validated_output() -> None:
     """The validated output travels in the terminal artifact."""
     projected = _project([FinalEvent(output={"answer": 42}, usage=_usage())])
 
     assert "42" in json.dumps(projected[0])
 
 
-def test_final_cierra_el_stream_como_completed_cuando_termina_bien() -> None:
+def test_final_closes_the_stream_as_completed() -> None:
     """The terminal status of a successful run is ``completed`` and final."""
     status_event = _project([FinalEvent(output={"answer": 42}, usage=_usage())])[1]
 
     assert (_status_of(status_event)["state"], status_event["final"]) == ("completed", True)
 
 
-def test_final_no_publica_messages_cuando_termina_bien() -> None:
+def test_final_does_not_publish_the_run_messages() -> None:
     """The run's new messages stay inside the process: no key, no base64 of the bytes."""
     projected = _project([FinalEvent(output={"answer": 42}, usage=_usage(), messages=b"x")])
 
@@ -594,7 +594,7 @@ def test_final_no_publica_messages_cuando_termina_bien() -> None:
     assert base64.b64encode(b"x").decode() not in encoded
 
 
-def test_error_proyecta_un_unico_status_failed_cuando_falla_el_run() -> None:
+def test_error_projects_a_single_terminal_failed_status() -> None:
     """``error`` emits exactly one terminal ``failed`` status update."""
     projected = _project(
         [ErrorEvent(code=AgentRunErrorCode.TOOL_TIMEOUT, message="tool timed out")]
@@ -605,7 +605,7 @@ def test_error_proyecta_un_unico_status_failed_cuando_falla_el_run() -> None:
     ]
 
 
-def test_error_publica_el_codigo_en_metadata_cuando_falla_el_run() -> None:
+def test_error_publishes_the_failure_code_in_metadata() -> None:
     """The stable failure code travels in metadata so a client can branch on it."""
     projected = _project(
         [ErrorEvent(code=AgentRunErrorCode.TOOL_TIMEOUT, message="tool timed out")]
@@ -619,29 +619,29 @@ def test_error_publica_el_codigo_en_metadata_cuando_falla_el_run() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_url_compone_prefijo_y_nombre_cuando_hay_base_url() -> None:
+def test_agent_url_composes_prefix_and_agent_name() -> None:
     """The agent endpoint is the agent name under the A2A prefix."""
     assert agent_url(_BASE_URL, _AGENT_NAME) == f"{_BASE_URL}{DEFAULT_A2A_PREFIX}/{_AGENT_NAME}"
 
 
-def test_agent_url_es_identica_cuando_la_base_url_acaba_en_barra() -> None:
+def test_agent_url_ignores_a_trailing_slash_in_the_base_url() -> None:
     """A trailing slash in the configured base URL is a typo, not a different agent."""
     assert agent_url(f"{_BASE_URL}/", _AGENT_NAME) == agent_url(_BASE_URL, _AGENT_NAME)
 
 
-def test_agent_url_respeta_el_prefijo_cuando_se_indica_uno() -> None:
+def test_agent_url_respects_a_custom_prefix() -> None:
     """A deployment may mount the A2A surface under its own prefix."""
     assert agent_url(_BASE_URL, _AGENT_NAME, prefix="/agents") == f"{_BASE_URL}/agents/market"
 
 
-def test_card_path_es_el_well_known_del_agente_cuando_se_construye() -> None:
+def test_card_path_is_the_agent_well_known_path() -> None:
     """The card lives at the well-known path under the agent's own prefix."""
     assert card_path(_AGENT_NAME) == (
         f"{DEFAULT_A2A_PREFIX}/{_AGENT_NAME}/.well-known/agent-card.json"
     )
 
 
-def test_card_path_respeta_el_prefijo_cuando_se_indica_uno() -> None:
+def test_card_path_respects_a_custom_prefix() -> None:
     """The well-known path follows the configured prefix, so the exclusion can match it."""
     assert card_path(_AGENT_NAME, prefix="/agents") == (
         "/agents/market/.well-known/agent-card.json"

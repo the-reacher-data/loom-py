@@ -37,23 +37,23 @@ def _bedrock_admits_web_search() -> bool:
 _BEDROCK_ADMITS_WEB_SEARCH = _bedrock_admits_web_search()
 
 
-def test_el_mapa_del_motor_cubre_exactamente_los_nombres_del_artefacto() -> None:
+def test_the_engines_map_covers_exactly_the_artifacts_names() -> None:
     """Every name the artifact may declare indexes a class, and no other does."""
     from loom.ai.declarative import NATIVE_TOOLS
 
     assert set(TOOL_CLASSES) == set(NATIVE_TOOLS)
 
 
-def test_cada_clase_declara_el_mismo_nombre_que_la_indexa() -> None:
+def test_each_class_declares_the_same_name_that_indexes_it() -> None:
     """The engine's own identifier for each tool matches the loom name."""
     assert all(TOOL_CLASSES[name]().kind == name for name in TOOL_CLASSES)
 
 
 @pytest.mark.skipif(
     _BEDROCK_ADMITS_WEB_SEARCH,
-    reason="bedrock ya admite web_search: revisar la tabla de docs/ai/artifacts.md",
+    reason="bedrock already admits web_search: review the table in docs/ai/artifacts.md",
 )
-def test_bedrock_no_admite_busqueda_web_y_si_ejecucion_de_codigo() -> None:
+def test_bedrock_does_not_admit_web_search_but_does_admit_code_execution() -> None:
     """The truth comes from the model class, not from a table in loom."""
     target = InferenceTarget(provider="bedrock", model="anthropic.claude-x", region="eu-west-1")
 
@@ -64,14 +64,14 @@ def test_bedrock_no_admite_busqueda_web_y_si_ejecucion_de_codigo() -> None:
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
-def test_openai_y_anthropic_admiten_busqueda_web(provider: str) -> None:
+def test_openai_and_anthropic_admit_web_search(provider: str) -> None:
     """Both vendor classes advertise web search at class level."""
     target = InferenceTarget(provider=provider, model="a-model")
 
     assert "web_search" in supported_native_tools(target)
 
 
-def test_falla_nombrando_los_proveedores_cuando_el_vendor_es_desconocido() -> None:
+def test_fails_naming_the_providers_for_an_unknown_vendor() -> None:
     """An unknown provider is refused before any tool is considered."""
     target = InferenceTarget(provider="unheard-of", model="x")
 
@@ -81,7 +81,7 @@ def test_falla_nombrando_los_proveedores_cuando_el_vendor_es_desconocido() -> No
     assert failure.value.issues[0].code is AgentErrorCode.PROVIDER_UNKNOWN
 
 
-def test_construye_una_capacidad_por_concesion_en_el_orden_del_plan() -> None:
+def test_builds_one_capability_per_grant_in_the_plans_order() -> None:
     """Order is the artifact's, and each grant becomes exactly one capability."""
     from pydantic_ai.native_tools import CodeExecutionTool, WebSearchTool
 
@@ -95,12 +95,12 @@ def test_construye_una_capacidad_por_concesion_en_el_orden_del_plan() -> None:
     ]
 
 
-def test_no_construye_nada_cuando_el_plan_no_concede_ninguna() -> None:
+def test_builds_nothing_when_the_plan_grants_none() -> None:
     """A plan without native grants leaves the engine call untouched."""
     assert build_capabilities(_Plan(), LoomContainer()) == ()  # pyright: ignore[reportArgumentType]
 
 
-def test_el_provider_expone_el_oraculo_que_el_registro_lee() -> None:
+def test_the_provider_exposes_the_oracle_the_registry_reads() -> None:
     """The bootstrap finds the oracle through the documented handshake."""
     from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
 
@@ -110,7 +110,7 @@ def test_el_provider_expone_el_oraculo_que_el_registro_lee() -> None:
     assert "web_search" in support(InferenceTarget(provider="anthropic", model="a-model"))
 
 
-def test_el_registro_devuelve_none_cuando_el_motor_no_lo_aporta() -> None:
+def test_the_registry_returns_none_when_the_engine_does_not_provide_it() -> None:
     """An engine that serves no native grant declares no oracle."""
 
     class _Engine:
@@ -119,7 +119,7 @@ def test_el_registro_devuelve_none_cuando_el_motor_no_lo_aporta() -> None:
     assert engine_native_tool_support(_Engine()) is None
 
 
-def test_el_grant_native_no_produce_toolset_y_llega_como_capacidad() -> None:
+def test_the_native_grant_produces_no_toolset_and_arrives_as_a_capability() -> None:
     """A native grant is served as an engine capability, never as a toolset."""
 
     class _NativePlan:
@@ -133,7 +133,7 @@ def test_el_grant_native_no_produce_toolset_y_llega_como_capacidad() -> None:
     assert len(build_capabilities(plan, LoomContainer())) == 1  # pyright: ignore[reportArgumentType]
 
 
-def test_el_registro_retira_native_cuando_el_motor_no_aporta_oraculo(
+def test_the_registry_retires_native_when_the_engine_provides_no_oracle(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """An engine that cannot check a grant does not get to serve the kind."""
@@ -152,7 +152,7 @@ def test_el_registro_retira_native_cuando_el_motor_no_aporta_oraculo(
     assert "third-party" in caplog.text
 
 
-def test_el_registro_conserva_native_cuando_el_motor_lo_aporta() -> None:
+def test_the_registry_keeps_native_when_the_engine_provides_it() -> None:
     """The real engine keeps the kind, because it supplies the oracle."""
     from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
     from loom.ai.registry import engine_supported_kinds
@@ -160,7 +160,7 @@ def test_el_registro_conserva_native_cuando_el_motor_lo_aporta() -> None:
     assert "native" in engine_supported_kinds(PydanticAIEngineProvider(), "pydantic-ai")
 
 
-def test_los_kinds_anunciados_son_exactamente_los_de_la_tabla() -> None:
+def test_the_announced_kinds_are_exactly_those_of_the_table() -> None:
     """The adapter cannot announce a kind it has no builder for, or hide one it has."""
     from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
     from loom.ai.engines.pydantic_ai._capabilities import _KINDS
@@ -170,7 +170,7 @@ def test_los_kinds_anunciados_son_exactamente_los_de_la_tabla() -> None:
     assert announced == frozenset(compiled.kind for compiled in _KINDS)
 
 
-def test_falla_nombrando_el_kind_cuando_un_grant_no_tiene_builder() -> None:
+def test_fails_naming_the_kind_when_a_grant_has_no_builder() -> None:
     """A compiled grant of an unserved kind is refused, not silently dropped."""
     from loom.ai.compiler._plan import CompiledCapability
     from loom.ai.engines.pydantic_ai._capabilities import build_capabilities

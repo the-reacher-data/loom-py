@@ -85,13 +85,15 @@ def live_result() -> AgentResult:
 
 
 class TestLiveProvider:
-    def test_la_respuesta_cumple_la_forma_declarada_cuando_hay_credenciales(
+    def test_the_answer_matches_the_declared_shape_when_credentials_are_present(
         self, live_result: AgentResult
     ) -> None:
         """The provider's answer decodes through the plan's strict decoder."""
         assert isinstance(live_result.output.answer, str)  # type: ignore[attr-defined]
 
-    def test_el_usage_no_es_cero_cuando_hay_credenciales(self, live_result: AgentResult) -> None:
+    def test_the_usage_is_not_zero_when_credentials_are_present(
+        self, live_result: AgentResult
+    ) -> None:
         """A real run accounts for real tokens."""
         assert live_result.usage.requests >= 1
         assert live_result.usage.input_tokens > 0

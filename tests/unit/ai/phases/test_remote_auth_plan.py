@@ -53,7 +53,7 @@ def config_naming(ai_config_factory: Callable[..., AiConfig]) -> Callable[..., A
     return _make
 
 
-class TestElArtefactoNoCambiaEntreEntornos:
+class TestTheArtifactDoesNotChangeAcrossEnvironments:
     """Criterion: one artifact, three deployments, three clean compilations."""
 
     @pytest.mark.parametrize(
@@ -63,9 +63,9 @@ class TestElArtefactoNoCambiaEntreEntornos:
             {"headers_ref": "X-API-Key=abc123"},
             {"auth": {"kind": "oauth"}},
         ],
-        ids=["sin_credencial", "headers_ref", "estrategia"],
+        ids=["no_credential", "headers_ref", "strategy"],
     )
-    def test_compila_el_mismo_artefacto_sea_cual_sea_la_credencial(
+    def test_compiles_the_same_artifact_regardless_of_the_credential(
         self,
         artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],
@@ -77,10 +77,10 @@ class TestElArtefactoNoCambiaEntreEntornos:
         assert _mcp_capability(plan).server == _SERVER
 
 
-class TestElPlanLlevaLaCredencialResuelta:
+class TestThePlanCarriesTheResolvedCredential:
     """The name dies at compile: the plan carries the strategy, not the lookup."""
 
-    def test_no_lleva_auth_cuando_el_servidor_no_declara_ninguna(
+    def test_carries_no_auth_when_the_server_declares_none(
         self,
         artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],
@@ -90,7 +90,7 @@ class TestElPlanLlevaLaCredencialResuelta:
 
         assert _mcp_capability(plan).auth is None
 
-    def test_separa_kind_de_sus_ajustes_cuando_el_servidor_declara_estrategia(
+    def test_separates_kind_from_its_settings_when_the_server_declares_a_strategy(
         self,
         artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],
@@ -107,7 +107,7 @@ class TestElPlanLlevaLaCredencialResuelta:
             kind="static", settings=(("headers_ref", "X-API-Key=abc123"),)
         )
 
-    def test_lleva_headers_ref_cuando_el_servidor_lo_declara(
+    def test_carries_headers_ref_when_the_server_declares_it(
         self,
         artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],
@@ -143,7 +143,7 @@ def _a2a_capability(plan: AgentPlan) -> CompiledA2ACapability:
     return capability
 
 
-class TestElArtefactoA2ANoCambiaEntreEntornos:
+class TestTheA2AArtifactDoesNotChangeAcrossEnvironments:
     """Criterion 8: one artifact, three deployments, three clean compilations."""
 
     @pytest.mark.parametrize(
@@ -153,9 +153,9 @@ class TestElArtefactoA2ANoCambiaEntreEntornos:
             {"headers_ref": "X-API-Key=abc123"},
             {"auth": {"kind": "bearer", "token_ref": "a.b-c_1"}},
         ],
-        ids=["sin_credencial", "headers_ref", "estrategia"],
+        ids=["no_credential", "headers_ref", "strategy"],
     )
-    def test_compila_el_mismo_artefacto_sea_cual_sea_la_credencial(
+    def test_compiles_the_same_artifact_regardless_of_the_credential(
         self,
         a2a_artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],
@@ -167,10 +167,10 @@ class TestElArtefactoA2ANoCambiaEntreEntornos:
         assert _a2a_capability(plan).agent == _AGENT
 
 
-class TestElPlanA2ALlevaLaCredencialResuelta:
+class TestTheA2APlanCarriesTheResolvedCredential:
     """The strategy name dies at compile: the engine never re-reads configuration."""
 
-    def test_no_lleva_auth_cuando_el_agente_no_declara_ninguna(
+    def test_carries_no_auth_when_the_agent_declares_none(
         self,
         a2a_artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],
@@ -180,7 +180,7 @@ class TestElPlanA2ALlevaLaCredencialResuelta:
 
         assert _a2a_capability(plan).auth is None
 
-    def test_separa_kind_de_sus_ajustes_cuando_el_agente_declara_estrategia(
+    def test_separates_kind_from_its_settings_when_the_agent_declares_a_strategy(
         self,
         a2a_artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],
@@ -194,7 +194,7 @@ class TestElPlanA2ALlevaLaCredencialResuelta:
             kind="bearer", settings=(("token_ref", "a.b-c_1"),)
         )
 
-    def test_lleva_headers_ref_cuando_el_agente_lo_declara(
+    def test_carries_headers_ref_when_the_agent_declares_it(
         self,
         a2a_artifact: AgentSpecV1,
         plan_for: Callable[..., AgentPlan],

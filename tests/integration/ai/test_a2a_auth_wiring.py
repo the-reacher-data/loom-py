@@ -122,12 +122,10 @@ async def _card_request(
     return agent.card_request()
 
 
-class TestHeadersRefLlegaALaPeticionDeLaTarjeta:
+class TestHeadersRefReachesTheCardRequest:
     """The field was declared and compiled; it must now travel."""
 
-    async def test_la_peticion_de_la_tarjeta_lleva_la_cabecera(
-        self, remote_agent: _RecordingAgent
-    ) -> None:
+    async def test_the_card_request_carries_the_header(self, remote_agent: _RecordingAgent) -> None:
         capability = CompiledA2ACapability(
             agent=_AGENT, url=remote_agent.url, headers_ref="X-API-Key=abc123"
         )
@@ -136,7 +134,7 @@ class TestHeadersRefLlegaALaPeticionDeLaTarjeta:
 
         assert headers["x-api-key"] == "abc123"
 
-    async def test_no_lleva_credencial_cuando_el_agente_no_declara_ninguna(
+    async def test_carries_no_credential_when_the_agent_declares_none(
         self, remote_agent: _RecordingAgent
     ) -> None:
         """The no-auth path is unchanged, which is what keeps artifacts portable."""
@@ -148,10 +146,10 @@ class TestHeadersRefLlegaALaPeticionDeLaTarjeta:
         assert "authorization" not in headers
 
 
-class TestEstrategiaBearer:
+class TestBearerStrategy:
     """``kind: bearer`` is the shape configuration cannot express by hand."""
 
-    async def test_la_peticion_de_la_tarjeta_lleva_authorization_bearer(
+    async def test_the_card_request_carries_authorization_bearer(
         self, remote_agent: _RecordingAgent
     ) -> None:
         capability = CompiledA2ACapability(
@@ -165,10 +163,10 @@ class TestEstrategiaBearer:
         assert headers["authorization"] == f"Bearer {_TOKEN}"
 
 
-class TestEstrategiaDeTerceros:
+class TestThirdPartyStrategy:
     """The extension point is only real if someone who is not loom can use it."""
 
-    async def test_la_peticion_lleva_lo_que_la_estrategia_instalada_compone(
+    async def test_the_request_carries_what_the_installed_strategy_composes(
         self, remote_agent: _RecordingAgent, tmp_path: Path
     ) -> None:
         capability = CompiledA2ACapability(
@@ -189,10 +187,10 @@ class TestEstrategiaDeTerceros:
         assert headers["authorization"] == "Agent /agents/prod/agent-sales"
 
 
-class TestUnaSolaCredencialPorAgenteRemoto:
+class TestOneCredentialPerRemoteAgent:
     """Two agents pointing at the same remote share one credential, by identity."""
 
-    async def test_dos_concesiones_del_mismo_remoto_comparten_la_instancia(
+    async def test_two_grants_of_the_same_remote_share_the_instance(
         self, remote_agent: _RecordingAgent
     ) -> None:
         """Asserted on the credential loom resolves, not on ``client.auth``.

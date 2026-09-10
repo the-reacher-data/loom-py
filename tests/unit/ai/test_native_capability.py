@@ -59,7 +59,7 @@ def _compile(
 _BEDROCK = InferenceTarget(provider="bedrock", model="anthropic.claude-x", region="eu-west-1")
 
 
-def test_compila_cuando_el_modelo_admite_la_herramienta() -> None:
+def test_compiles_when_the_model_admits_the_tool() -> None:
     """A tool the binding admits becomes a compiled grant."""
     compiled, issues = _compile(
         _spec("web_search"),
@@ -71,7 +71,7 @@ def test_compila_cuando_el_modelo_admite_la_herramienta() -> None:
     assert compiled == (CompiledNativeCapability(tool="web_search"),)
 
 
-def test_falla_nombrando_proveedor_modelo_rol_y_admitidas_cuando_no_la_admite() -> None:
+def test_fails_naming_provider_model_role_and_admitted_tools() -> None:
     """The message says what was asked for and what the binding does admit."""
     _compiled, issues = _compile(
         _spec("web_search"),
@@ -87,7 +87,7 @@ def test_falla_nombrando_proveedor_modelo_rol_y_admitidas_cuando_no_la_admite() 
         assert expected in issue.message
 
 
-def test_falla_una_sola_vez_cuando_la_misma_herramienta_se_concede_dos_veces() -> None:
+def test_fails_once_when_the_same_tool_is_granted_twice() -> None:
     """A tool granted twice is one issue, not two grants."""
     _compiled, issues = _compile(
         _spec("web_search", "web_search"),
@@ -98,7 +98,7 @@ def test_falla_una_sola_vez_cuando_la_misma_herramienta_se_concede_dos_veces() -
     assert [issue.code for issue in issues] == [AgentErrorCode.NATIVE_TOOL_DUPLICATE]
 
 
-def test_no_añade_incidencia_cuando_el_rol_no_esta_ligado() -> None:
+def test_adds_no_issue_when_the_role_is_unbound() -> None:
     """An unbound role is reported by role resolution, not twice."""
     compiled, issues = _compile(_spec("web_search"), inference=None, native_tools=None)
 
@@ -106,7 +106,7 @@ def test_no_añade_incidencia_cuando_el_rol_no_esta_ligado() -> None:
     assert compiled == ()
 
 
-def test_propaga_la_incidencia_del_oraculo_cuando_el_sdk_falta() -> None:
+def test_propagates_the_oracles_issue_when_the_sdk_is_missing() -> None:
     """A provider SDK missing is the oracle's issue, not a traceback."""
 
     def _missing(_target: InferenceTarget) -> frozenset[str]:
@@ -117,7 +117,7 @@ def test_propaga_la_incidencia_del_oraculo_cuando_el_sdk_falta() -> None:
     assert [issue.code for issue in issues] == [AgentErrorCode.PROVIDER_NOT_INSTALLED]
 
 
-def test_rechaza_el_kind_cuando_el_motor_no_aporta_oraculo() -> None:
+def test_rejects_the_kind_when_the_engine_provides_no_oracle() -> None:
     """Without an oracle the grant cannot be checked, so it is refused."""
     _compiled, issues = _compile(_spec("web_search"), inference=_BEDROCK, native_tools=None)
 
@@ -125,7 +125,7 @@ def test_rechaza_el_kind_cuando_el_motor_no_aporta_oraculo() -> None:
 
 
 @pytest.mark.parametrize("tool", ["web_search", "web_fetch", "code_execution"])
-def test_acepta_cada_herramienta_del_vocabulario(tool: str) -> None:
+def test_accepts_every_tool_in_the_vocabulary(tool: str) -> None:
     """Every name the artifact schema admits compiles."""
     compiled, issues = _compile(
         _spec(tool), inference=_BEDROCK, native_tools=lambda _t: frozenset({tool})
@@ -135,7 +135,7 @@ def test_acepta_cada_herramienta_del_vocabulario(tool: str) -> None:
     assert compiled == (CompiledNativeCapability(tool=tool),)
 
 
-def test_un_agente_anonimo_puede_conceder_una_herramienta_del_proveedor() -> None:
+def test_an_anonymous_agent_may_grant_a_provider_tool() -> None:
     """``native`` is exempt from the anonymous gate: it reads no application data."""
     compiled, issues = _compile(
         _spec("web_search"),

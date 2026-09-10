@@ -63,20 +63,20 @@ def _introspection(*contributors: ContributorRef) -> AppIntrospection:
     )
 
 
-class TestDescripcionSinContribuidores:
+class TestDescriptionWithoutContributors:
     """An application that contributes nothing still describes itself."""
 
-    def test_publica_solo_la_identidad_cuando_no_hay_contribuidores(self) -> None:
+    def test_publishes_only_the_identity_when_there_are_no_contributors(self) -> None:
         """The identity section is the whole document when no pillar contributes."""
         assert describe_app(_introspection()) == {
             "app": {"name": _APP_NAME, "version": _APP_VERSION}
         }
 
 
-class TestResolucionDeContribuidores:
+class TestContributorResolution:
     """A contributor is a string until ``describe_app`` is actually called."""
 
-    def test_coloca_la_contribucion_bajo_su_seccion_cuando_el_ref_resuelve(
+    def test_places_the_contribution_under_its_section_when_the_ref_resolves(
         self, contributor_module: str
     ) -> None:
         """The resolved callable's return value lands under its declared section."""
@@ -88,9 +88,7 @@ class TestResolucionDeContribuidores:
 
         assert describe_app(_introspection(ref))["agents"] == {"seen": ("alpha", "beta")}
 
-    def test_conserva_la_identidad_cuando_hay_una_contribucion(
-        self, contributor_module: str
-    ) -> None:
+    def test_keeps_the_identity_when_there_is_a_contribution(self, contributor_module: str) -> None:
         """A contribution never displaces the reserved ``app`` section."""
         ref = ContributorRef(
             section="agents",
@@ -104,10 +102,10 @@ class TestResolucionDeContribuidores:
         }
 
 
-class TestContribuidoresInvalidos:
+class TestInvalidContributors:
     """Every unusable reference is reported as an ``IntrospectionError``."""
 
-    def test_falla_cuando_el_ref_no_tiene_la_forma_modulo_dos_puntos_callable(self) -> None:
+    def test_fails_when_the_ref_lacks_the_module_colon_callable_shape(self) -> None:
         """A reference without ``:`` names no callable at all."""
         ref = ContributorRef(section="agents", contributor="loom.core.introspection", subject=())
 
@@ -116,7 +114,7 @@ class TestContribuidoresInvalidos:
         with pytest.raises(IntrospectionError):
             describe_app(app)
 
-    def test_falla_cuando_el_modulo_no_existe(self) -> None:
+    def test_fails_when_the_module_does_not_exist(self) -> None:
         """An unimportable module is a wiring error, reported as such."""
         ref = ContributorRef(
             section="agents",
@@ -129,7 +127,7 @@ class TestContribuidoresInvalidos:
         with pytest.raises(IntrospectionError):
             describe_app(app)
 
-    def test_falla_cuando_el_atributo_no_existe(self, contributor_module: str) -> None:
+    def test_fails_when_the_attribute_does_not_exist(self, contributor_module: str) -> None:
         """A module that does not expose the named attribute is a wiring error."""
         ref = ContributorRef(
             section="agents",
@@ -142,7 +140,7 @@ class TestContribuidoresInvalidos:
         with pytest.raises(IntrospectionError):
             describe_app(app)
 
-    def test_falla_cuando_el_atributo_no_es_invocable(self, contributor_module: str) -> None:
+    def test_fails_when_the_attribute_is_not_callable(self, contributor_module: str) -> None:
         """A contributor must be callable; a plain value cannot project anything."""
         ref = ContributorRef(
             section="agents",
@@ -155,7 +153,7 @@ class TestContribuidoresInvalidos:
         with pytest.raises(IntrospectionError):
             describe_app(app)
 
-    def test_falla_cuando_dos_contribuidores_declaran_la_misma_seccion(
+    def test_fails_when_two_contributors_declare_the_same_section(
         self, contributor_module: str
     ) -> None:
         """Silently overwriting one pillar's contribution with another is not an option."""
@@ -170,7 +168,7 @@ class TestContribuidoresInvalidos:
         with pytest.raises(IntrospectionError):
             describe_app(app)
 
-    def test_falla_cuando_la_seccion_es_app(self, contributor_module: str) -> None:
+    def test_fails_when_the_section_is_app(self, contributor_module: str) -> None:
         """``app`` is reserved for the application identity."""
         ref = ContributorRef(
             section="app",
@@ -236,10 +234,10 @@ def imported_modules() -> dict[str, list[str]]:
     return payload
 
 
-class TestContencionDeImports:
+class TestImportContainment:
     """Importing the core package must not drag a single pillar in (principle I)."""
 
-    def test_no_importa_ningun_pilar_cuando_se_importa_la_introspeccion(
+    def test_importing_introspection_pulls_in_no_pillar(
         self, imported_modules: dict[str, list[str]]
     ) -> None:
         """No ``loom.ai`` / ``loom.rest`` / ``loom.streaming`` / ``loom.etl`` module appears."""
@@ -251,7 +249,7 @@ class TestContencionDeImports:
 
         assert leaked == []
 
-    def test_no_importa_fastapi_ni_pydantic_cuando_se_importa_la_introspeccion(
+    def test_importing_introspection_does_not_pull_in_fastapi_or_pydantic(
         self, imported_modules: dict[str, list[str]]
     ) -> None:
         """The REST stack is not a dependency of describing an application."""

@@ -72,7 +72,7 @@ class TestToolResultSummary:
             ({"shape": "something-new"}, "ok"),
         ],
     )
-    def test_el_resumen_es_una_forma_cerrada_cuando_el_resultado_trae_metadata(
+    def test_the_summary_is_a_closed_shape_when_the_result_carries_metadata(
         self, shape: Mapping[str, Any], expected: str
     ) -> None:
         """The summary is built from structured facts, from a closed list."""
@@ -80,7 +80,7 @@ class TestToolResultSummary:
 
         assert _translated_result(event).summary == expected
 
-    def test_el_resumen_no_lleva_ningun_byte_del_payload_cuando_el_resultado_es_grande(
+    def test_the_summary_carries_no_byte_of_the_payload_when_the_result_is_large(
         self,
     ) -> None:
         """No substring of the payload may appear in the summary (FR-030b)."""
@@ -88,7 +88,7 @@ class TestToolResultSummary:
 
         assert CANARY not in _translated_result(event).summary
 
-    def test_el_resumen_ignora_el_texto_libre_cuando_la_herramienta_intenta_dictarlo(
+    def test_the_summary_ignores_free_form_text_when_the_tool_tries_to_dictate_it(
         self,
     ) -> None:
         """A free-form string supplied by a tool can never become the summary."""
@@ -99,7 +99,7 @@ class TestToolResultSummary:
 
         assert _translated_result(event).summary == "142 rows"
 
-    def test_el_resumen_cae_en_ok_cuando_el_resultado_no_trae_metadata(self) -> None:
+    def test_the_summary_falls_back_to_ok_when_the_result_carries_no_metadata(self) -> None:
         """An absent shape degrades to ``ok``, never to the payload."""
         event = _result_event(content=PAYLOAD)
 
@@ -107,7 +107,7 @@ class TestToolResultSummary:
 
 
 class TestRefusedResults:
-    def test_el_resultado_no_es_ok_cuando_la_herramienta_rechaza_por_valor(self) -> None:
+    def test_the_result_is_not_ok_when_the_tool_refuses_by_value(self) -> None:
         """A refusal must not read as a normal call in the stream (FR-046b)."""
         event = _result_event(
             content="refused: the result has 5 rows, above the max_rows bound of 2",
@@ -118,7 +118,7 @@ class TestRefusedResults:
 
         assert (translated.ok, translated.summary) == (False, "refused")
 
-    def test_el_resumen_del_rechazo_no_lleva_el_motivo_cuando_la_herramienta_lo_publica(
+    def test_the_refusal_summary_carries_no_reason_when_the_tool_publishes_one(
         self,
     ) -> None:
         """The reason stays in the payload: no tool text may reach the summary."""
@@ -131,7 +131,7 @@ class TestRefusedResults:
 
 
 class TestToolCallArguments:
-    def test_los_argumentos_se_decodifican_a_un_mapping_vacio_cuando_el_json_es_invalido(
+    def test_arguments_decode_to_an_empty_mapping_for_invalid_json(
         self,
     ) -> None:
         """A malformed argument string yields ``{}``: no crash, no raw leak."""
@@ -140,6 +140,6 @@ class TestToolCallArguments:
 
         assert (valid, malformed) == ({"sql": "SELECT 1"}, {})
 
-    def test_los_argumentos_se_conservan_cuando_el_motor_ya_entrega_un_mapping(self) -> None:
+    def test_arguments_are_kept_as_is_when_the_engine_already_delivers_a_mapping(self) -> None:
         """Already-decoded arguments are carried through, never re-encoded."""
         assert _translated_call(_call_event({"sql": "SELECT 1"})).arguments == {"sql": "SELECT 1"}

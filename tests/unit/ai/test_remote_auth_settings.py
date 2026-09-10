@@ -21,20 +21,20 @@ class _Opaque:
     """A type msgspec cannot build from a string."""
 
 
-def _funcion(*, url: str, timeout: int, ratio: float, verify: bool) -> None: ...
+def _function(*, url: str, timeout: int, ratio: float, verify: bool) -> None: ...
 
 
-class _Clase:
+class _Class:
     def __init__(self, *, timeout: int, cfg: _Opaque | None = None, libre: Any = None) -> None:
         self.timeout = timeout
         self.cfg = cfg
         self.libre = libre
 
 
-class TestTiposDeclarados:
-    def test_convierte_cada_primitivo_al_tipo_de_su_parametro(self) -> None:
+class TestDeclaredTypes:
+    def test_converts_each_primitive_to_its_parameter_type(self) -> None:
         got = _coerce_settings(
-            _funcion,
+            _function,
             {"url": "https://x", "timeout": "30", "ratio": "1.5", "verify": "false"},
         )
         assert got["url"] == "https://x"
@@ -45,43 +45,43 @@ class TestTiposDeclarados:
         # pass on "" or 0. This is the assertion that catches the inversion.
         assert got["verify"] is False
 
-    def test_lee_la_firma_de_una_funcion_y_no_su_dunder_init(self) -> None:
+    def test_reads_a_functions_signature_not_its_dunder_init(self) -> None:
         """Two of the three strategies loom registers are plain functions.
 
         ``inspect.signature(fn.__init__)`` yields ``object``'s ``(*args,
         **kwargs)`` - no parameters, so nothing converts, in silence. This is
         the defect a plausible implementation actually ships.
         """
-        got = _coerce_settings(_funcion, {"timeout": "30"})
+        got = _coerce_settings(_function, {"timeout": "30"})
         assert got["timeout"] == 30, "a function strategy converted nothing"
 
-    def test_convierte_igual_cuando_la_estrategia_es_una_clase(self) -> None:
-        assert _coerce_settings(_Clase, {"timeout": "30"})["timeout"] == 30
+    def test_converts_the_same_way_when_the_strategy_is_a_class(self) -> None:
+        assert _coerce_settings(_Class, {"timeout": "30"})["timeout"] == 30
 
 
-class TestLoQueNoSeToca:
-    def test_deja_intacto_un_tipo_propio(self) -> None:
+class TestWhatIsLeftUntouched:
+    def test_leaves_a_custom_type_untouched(self) -> None:
         """The whole non-break guarantee: a strategy declaring its own type
         receives exactly what it receives today."""
         raw = "algo"
-        got = _coerce_settings(_Clase, {"timeout": "1", "cfg": raw})
+        got = _coerce_settings(_Class, {"timeout": "1", "cfg": raw})
         assert got["cfg"] is raw
 
-    def test_deja_intacto_un_parametro_sin_anotacion_util(self) -> None:
+    def test_leaves_a_parameter_without_a_useful_annotation_untouched(self) -> None:
         raw = "algo"
-        assert _coerce_settings(_Clase, {"timeout": "1", "libre": raw})["libre"] is raw
+        assert _coerce_settings(_Class, {"timeout": "1", "libre": raw})["libre"] is raw
 
-    def test_deja_intacto_un_ajuste_que_la_estrategia_no_declara(self) -> None:
+    def test_leaves_a_setting_the_strategy_does_not_declare_untouched(self) -> None:
         raw = "algo"
-        assert _coerce_settings(_funcion, {"desconocido": raw})["desconocido"] is raw
+        assert _coerce_settings(_function, {"desconocido": raw})["desconocido"] is raw
 
 
-class TestBordes:
-    def test_rechaza_un_valor_que_no_es_su_primitivo(self) -> None:
+class TestEdgeCases:
+    def test_rejects_a_value_that_does_not_match_its_primitive(self) -> None:
         with pytest.raises(msgspec.ValidationError, match="int"):
-            _coerce_settings(_funcion, {"timeout": "pronto"})
+            _coerce_settings(_function, {"timeout": "pronto"})
 
-    def test_pasa_todo_tal_cual_cuando_no_puede_inspeccionar(self) -> None:
+    def test_passes_everything_through_when_it_cannot_inspect(self) -> None:
         """Introspection is best effort: it must never break a working strategy."""
         got = _coerce_settings(functools.partial(dict), {"timeout": "30"})
         assert got == {"timeout": "30"}

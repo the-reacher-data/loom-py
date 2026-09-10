@@ -80,7 +80,7 @@ def _run_in_clean_interpreter(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_el_loader_de_entry_points_no_importa_nada_fuera_de_la_stdlib() -> None:
+def test_the_entry_point_loader_imports_nothing_outside_the_stdlib() -> None:
     """Importing the entry-point leaf must add no ``loom`` nor third-party module."""
     result = _run_in_clean_interpreter(_LEAF_SCRIPT)
     assert result.returncode == 0, result.stderr
@@ -92,7 +92,7 @@ def test_el_loader_de_entry_points_no_importa_nada_fuera_de_la_stdlib() -> None:
     assert imported["third_party"] == [], f"non-stdlib packages imported: {imported['third_party']}"
 
 
-def test_no_importa_rest_ni_pydantic_cuando_se_importa_el_provider_loader() -> None:
+def test_importing_the_provider_loader_does_not_pull_in_rest_or_pydantic() -> None:
     """Importing the ETL provider loader must not pull in REST-only modules."""
     result = _run_in_clean_interpreter(_SCRIPT.format(forbidden=_FORBIDDEN))
     assert result.returncode == 0, result.stderr

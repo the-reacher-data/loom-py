@@ -45,28 +45,28 @@ async def _collect(frames: AsyncIterator[bytes]) -> list[bytes]:
     return [frame async for frame in frames]
 
 
-class TestSubclaseDeAgentRunError:
+class TestAgentRunErrorSubclass:
     """A subclass owns a stable code; the terminal frame must not invent one."""
 
-    def test_conserva_el_codigo_cuando_el_fallo_es_una_subclase(self) -> None:
+    def test_keeps_the_code_when_the_failure_is_a_subclass(self) -> None:
         """``isinstance``, not an exact class match (the divergence this fixes)."""
         event = failure_event(TimeoutWithContext("sql_analytics"))
 
         assert event.code is AgentRunErrorCode.TOOL_TIMEOUT
 
-    def test_degrada_a_proveedor_no_disponible_cuando_el_fallo_no_es_del_agente(self) -> None:
+    def test_degrades_to_provider_unavailable_when_the_failure_is_not_the_agents(self) -> None:
         """Anything else is the catch-all, with a fixed message."""
         event = failure_event(RuntimeError("the DSN is postgres://user:pw@host/db"))
 
         assert event.code is AgentRunErrorCode.PROVIDER_UNAVAILABLE
 
-    def test_no_filtra_el_texto_cuando_el_fallo_no_es_del_agente(self) -> None:
+    def test_leaks_no_text_when_the_failure_is_not_the_agents(self) -> None:
         """An unexpected failure's text never reaches the caller."""
         event = failure_event(RuntimeError("the DSN is postgres://user:pw@host/db"))
 
         assert "postgres://" not in event.message
 
-    async def test_el_frame_sse_lleva_el_codigo_de_la_subclase_cuando_el_stream_falla(
+    async def test_the_sse_frame_carries_the_subclasses_code_when_the_stream_fails(
         self,
     ) -> None:
         """End to end over the HTTP encoding: the code survives to the wire."""
@@ -80,10 +80,10 @@ class TestSubclaseDeAgentRunError:
         assert _payload(frames[-1])["code"] == "TOOL_TIMEOUT"
 
 
-class TestLatidosCompartidos:
+class TestSharedHeartbeats:
     """The heartbeat race is relayed over already-encoded frames."""
 
-    async def test_relaya_los_frames_en_orden_cuando_no_hay_silencio(self) -> None:
+    async def test_relays_the_frames_in_order_when_there_is_no_silence(self) -> None:
         """Nothing is added to a stream that never goes quiet."""
 
         async def frames() -> AsyncIterator[bytes]:
@@ -104,31 +104,31 @@ def _a2a_transport_source() -> str:
     return "\n".join(module.read_text(encoding="utf-8") for module in sorted(package.glob("*.py")))
 
 
-class TestPropiedadUnica:
+class TestSingleOwnership:
     """Neither surface owns the shared rules, and neither reaches into the other."""
 
-    def test_el_servidor_a2a_no_importa_nombres_privados_del_surface_http(self) -> None:
+    def test_the_a2a_server_does_not_import_the_http_surfaces_private_names(self) -> None:
         """A leading underscore is a boundary; the A2A module must not cross it."""
         assert "from loom.ai.fastapi.endpoints import" not in _a2a_transport_source()
 
-    def test_los_dos_transportes_usan_la_misma_carrera_cuando_laten(self) -> None:
+    def test_both_transports_use_the_same_race_when_they_beat(self) -> None:
         """One heartbeat generator, not a copy per surface."""
         assert a2a_handlers.with_heartbeats is with_heartbeats
 
-    def test_el_surface_http_usa_la_misma_carrera_cuando_late(self) -> None:
+    def test_the_http_surface_uses_the_same_race_when_it_beats(self) -> None:
         """``stream_sse`` is the encoder composed with that same generator."""
         assert streaming_module.with_heartbeats is with_heartbeats
 
-    def test_los_dos_transportes_usan_el_mismo_periodo_cuando_laten(self) -> None:
+    def test_both_transports_use_the_same_period_when_they_beat(self) -> None:
         """One silence budget, so the two surfaces cannot drift apart again."""
         assert a2a_handlers.HEARTBEAT_MS is endpoints_module.HEARTBEAT_MS
 
-    def test_el_surface_http_no_define_su_propio_mapeo_de_fallo_terminal(self) -> None:
+    def test_the_http_surface_defines_no_terminal_failure_mapping_of_its_own(self) -> None:
         """The encoder module keeps no private copy of the failure mapping."""
         source = Path(str(streaming_module.__file__)).read_text(encoding="utf-8")
 
         assert "def _failure_event(" not in source
 
-    def test_el_servidor_a2a_no_define_su_propio_mapeo_de_fallo_terminal(self) -> None:
+    def test_the_a2a_server_defines_no_terminal_failure_mapping_of_its_own(self) -> None:
         """Nor does the A2A one: a single definition, imported by both."""
         assert "def _failure_event(" not in _a2a_transport_source()

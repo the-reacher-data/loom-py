@@ -146,17 +146,17 @@ def _codes(failure: AgentCompilationError) -> tuple[AgentErrorCode, ...]:
     return tuple(issue.code for issue in failure.issues)
 
 
-class TestSoloMcpSinArtefactosDeAgente:
-    """``ai.mcp_servers`` poblado, cero artefactos, un caso de uso que declara ``Mcp()``."""
+class TestOnlyMcpWithNoAgentArtefacts:
+    """``ai.mcp_servers`` populated, zero artifacts, one use case declaring ``Mcp()``."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_arranca_cuando_un_caso_de_uso_declara_el_marcador(self, tmp_path: Path) -> None:
+    def test_starts_when_a_use_case_declares_the_marker(self, tmp_path: Path) -> None:
         config_path = _write_project(tmp_path, declares_use_case=True)
 
         create_app(config_path)  # no raise: D1 tolerates the empty artifact set
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_sigue_abortando_sin_ningun_caso_de_uso_que_lo_declare(self, tmp_path: Path) -> None:
+    def test_still_aborts_with_no_use_case_declaring_it(self, tmp_path: Path) -> None:
         config_path = _write_project(tmp_path, declares_use_case=False)
 
         with pytest.raises(AgentCompilationError) as failure:
@@ -165,12 +165,12 @@ class TestSoloMcpSinArtefactosDeAgente:
         assert AgentErrorCode.AGENT_SPECS_MISSING in _codes(failure.value)
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_un_servidor_desconocido_muere_como_marker_unknown_no_como_server_unknown(
+    def test_an_unknown_server_dies_as_marker_unknown_not_as_server_unknown(
         self, tmp_path: Path
     ) -> None:
-        """H9/T202: ``_verify_mcp_markers`` debe atrapar el nombre desconocido
-        antes de que ``_compile_use_case_mcp``/``compile_mcp_capability`` lo
-        vean, así que ``MCP_SERVER_UNKNOWN`` nunca debe aparecer aquí."""
+        """H9/T202: ``_verify_mcp_markers`` must catch the unknown name before
+        ``_compile_use_case_mcp``/``compile_mcp_capability`` ever see it, so
+        ``MCP_SERVER_UNKNOWN`` must never appear here."""
         config_path = _write_project(tmp_path, declares_use_case=True)
         # A missing server in 'ai.mcp_servers' recreates the same YAML this
         # fixture writes, minus the one entry the use case's Mcp() names.

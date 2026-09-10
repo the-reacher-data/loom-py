@@ -155,10 +155,10 @@ async def _agent_runtime(deps: StubDepsFactory, container: LoomContainer) -> Age
     )
 
 
-class TestIdentidadAnonima:
-    """El llamante anónimo se rechaza antes de tocar el modelo (design R3)."""
+class TestAnonymousIdentity:
+    """The anonymous caller is rejected before ever touching the model (design R3)."""
 
-    async def test_un_llamante_anonimo_se_rechaza_con_unauthorized(
+    async def test_an_anonymous_caller_is_rejected_with_unauthorized(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         runtime = await _agent_runtime(deps, container)
@@ -176,7 +176,7 @@ class TestIdentidadAnonima:
 
         assert excinfo.value.code is AgentRunErrorCode.UNAUTHORIZED
 
-    async def test_el_mensaje_es_el_que_muestra_use_case_dsl_md(
+    async def test_the_message_matches_the_one_shown_in_use_case_dsl_md(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for ``UNAUTHORIZED``.
@@ -203,10 +203,10 @@ class TestIdentidadAnonima:
 
         assert str(excinfo.value) == "agent 'incident-triage' requires an authenticated caller"
 
-    async def test_un_llamante_anonimo_nunca_llega_al_modelo(
+    async def test_an_anonymous_caller_never_reaches_the_model(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """El motor nunca se invoca: la corrida se corta antes del 'run' del runtime."""
+        """The engine is never invoked: the run is cut before the runtime's 'run'."""
         engine = _OneShotEngine()
         provider = CountingEngineProvider(engines={_AGENT_NAME: engine})  # type: ignore[dict-item]
         runtime = AgentRuntime(
@@ -229,14 +229,14 @@ class TestIdentidadAnonima:
                 await handle.run("hola")
             assert engine.run_stream_calls == 0
 
-    async def test_un_llamante_autenticado_corre_como_si_mismo(
+    async def test_an_authenticated_caller_runs_as_itself(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """La corrida del motor recibe exactamente la identidad del handle,
+        """The engine's run receives exactly the handle's identity, never another:
 
-        nunca otra: el runtime autoriza cada capacidad con esta identidad, así
-        que forzarla a otra por dentro del adaptador dejaría a la capacidad
-        corriendo como un tercero.
+        the runtime authorises every capability with this identity, so
+        forcing a different one inside the adapter would leave the capability
+        running as a third party.
         """
         engine = _OneShotEngine()
         provider = CountingEngineProvider(engines={_AGENT_NAME: engine})  # type: ignore[dict-item]
@@ -262,10 +262,10 @@ class TestIdentidadAnonima:
         assert engine.identities == [_AUTHENTICATED]
 
 
-class TestElSpanDelHandle:
-    """El handle abre su propio span; el runtime no abre ninguno por su cuenta."""
+class TestTheHandlesSpan:
+    """The handle opens its own span; the runtime opens none on its own."""
 
-    async def test_una_corrida_exitosa_abre_y_cierra_un_span_de_agente(
+    async def test_a_successful_run_opens_and_closes_an_agent_span(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         observability, exporter = _tracing_runtime()
@@ -295,10 +295,10 @@ class TestElSpanDelHandle:
         assert spans[0].attributes["subject"] == "ada"
         assert spans[0].attributes["interaction_id"] == answer.interaction_id
 
-    async def test_sin_runtime_de_observabilidad_no_hay_ningun_span(
+    async def test_no_span_exists_without_an_observability_runtime(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """``observability=None`` es un no-op explícito, no un fallo silencioso."""
+        """``observability=None`` is an explicit no-op, not a silent failure."""
         runtime = await _agent_runtime(deps, container)
         handle = _BoundAgentHandle(
             name=_AGENT_NAME,
@@ -362,10 +362,10 @@ async def _shaped_runtime(
     )
 
 
-class TestLosTresModos:
-    """T304: la forma declarada, la forma por corrida y el texto abierto."""
+class TestTheThreeModes:
+    """T304: the declared shape, the per-run shape and open-ended text."""
 
-    async def test_run_sin_expect_usa_la_forma_declarada_del_artefacto(
+    async def test_run_without_expect_uses_the_artifacts_declared_shape(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         runtime = await _agent_runtime(deps, container)
@@ -382,7 +382,7 @@ class TestLosTresModos:
 
         assert answer.output == {"ok": True}
 
-    async def test_run_con_expect_tipa_la_respuesta_de_esa_corrida_solamente(
+    async def test_run_with_expect_types_only_that_runs_response(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = _ShapedEngine(shaped_output={"severity": 5})
@@ -401,7 +401,7 @@ class TestLosTresModos:
         assert answer.output == {"severity": 5}
         assert engine.shaped_calls == [dict]
 
-    async def test_run_text_devuelve_prosa_sin_forma_declarada(
+    async def test_run_text_returns_prose_with_no_declared_shape(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = _ShapedEngine(shaped_output="a plain sentence")
@@ -420,10 +420,10 @@ class TestLosTresModos:
         assert answer.output == "a plain sentence"
         assert engine.shaped_calls == [str]
 
-    async def test_expect_no_invoca_la_comprobacion_de_salida_del_artefacto(
+    async def test_expect_does_not_invoke_the_artifacts_output_check(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """La forma declarada usa run_stream; una forma por corrida usa run_stream_shaped."""
+        """The declared shape uses run_stream; a per-run shape uses run_stream_shaped."""
         engine = _ShapedEngine(shaped_output={"anything": True})
         runtime = await _shaped_runtime(deps, container, engine)
         handle = _BoundAgentHandle(
@@ -441,10 +441,10 @@ class TestLosTresModos:
         assert engine.shaped_calls == [dict]
 
 
-class TestRechazoPorHookDeSalida:
-    """T304: una forma por corrida se rechaza antes del modelo si el hook la necesita."""
+class TestRejectionByOutputHook:
+    """T304: a per-run shape is rejected before the model if the hook needs it."""
 
-    async def test_expect_se_rechaza_cuando_el_hook_declara_output(
+    async def test_expect_is_rejected_when_the_hook_declares_output(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = _ShapedEngine()
@@ -473,7 +473,7 @@ class TestRechazoPorHookDeSalida:
         assert engine.shaped_calls == []
         assert engine.run_stream_calls == 0
 
-    async def test_el_mensaje_es_el_que_muestra_use_case_dsl_md(
+    async def test_the_message_matches_the_one_shown_in_use_case_dsl_md_for_hooks(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for
@@ -509,7 +509,7 @@ class TestRechazoPorHookDeSalida:
             "the artefact's own declared output instead"
         )
 
-    async def test_run_text_se_rechaza_cuando_el_hook_declara_output(
+    async def test_run_text_is_rejected_when_the_hook_declares_output(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = _ShapedEngine()
@@ -536,7 +536,7 @@ class TestRechazoPorHookDeSalida:
 
         assert excinfo.value.code is AgentRunErrorCode.AGENT_RUN_SHAPE_WITH_HOOK
 
-    async def test_run_sin_forma_sigue_funcionando_con_un_hook_que_solo_declara_mensajes(
+    async def test_run_without_a_shape_still_works_with_a_hook_declaring_only_messages(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         provider = CountingEngineProvider(engines={_AGENT_NAME: _OneShotEngine()})  # type: ignore[dict-item]
@@ -564,7 +564,7 @@ class TestRechazoPorHookDeSalida:
         assert answer.output == {"ok": True}
         assert recorder.timeline == ["hook"]
 
-    async def test_expect_sigue_funcionando_con_un_hook_que_solo_declara_mensajes(
+    async def test_expect_still_works_with_a_hook_declaring_only_messages(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = _ShapedEngine(shaped_output={"custom": True})
@@ -615,13 +615,13 @@ async def _runtime_with_one_mcp_grant(
     )
 
 
-class TestGrantsSinConcesion:
-    """T301/T303: nombrar el grant ausente antes de tocar la red."""
+class TestUngrantedGrants:
+    """T301/T303: name the missing grant before ever touching the network."""
 
-    async def test_mcp_desconocido_nombra_los_grants_mcp_del_agente(
+    async def test_an_unknown_mcp_grant_names_the_agents_mcp_grants(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """El mensaje nombra el único servidor concedido, no uno arbitrario."""
+        """The message names the one granted server, not an arbitrary one."""
         runtime = await _runtime_with_one_mcp_grant(deps, container)
         handle = _BoundAgentHandle(
             name=_AGENT_NAME,
@@ -641,10 +641,10 @@ class TestGrantsSinConcesion:
             f"this agent grants: {_RUNBOOKS_SERVER}"
         )
 
-    async def test_sql_desconocido_nombra_los_grants_sql_del_agente(
+    async def test_an_unknown_sql_grant_names_the_agents_sql_grants(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """El mismo rechazo, del lado ``sql``: un agente sin grant ``sql`` alguno."""
+        """The same rejection on the ``sql`` side: an agent with no ``sql`` grant at all."""
         runtime = await _agent_runtime(deps, container)
         handle = _BoundAgentHandle(
             name=_AGENT_NAME,
@@ -666,13 +666,13 @@ class TestGrantsSinConcesion:
         )
 
 
-class TestGrantsPublicados:
-    """T301/T303: ``grants()`` nombra cada permiso concedido, la mitigación que la
-    especificación promete para el único terreno que cede el diseño — que el
-    nombre del servidor ``mcp`` no se verifica al arrancar.
+class TestPublishedGrants:
+    """T301/T303: ``grants()`` names every granted permission, the mitigation the
+    specification promises for the one concession the design makes — that the
+    ``mcp`` server name is not verified at start-up.
     """
 
-    async def test_grants_nombra_el_servidor_mcp_concedido(
+    async def test_grants_names_the_granted_mcp_server(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         runtime = await _runtime_with_one_mcp_grant(deps, container)
@@ -687,15 +687,15 @@ class TestGrantsPublicados:
         async with runtime:
             assert handle.grants() == (_RUNBOOKS_SERVER,)
 
-    async def test_grants_agrupa_los_servidores_antes_que_las_conexiones(
+    async def test_grants_groups_servers_ahead_of_connections(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """El orden es agrupado, no intercalado, aunque el artefacto los alterne.
+        """The order is grouped, not interleaved, even though the artifact alternates them.
 
-        El artefacto declara mcp, sql, mcp: si el listado siguiera el orden de
-        declaración saldrian intercalados. Salen agrupados, que es lo que el
-        contrato publico promete y lo que hace que un servidor y una conexion
-        con el mismo nombre sigan distinguiendose por posicion.
+        The artifact declares mcp, sql, mcp: if the listing followed
+        declaration order they would come out interleaved. They come out
+        grouped, which is what the public contract promises and what keeps a
+        server and a connection sharing a name distinguishable by position.
         """
         second = "playbooks"
         provider = CountingEngineProvider(engines={_AGENT_NAME: _OneShotEngine()})  # type: ignore[dict-item]
@@ -737,10 +737,10 @@ class TestGrantsPublicados:
             assert handle.grants() == (_RUNBOOKS_SERVER, second, "analytics")
 
 
-class TestElResolverDeMarcadores:
-    """``agent_marker_resolver`` construye el callable que el executor toma."""
+class TestTheMarkerResolver:
+    """``agent_marker_resolver`` builds the callable the executor takes."""
 
-    async def test_el_resolver_liga_el_nombre_y_el_llamante(
+    async def test_the_resolver_binds_the_name_and_the_caller(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         runtime = await _agent_runtime(deps, container)

@@ -74,7 +74,7 @@ def _run_signature(method_name: str) -> inspect.Signature:
 
 
 class TestPublicExports:
-    def test_all_contiene_la_superficie_publica_cuando_se_importa_loom_ai(self) -> None:
+    def test_all_contains_the_public_surface(self) -> None:
         """Every engine-neutral name of the fixed surface is exported."""
         assert set(loom.ai.__all__) >= _REQUIRED_EXPORTS
 
@@ -82,11 +82,11 @@ class TestPublicExports:
         """``loom.ai.McpSession`` and ``loom.ai.runtime.McpSession`` are the same Protocol."""
         assert loom.ai.McpSession is loom.ai.runtime.McpSession
 
-    def test_all_no_contiene_nombres_privados_cuando_se_importa_loom_ai(self) -> None:
+    def test_all_contains_no_private_names(self) -> None:
         """No underscore-prefixed symbol leaks into the public surface."""
         assert [name for name in loom.ai.__all__ if name.startswith("_")] == []
 
-    def test_all_no_contiene_tipos_de_motor_cuando_se_importa_loom_ai(self) -> None:
+    def test_all_contains_no_engine_types(self) -> None:
         """Vendor and engine types never appear in the neutral surface (FR-034)."""
         leaked = [
             name
@@ -96,18 +96,18 @@ class TestPublicExports:
 
         assert leaked == []
 
-    def test_todo_nombre_de_all_resuelve_cuando_se_importa_loom_ai(self) -> None:
+    def test_every_name_in_all_resolves(self) -> None:
         """``__all__`` never advertises a name the module cannot deliver."""
         missing = [name for name in loom.ai.__all__ if not hasattr(loom.ai, name)]
 
         assert missing == []
 
-    def test_all_no_contiene_nombres_retirados_cuando_se_importa_loom_ai(self) -> None:
+    def test_all_contains_no_retired_names(self) -> None:
         """``ToolFilter`` was retired with the nested filter; it must not come back."""
         assert set(loom.ai.__all__) & _RETIRED_EXPORTS == set()
 
     @pytest.mark.parametrize("module", [loom.ai, loom.ai.declarative], ids=["ai", "declarative"])
-    def test_los_nombres_retirados_no_son_alcanzables_cuando_se_importa_el_modulo(
+    def test_retired_names_are_not_reachable_on_the_module(
         self,
         module: ModuleType,
     ) -> None:
@@ -116,7 +116,7 @@ class TestPublicExports:
 
         assert reachable == []
 
-    def test_loom_ai_no_exporta_identity_cuando_se_importa(self) -> None:
+    def test_loom_ai_does_not_export_identity(self) -> None:
         """Identity comes from the caller, never from the AI pillar (FR-043)."""
         identity_like = [name for name in loom.ai.__all__ if "identity" in name.lower()]
 
@@ -125,7 +125,7 @@ class TestPublicExports:
 
 class TestAgentEngineProtocol:
     @pytest.mark.parametrize("method_name", ["run", "run_stream"])
-    def test_no_expone_parametros_de_conversacion_cuando_se_inspecciona(
+    def test_exposes_no_message_list_parameter(
         self,
         method_name: str,
     ) -> None:
@@ -135,7 +135,7 @@ class TestAgentEngineProtocol:
         assert parameters & _FORBIDDEN_RUN_PARAMS == set()
 
     @pytest.mark.parametrize("method_name", ["run", "run_stream"])
-    def test_el_conjunto_de_parametros_es_exacto_cuando_se_inspecciona(
+    def test_the_parameter_set_is_exact(
         self,
         method_name: str,
     ) -> None:
@@ -145,7 +145,7 @@ class TestAgentEngineProtocol:
         assert parameters == _RUN_PARAMS
 
     @pytest.mark.parametrize("method_name", ["run", "run_stream"])
-    def test_conversation_es_keyword_only_con_default_none_cuando_se_inspecciona(
+    def test_conversation_is_keyword_only_defaulting_to_none(
         self,
         method_name: str,
     ) -> None:
@@ -156,7 +156,7 @@ class TestAgentEngineProtocol:
         assert conversation.default is None
 
     @pytest.mark.parametrize("method_name", ["run", "run_stream"])
-    def test_conversation_se_anota_con_el_tipo_neutral_cuando_se_inspecciona(
+    def test_conversation_is_annotated_with_the_neutral_type(
         self,
         method_name: str,
     ) -> None:
@@ -166,7 +166,7 @@ class TestAgentEngineProtocol:
         assert "Conversation" in str(conversation.annotation)
 
     @pytest.mark.parametrize("method_name", ["run", "run_stream"])
-    def test_identity_es_keyword_only_cuando_se_inspecciona(
+    def test_identity_is_keyword_only(
         self,
         method_name: str,
     ) -> None:
@@ -175,7 +175,7 @@ class TestAgentEngineProtocol:
 
         assert identity.kind is inspect.Parameter.KEYWORD_ONLY
 
-    def test_run_stream_devuelve_un_async_context_manager_cuando_se_inspecciona(
+    def test_run_stream_is_annotated_as_an_async_context_manager(
         self,
     ) -> None:
         """``run_stream`` is annotated as ``AbstractAsyncContextManager`` (R-008)."""
@@ -184,7 +184,7 @@ class TestAgentEngineProtocol:
         assert "AbstractAsyncContextManager" in str(annotations.get("return"))
 
 
-def test_todo_lo_declarado_en_all_es_importable() -> None:
+def test_every_name_declared_in_all_is_importable() -> None:
     """A name in ``__all__`` that does not resolve is worse than an absent one.
 
     ``from loom.ai import *`` raises on it, and a reader takes the list as the

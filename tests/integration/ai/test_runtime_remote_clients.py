@@ -127,10 +127,10 @@ def _hanging_client(server: str, log: list[str]) -> StubMcpClient:
     )
 
 
-class TestArranqueRequerido:
+class TestRequiredStartup:
     """``required`` is today's behaviour, byte for byte (AC6)."""
 
-    async def test_aborta_cuando_el_servidor_mcp_rechaza_la_conexion(
+    async def test_aborts_when_the_mcp_server_refuses_the_connection(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A refused MCP connection still aborts start-up with its stable code."""
@@ -146,7 +146,7 @@ class TestArranqueRequerido:
 
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
 
-    async def test_aborta_cuando_el_agente_a2a_rechaza_la_conexion(
+    async def test_aborts_when_the_a2a_agent_refuses_the_connection(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A refused A2A connection still aborts start-up with its stable code."""
@@ -162,7 +162,7 @@ class TestArranqueRequerido:
 
         assert AgentErrorCode.A2A_AGENT_UNREACHABLE in _codes(failure.value)
 
-    async def test_aborta_cuando_la_conexion_se_cuelga(
+    async def test_aborts_when_the_connection_hangs(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A hang past the budget still aborts start-up under ``required`` (AC8)."""
@@ -183,10 +183,10 @@ class TestArranqueRequerido:
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
 
 
-class TestArranqueOpcional:
+class TestOptionalStartup:
     """``optional`` drops a connection failure to a warning (AC7)."""
 
-    async def test_arranca_cuando_el_servidor_mcp_rechaza_la_conexion(
+    async def test_starts_when_the_mcp_server_refuses_the_connection(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The runtime boots with no network behind the declared grant."""
@@ -201,7 +201,7 @@ class TestArranqueOpcional:
         async with runtime:
             assert runtime.has_agent(_AGENT)
 
-    async def test_arranca_cuando_el_agente_a2a_rechaza_la_conexion(
+    async def test_starts_when_the_a2a_agent_refuses_the_connection(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The tolerance covers the A2A clients too, not only MCP."""
@@ -216,7 +216,7 @@ class TestArranqueOpcional:
         async with runtime:
             assert runtime.has_agent(_AGENT)
 
-    async def test_avisa_nombrando_el_servidor_cuando_tolera_el_fallo(
+    async def test_warns_naming_the_server_when_tolerating_the_failure(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -242,7 +242,7 @@ class TestArranqueOpcional:
             for message in warnings
         )
 
-    async def test_no_registra_la_direccion_en_el_aviso_cuando_tolera_el_fallo(
+    async def test_does_not_log_the_address_in_the_warning_when_tolerating_the_failure(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -266,7 +266,7 @@ class TestArranqueOpcional:
             "the transport's reason reached routine logs"
         )
 
-    async def test_registra_el_motivo_en_debug_cuando_tolera_el_fallo(
+    async def test_logs_the_reason_at_debug_when_tolerating_the_failure(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -288,7 +288,7 @@ class TestArranqueOpcional:
 
         assert any(_REFUSED in record.getMessage() for record in caplog.records)
 
-    async def test_reporta_la_dependencia_no_disponible_tras_la_primera_sonda(
+    async def test_reports_the_dependency_unavailable_after_the_first_probe(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The health probe names the missing dependency once its first pass ran."""
@@ -306,7 +306,7 @@ class TestArranqueOpcional:
 
         assert health.checks[f"mcp:{_SERVER_A}"] == "unavailable"
 
-    async def test_cierra_los_clientes_abiertos_cuando_tolera_un_fallo(
+    async def test_closes_the_opened_clients_when_tolerating_a_failure(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The clients that did open are still closed on exit."""
@@ -334,7 +334,7 @@ class TestArranqueOpcional:
         assert lifecycle_log == [f"open:{_SERVER_B}", f"close:{_SERVER_B}"]
 
 
-class TestPresupuestoTrasTolerar:
+class TestBudgetAfterTolerating:
     """The filter pass gets a fresh budget, and still fails closed (AC8)."""
 
     @staticmethod
@@ -357,7 +357,7 @@ class TestPresupuestoTrasTolerar:
         )
         return plan, clients, session
 
-    async def test_verifica_el_filtro_del_servidor_abierto_cuando_otro_se_cuelga(
+    async def test_checks_the_opened_servers_filter_when_another_hangs(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The hang spent the shared budget; the opened server's filter is still checked."""
@@ -377,7 +377,7 @@ class TestPresupuestoTrasTolerar:
 
         assert listed == 1, "the opened server's tools were never listed"
 
-    async def test_aborta_cuando_el_listado_del_servidor_abierto_expira(
+    async def test_aborts_when_the_opened_servers_listing_expires(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A connected server whose own listing times out still fails closed."""
@@ -400,7 +400,7 @@ class TestPresupuestoTrasTolerar:
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
         assert _SERVER_B in str(failure.value)
 
-    async def test_aborta_cuando_se_cuelga_y_el_modo_es_requerido(
+    async def test_aborts_when_it_hangs_and_the_mode_is_required(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The same mixed hang still aborts start-up under ``required``."""
@@ -423,10 +423,10 @@ class TestPresupuestoTrasTolerar:
         assert _SERVER_A in str(failure.value)
 
 
-class TestFiltroDeServidorCaido:
+class TestDownServerFilter:
     """FR-025 is waived only for the servers that never connected (AC9)."""
 
-    async def test_arranca_cuando_el_filtro_apunta_a_un_servidor_caido(
+    async def test_starts_when_the_filter_points_at_a_down_server(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A filter on a server that never opened does not fail start-up."""
@@ -443,7 +443,7 @@ class TestFiltroDeServidorCaido:
         async with runtime:
             assert runtime.has_agent(_AGENT)
 
-    async def test_ejecuta_el_agente_cuando_sus_otros_servidores_abrieron(
+    async def test_runs_the_agent_when_its_other_servers_opened(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -480,11 +480,11 @@ class TestFiltroDeServidorCaido:
         assert result.output == {"answer": "42"}
 
 
-class TestFabricaAusente:
+class TestMissingFactory:
     """A missing client factory is a wiring bug and stays fatal (AC10)."""
 
     @pytest.mark.parametrize("remote_clients", ["required", "optional"])
-    async def test_aborta_cuando_falta_la_fabrica_mcp(
+    async def test_aborts_when_the_mcp_factory_is_missing(
         self, deps: StubDepsFactory, container: LoomContainer, remote_clients: str
     ) -> None:
         """An ``mcp`` grant with no factory aborts under both values."""
@@ -502,7 +502,7 @@ class TestFabricaAusente:
         assert _MISSING_MCP_FACTORY in str(failure.value)
 
     @pytest.mark.parametrize("remote_clients", ["required", "optional"])
-    async def test_aborta_cuando_falta_la_fabrica_a2a(
+    async def test_aborts_when_the_a2a_factory_is_missing(
         self, deps: StubDepsFactory, container: LoomContainer, remote_clients: str
     ) -> None:
         """An ``a2a`` grant with no factory aborts under both values."""
@@ -519,7 +519,7 @@ class TestFabricaAusente:
 
         assert _MISSING_A2A_FACTORY in str(failure.value)
 
-    async def test_distingue_la_fabrica_ausente_de_una_conexion_fallida(
+    async def test_distinguishes_a_missing_factory_from_a_failed_connection(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The wiring bug is reported apart from the tolerated connection failure."""
@@ -544,10 +544,10 @@ class TestFabricaAusente:
         assert _REFUSED not in str(failure.value)
 
 
-class TestEjecucionSinClienteDeArranque:
+class TestRunningWithoutAStartupClient:
     """Nothing becomes lazy: the run path is untouched (AC11)."""
 
-    async def test_ejecuta_cuando_el_servidor_no_abrio_en_el_arranque(
+    async def test_runs_when_the_server_did_not_open_at_startup(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,

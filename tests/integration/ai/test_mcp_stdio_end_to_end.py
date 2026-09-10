@@ -115,10 +115,10 @@ def _wait_until_gone(pid: int, *, timeout_s: float = 5.0) -> bool:
     return False
 
 
-class TestServidorStdio:
+class TestStdioServer:
     """The declared command is spawned, filtered, called and reaped."""
 
-    async def test_solo_llega_la_tool_incluida_cuando_el_grant_filtra(
+    async def test_only_the_included_tool_reaches_the_model_when_the_grant_filters(
         self, tmp_path: Path, caller: Identity
     ) -> None:
         """``include: [read_*]`` leaves the writing tool unreachable by the model."""
@@ -132,7 +132,7 @@ class TestServidorStdio:
         assert model.offered_tools == ("read_orders",)
         assert any(CANARY in returned for returned in model.tool_returns)
 
-    async def test_el_subproceso_muere_al_salir_el_runtime(
+    async def test_the_subprocess_dies_when_the_runtime_exits(
         self, tmp_path: Path, caller: Identity
     ) -> None:
         """No server outlives the runtime that spawned it."""
@@ -147,7 +147,7 @@ class TestServidorStdio:
 
         assert _wait_until_gone(pid)
 
-    async def test_el_hijo_recibe_solo_el_entorno_declarado(
+    async def test_the_child_receives_only_the_declared_environment(
         self, tmp_path: Path, caller: Identity, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The declared variables arrive; the worker's own do not."""
@@ -168,10 +168,10 @@ class TestServidorStdio:
         assert "must-not-leak" not in model.tool_returns
 
 
-class TestToleranciaDeArranque:
+class TestStartupTolerance:
     """``remote_clients`` decides whether an unreachable command aborts start-up."""
 
-    async def test_arranca_y_marca_no_disponible_cuando_es_opcional(self, tmp_path: Path) -> None:
+    async def test_starts_and_marks_unavailable_when_it_is_optional(self, tmp_path: Path) -> None:
         """An optional server that cannot be spawned is dropped, not fatal."""
         config = _config(
             tmp_path / "pid", command="/nonexistent/mcp-binary", remote_clients="optional"
@@ -185,7 +185,7 @@ class TestToleranciaDeArranque:
 
         assert health.checks[f"mcp:{_SERVER}"] == "unavailable"
 
-    async def test_aborta_nombrando_el_servidor_cuando_es_obligatorio(self, tmp_path: Path) -> None:
+    async def test_aborts_naming_the_server_when_it_is_required(self, tmp_path: Path) -> None:
         """A required server that cannot be spawned aborts start-up."""
         config = _config(tmp_path / "pid", command="/nonexistent/mcp-binary")
         model = ScriptedToolModel()

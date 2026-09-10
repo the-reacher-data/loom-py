@@ -9,7 +9,7 @@ from loom.ai.config import AgentEndpointConfig
 from loom.ai.fastapi.endpoints import _identity_notice
 
 
-def test_promete_la_identidad_del_llamante_cuando_solo_hay_capacidades_locales() -> None:
+def test_promises_the_callers_identity_when_only_local_capabilities_are_granted() -> None:
     """Local kinds do run as the verified caller, so the notice may say so."""
     notice = _identity_notice(AgentEndpointConfig(enabled=True, auth="jwt"), ("sql", "usecase"))
 
@@ -18,7 +18,7 @@ def test_promete_la_identidad_del_llamante_cuando_solo_hay_capacidades_locales()
 
 
 @pytest.mark.parametrize("remote", ["mcp", "a2a"])
-def test_nombra_la_credencial_del_despliegue_cuando_hay_capacidades_remotas(remote: str) -> None:
+def test_names_the_deployment_credential_when_remote_capabilities_are_granted(remote: str) -> None:
     """A remote endpoint sees the deployment's credential, never the caller's."""
     notice = _identity_notice(AgentEndpointConfig(enabled=True, auth="jwt"), ("sql", remote))
 
@@ -27,7 +27,7 @@ def test_nombra_la_credencial_del_despliegue_cuando_hay_capacidades_remotas(remo
     assert "who calls does not bound what the remote side allows" in notice
 
 
-def test_advierte_que_no_hay_identidad_cuando_el_mount_es_anonimo() -> None:
+def test_warns_that_there_is_no_identity_when_the_mount_is_anonymous() -> None:
     """An anonymous mount has no identity to promise, remote kinds or not."""
     notice = _identity_notice(
         AgentEndpointConfig(enabled=True, auth="jwt", allow_anonymous=True), ("mcp",)
@@ -36,7 +36,7 @@ def test_advierte_que_no_hay_identidad_cuando_el_mount_es_anonimo() -> None:
     assert "callers are NOT authenticated" in notice
 
 
-def test_avisa_de_que_el_id_es_la_credencial_cuando_el_mount_anonimo_conversa() -> None:
+def test_warns_that_the_id_is_the_credential_for_a_conversational_anonymous_mount() -> None:
     """Anonymous callers share one subject, so only ``conversation_id`` separates threads."""
     endpoint = AgentEndpointConfig(enabled=True, auth="jwt", allow_anonymous=True)
 
@@ -48,7 +48,7 @@ def test_avisa_de_que_el_id_es_la_credencial_cuando_el_mount_anonimo_conversa() 
     assert "conversation_id" not in single_shot
 
 
-def test_avisa_de_que_el_context_id_es_la_credencial_cuando_el_mount_a2a_anonimo_conversa() -> None:
+def test_warns_that_context_id_is_the_credential_for_a_conversational_anonymous_a2a_mount() -> None:
     """AC6: over A2A the anonymous notice names ``contextId`` as the only separator."""
     conversational = a2a_identity_notice(True, conversational=True)
     single_shot = a2a_identity_notice(True)
@@ -61,7 +61,9 @@ def test_avisa_de_que_el_context_id_es_la_credencial_cuando_el_mount_a2a_anonimo
 
 
 @pytest.mark.parametrize("conversational", [True, False])
-def test_no_cambia_el_aviso_a2a_autenticado_cuando_el_plan_conversa(conversational: bool) -> None:
+def test_does_not_change_the_authenticated_a2a_notice_when_the_plan_is_conversational(
+    conversational: bool,
+) -> None:
     """AC6: a verified caller is the credential, so the authenticated notice is unchanged."""
     notice = a2a_identity_notice(False, conversational=conversational)
 

@@ -475,7 +475,7 @@ def app_container(
 
 
 class TestContainment:
-    async def test_solo_se_ofrecen_las_operaciones_concedidas_cuando_el_plan_las_declara(
+    async def test_only_the_granted_operations_are_offered_when_the_plan_declares_them(
         self, app_container: LoomContainer
     ) -> None:
         """Two granted keys publish two tools; the third key publishes none."""
@@ -491,7 +491,7 @@ class TestContainment:
 
         assert sorted(model.offered_tools) == sorted(GRANTED_TOOLS)
 
-    async def test_la_operacion_no_concedida_no_se_invoca_cuando_el_modelo_la_pide(
+    async def test_the_ungranted_operation_is_never_invoked_even_when_the_model_names_it(
         self, app_container: LoomContainer, invoker: RecordingInvoker
     ) -> None:
         """The ungranted key is unreachable even when the model names it.
@@ -522,7 +522,7 @@ class TestContainment:
 
 
 class TestIdentity:
-    async def test_la_capacidad_corre_bajo_la_identidad_del_llamante_cuando_se_invoca(
+    async def test_the_capability_runs_under_the_callers_identity_when_invoked(
         self, app_container: LoomContainer, invoker: RecordingInvoker
     ) -> None:
         """The invocation observes the caller, never ``ANONYMOUS``."""
@@ -538,7 +538,7 @@ class TestIdentity:
 
         assert [call.identity for call in invoker.calls] == [ANALYST]
 
-    async def test_no_se_invoca_ninguna_operacion_cuando_el_llamante_es_anonimo(
+    async def test_no_operation_is_invoked_when_the_caller_is_anonymous(
         self, app_container: LoomContainer, invoker: RecordingInvoker
     ) -> None:
         """``usecase`` refuses an unauthenticated caller too (ruling R3).
@@ -562,7 +562,7 @@ class TestIdentity:
         assert failure.value.code is AgentRunErrorCode.UNAUTHORIZED
         assert invoker.calls == []
 
-    async def test_se_rechaza_cuando_el_bundle_de_deps_no_lleva_identidad(
+    async def test_the_run_is_refused_when_the_deps_bundle_carries_no_identity(
         self, app_container: LoomContainer
     ) -> None:
         """A bundle without the contract's attributes fails closed (design D1)."""
@@ -579,7 +579,7 @@ class TestIdentity:
 
         assert failure.value.code is AgentRunErrorCode.UNAUTHORIZED
 
-    async def test_no_se_invoca_ninguna_operacion_cuando_el_bundle_no_lleva_identidad(
+    async def test_no_operation_is_invoked_when_the_deps_bundle_carries_no_identity(
         self, app_container: LoomContainer, invoker: RecordingInvoker
     ) -> None:
         """The refusal happens before the application is ever touched."""
@@ -603,7 +603,7 @@ class TestIdentity:
 
 
 class TestSqlRolesAreBoundToTheCaller:
-    async def test_la_consulta_llega_con_los_roles_resueltos_cuando_el_llamante_esta_autenticado(
+    async def test_the_query_arrives_with_the_resolved_roles_when_the_caller_is_authenticated(
         self, app_container: LoomContainer, sql_service: RecordingSqlQueryService
     ) -> None:
         """The roles reaching the service are the caller's resolved, non-empty tuple."""
@@ -619,7 +619,7 @@ class TestSqlRolesAreBoundToTheCaller:
 
         assert [call.roles for call in sql_service.calls] == [(ALLOWED_ROLE,)]
 
-    async def test_ninguna_consulta_llega_con_roles_vacios_cuando_el_agente_consulta_dos_veces(
+    async def test_no_query_arrives_with_empty_roles_even_when_the_agent_queries_twice(
         self, app_container: LoomContainer, sql_service: RecordingSqlQueryService
     ) -> None:
         """No recorded call carries ``None`` or ``()``: the shared default is unreachable."""
@@ -638,7 +638,7 @@ class TestSqlRolesAreBoundToTheCaller:
         unbound = [call for call in sql_service.calls if not call.roles]
         assert (len(sql_service.calls), unbound) == (2, [])
 
-    async def test_la_consulta_no_llega_al_servicio_cuando_el_llamante_es_anonimo(
+    async def test_the_query_never_reaches_the_service_when_the_caller_is_anonymous(
         self, app_container: LoomContainer, sql_service: RecordingSqlQueryService
     ) -> None:
         """An anonymous caller is refused before ``execute`` is ever called."""
@@ -655,7 +655,7 @@ class TestSqlRolesAreBoundToTheCaller:
 
         assert (failure.value.code, sql_service.calls) == (AgentRunErrorCode.UNAUTHORIZED, [])
 
-    async def test_la_consulta_no_llega_al_servicio_cuando_el_llamante_no_tiene_rol_permitido(
+    async def test_the_query_never_reaches_the_service_when_the_caller_holds_no_allowed_role(
         self, app_container: LoomContainer, sql_service: RecordingSqlQueryService
     ) -> None:
         """A caller holding no allowlisted role never reaches the service."""
@@ -679,7 +679,7 @@ class TestSqlRolesAreBoundToTheCaller:
 
 
 class TestResultBounds:
-    async def test_el_modelo_no_ve_ninguna_fila_cuando_el_resultado_supera_max_rows(
+    async def test_the_model_sees_no_row_when_the_result_exceeds_max_rows(
         self, app_container: LoomContainer
     ) -> None:
         """A result above ``max_rows`` is refused, carrying no row data."""
@@ -697,7 +697,7 @@ class TestResultBounds:
 
         assert (bool(model.tool_returns), CANARY in model.shown) == (True, False)
 
-    async def test_el_modelo_no_ve_ninguna_fila_cuando_el_resultado_supera_max_result_bytes(
+    async def test_the_model_sees_no_row_when_the_result_exceeds_max_result_bytes(
         self, app_container: LoomContainer
     ) -> None:
         """A result above ``max_result_bytes`` is refused, carrying no row data."""
@@ -722,7 +722,7 @@ class TestResultBounds:
 
 
 class TestSupportedCapabilityKinds:
-    def test_los_kinds_soportados_son_los_de_esta_fase_cuando_se_consulta_el_provider(
+    def test_the_supported_kinds_are_this_phases_when_the_provider_is_queried(
         self,
     ) -> None:
         """Every kind the adapter can serve is announced, ``a2a`` included."""
@@ -749,7 +749,7 @@ def _granted_native_tools(engine: AgentEngine) -> list[Any]:
 class TestNativeCapabilityWiring:
     """``native`` reaches the agent as an engine capability, never as a toolset."""
 
-    def test_el_agente_recibe_la_herramienta_del_proveedor_cuando_el_plan_la_concede(
+    def test_the_agent_receives_the_providers_tool_when_the_plan_grants_it(
         self, container: LoomContainer, deps: object
     ) -> None:
         """The built agent carries one ``NativeTool`` of the granted class."""
@@ -765,7 +765,7 @@ class TestNativeCapabilityWiring:
         native = _granted_native_tools(engine)
         assert [type(capability.tool) for capability in native] == [WebSearchTool]
 
-    def test_el_agente_no_recibe_ninguna_cuando_el_plan_no_las_concede(
+    def test_the_agent_receives_none_when_the_plan_grants_none(
         self, container: LoomContainer, deps: object
     ) -> None:
         """A plan without native grants leaves the agent's capabilities untouched."""
@@ -818,7 +818,7 @@ def skills_capability(directory: str, *names: str) -> CompiledSkillsCapability:
 class TestSkillsCapability:
     """``skills`` becomes a deferred harness capability (FR-042)."""
 
-    def test_construye_una_capability_por_libreria_cuando_el_plan_concede_skills(
+    def test_builds_one_capability_per_library_when_the_plan_grants_skills(
         self, tmp_path: Path
     ) -> None:
         """One ``Skills`` per grant, pointed at the directory the compiler resolved."""
@@ -832,9 +832,7 @@ class TestSkillsCapability:
         assert isinstance(skills, Skills)
         assert skills.directories == (directory,)
 
-    def test_concede_solo_los_nombres_seleccionados_cuando_el_artefacto_filtra(
-        self, tmp_path: Path
-    ) -> None:
+    def test_grants_only_the_selected_names_when_the_artefact_filters(self, tmp_path: Path) -> None:
         """The compiler already resolved the globs, so a subset reaches the harness."""
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing"),))
@@ -844,9 +842,7 @@ class TestSkillsCapability:
         assert isinstance(skills, Skills)
         assert skills.include == frozenset({"pricing"})
 
-    def test_falla_cuando_un_nombre_concedido_no_existe_en_la_libreria(
-        self, tmp_path: Path
-    ) -> None:
+    def test_fails_when_a_granted_name_does_not_exist_in_the_library(self, tmp_path: Path) -> None:
         """The harness reads the real directory: an unknown name cannot be granted."""
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing", "invented"),))
@@ -855,7 +851,7 @@ class TestSkillsCapability:
         with pytest.raises(ValueError, match="invented"):
             _capabilities.build_capabilities(plan, container)
 
-    def test_no_construye_ningun_toolset_cuando_la_capacidad_es_skills(
+    def test_builds_no_toolset_when_the_capability_is_skills(
         self, tmp_path: Path, app_container: LoomContainer
     ) -> None:
         """A skill is prompt material: it publishes no tool to guard."""
@@ -864,7 +860,7 @@ class TestSkillsCapability:
 
         assert _capabilities.build_toolsets(plan, app_container, mcp=SharedMcpToolsets()) == ()
 
-    def test_no_construye_capabilities_cuando_el_plan_no_concede_skills(
+    def test_builds_no_capabilities_when_the_plan_grants_no_skills(
         self,
     ) -> None:
         """A plan without a library asks nothing of the optional harness."""
@@ -872,7 +868,7 @@ class TestSkillsCapability:
 
         assert _capabilities.build_capabilities(plan, LoomContainer()) == ()
 
-    async def test_el_agente_responde_cuando_el_plan_concede_una_libreria(
+    async def test_the_agent_responds_when_the_plan_grants_a_library(
         self, tmp_path: Path, app_container: LoomContainer
     ) -> None:
         """The provider hands the harness capability to the agent and the run works."""
@@ -923,7 +919,7 @@ class FlakyToolModel(ScriptedToolModel):
 
 
 class TestCapabilityRunsAreNotReplayed:
-    async def test_la_operacion_se_ejecuta_una_sola_vez_cuando_el_proveedor_falla(
+    async def test_the_operation_runs_only_once_even_when_the_provider_fails(
         self, app_container: LoomContainer, invoker: RecordingInvoker
     ) -> None:
         """A retriable provider outage does not replay a capability run.
@@ -947,7 +943,7 @@ class TestCapabilityRunsAreNotReplayed:
 
         assert len(invoker.calls) == 1
 
-    async def test_el_agente_sin_capacidades_conserva_sus_reintentos(
+    async def test_an_agent_without_capabilities_keeps_its_retries(
         self, app_container: LoomContainer
     ) -> None:
         """A pure-language agent has no side effect to duplicate, so it retries."""
@@ -967,7 +963,7 @@ class TestCapabilityRunsAreNotReplayed:
 
 
 class TestContainedApplicationFailures:
-    async def test_la_operacion_mutante_se_ejecuta_una_sola_vez_cuando_la_aplicacion_falla(
+    async def test_the_mutating_operation_runs_only_once_even_when_the_application_fails(
         self, app_container: LoomContainer
     ) -> None:
         """A failing mutation is never replayed by the retry policy.
@@ -992,7 +988,7 @@ class TestContainedApplicationFailures:
 
         assert len(invoker.calls) == 1
 
-    async def test_el_modelo_ve_un_rechazo_generico_cuando_la_aplicacion_falla(
+    async def test_the_model_sees_a_generic_refusal_when_the_application_fails(
         self, app_container: LoomContainer
     ) -> None:
         """The refusal names the tool and a generic cause, never the backend."""
@@ -1011,7 +1007,7 @@ class TestContainedApplicationFailures:
 
         assert ("refused" in model.shown, BACKEND_CANARY in model.shown) == (True, False)
 
-    async def test_el_fallo_sql_no_muestra_el_detalle_del_driver_cuando_el_servicio_falla(
+    async def test_a_sql_failure_shows_no_driver_detail_when_the_service_fails(
         self, app_container: LoomContainer
     ) -> None:
         """A driver failure is contained exactly like an application one."""
@@ -1034,7 +1030,7 @@ class TestContainedApplicationFailures:
 
         assert ("refused" in model.shown, BACKEND_CANARY in model.shown) == (True, False)
 
-    async def test_la_denegacion_de_la_aplicacion_no_reejecuta_la_operacion_cuando_se_rechaza(
+    async def test_the_applications_denial_does_not_rerun_the_operation(
         self, app_container: LoomContainer
     ) -> None:
         """A ``Forbidden`` is ``UNAUTHORIZED``: an authorisation class, never retried."""
@@ -1054,7 +1050,7 @@ class TestContainedApplicationFailures:
 
         assert (failure.value.code, len(invoker.calls)) == (AgentRunErrorCode.UNAUTHORIZED, 1)
 
-    async def test_la_denegacion_no_muestra_el_mensaje_de_la_aplicacion_cuando_se_rechaza(
+    async def test_the_denial_shows_no_application_message_when_refused(
         self, app_container: LoomContainer
     ) -> None:
         """The coded error carries loom's own wording, not the application's."""
@@ -1199,7 +1195,7 @@ class RetryCapturingModel(ScriptedToolModel):
 
 
 class TestEngineSignalsSurviveTheGuard:
-    async def test_el_modelo_recibe_la_guia_cuando_la_herramienta_pide_reintento(
+    async def test_the_model_receives_the_guidance_when_the_tool_asks_for_a_retry(
         self, app_container: LoomContainer
     ) -> None:
         """``ModelRetry`` is control flow, not a failure.
@@ -1223,7 +1219,7 @@ class TestEngineSignalsSurviveTheGuard:
         assert "refused" not in model.shown
 
     @pytest.mark.parametrize("signal", [CallDeferred(), ApprovalRequired()])
-    async def test_el_protocolo_del_motor_no_se_convierte_en_rechazo(
+    async def test_the_engines_own_protocol_is_never_turned_into_a_refusal(
         self, app_container: LoomContainer, signal: Exception
     ) -> None:
         """Deferred and approval drive a protocol the engine is waiting on.
@@ -1249,7 +1245,7 @@ class TestEngineSignalsSurviveTheGuard:
 
 
 class TestForeignToolsetsCannotDictateTheirSummary:
-    async def test_el_toolset_ajeno_no_dicta_el_resumen_de_su_propio_evento(
+    async def test_a_foreign_toolset_does_not_dictate_its_own_events_summary(
         self, app_container: LoomContainer
     ) -> None:
         """The reserved ``loom`` metadata key is stripped from a foreign return.
@@ -1322,7 +1318,7 @@ class TestToolCallsAreCounted:
 
 
 class TestForeignToolsetsAreGuarded:
-    async def test_la_herramienta_python_no_se_ejecuta_cuando_el_llamante_es_anonimo(
+    async def test_the_python_tool_does_not_run_when_the_caller_is_anonymous(
         self, app_container: LoomContainer
     ) -> None:
         """A ``python`` toolset is first-party code: it runs as the caller or not at all."""
@@ -1340,7 +1336,7 @@ class TestForeignToolsetsAreGuarded:
 
         assert (failure.value.code, calls) == (AgentRunErrorCode.UNAUTHORIZED, [])
 
-    async def test_la_herramienta_python_se_ejecuta_cuando_el_llamante_esta_autenticado(
+    async def test_the_python_tool_runs_when_the_caller_is_authenticated(
         self, app_container: LoomContainer
     ) -> None:
         """The guard bounds the call without breaking normal dispatch."""
@@ -1357,7 +1353,7 @@ class TestForeignToolsetsAreGuarded:
 
         assert calls == ["ping"]
 
-    async def test_el_servidor_mcp_no_se_alcanza_cuando_el_llamante_es_anonimo(
+    async def test_the_mcp_server_is_not_reached_when_the_caller_is_anonymous(
         self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An unauthenticated run must not reach a remote MCP server."""
@@ -1376,7 +1372,7 @@ class TestForeignToolsetsAreGuarded:
 
         assert (failure.value.code, calls) == (AgentRunErrorCode.UNAUTHORIZED, [])
 
-    async def test_el_servidor_mcp_se_alcanza_cuando_el_llamante_esta_autenticado(
+    async def test_the_mcp_server_is_reached_when_the_caller_is_authenticated(
         self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The guard leaves an authenticated MCP call working."""
@@ -1398,7 +1394,7 @@ class TestForeignToolsetsAreGuarded:
 class TestMcpToolFilter:
     """The artifact's ``include``/``exclude`` are globs, applied at build (FR-025)."""
 
-    async def test_ofrece_solo_la_familia_incluida_cuando_el_include_es_un_glob(
+    async def test_offers_only_the_included_family_when_include_is_a_glob(
         self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``search_*`` selects a family of tools, not a literal name."""
@@ -1425,7 +1421,7 @@ class TestMcpToolFilter:
 
         assert sorted(model.offered_tools) == ["search_docs", "search_web"]
 
-    async def test_el_exclude_gana_sobre_el_include_cuando_ambos_casan(
+    async def test_exclude_wins_over_include_when_both_match(
         self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``exclude`` is applied after ``include``, so an admitted tool can still go."""
@@ -1453,7 +1449,7 @@ class TestMcpToolFilter:
 
         assert model.offered_tools == ("search_web",)
 
-    async def test_ofrece_todo_lo_que_el_servidor_expone_cuando_no_hay_filtro(
+    async def test_offers_everything_the_server_exposes_when_there_is_no_filter(
         self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No filter grants the whole surface: an empty ``include`` means all."""
@@ -1479,7 +1475,7 @@ class TestMcpToolFilter:
 
 
 class TestStatementBound:
-    async def test_la_consulta_no_llega_al_servicio_cuando_supera_max_sql_bytes(
+    async def test_the_query_never_reaches_the_service_when_it_exceeds_max_sql_bytes(
         self, app_container: LoomContainer, sql_service: RecordingSqlQueryService
     ) -> None:
         """``max_sql_bytes`` binds the model-authored statement, as REST binds the request."""
@@ -1497,7 +1493,7 @@ class TestStatementBound:
 
 
 class TestRowBoundCountsTheRowsHandedOver:
-    async def test_el_modelo_no_ve_ninguna_fila_cuando_row_count_contradice_a_rows(
+    async def test_the_model_sees_no_row_when_row_count_contradicts_rows(
         self, app_container: LoomContainer
     ) -> None:
         """The bound counts ``rows``, not the sibling ``row_count`` an executor computes."""
@@ -1523,7 +1519,7 @@ class TestRowBoundCountsTheRowsHandedOver:
 
 
 class TestPublishedToolNames:
-    def test_el_plan_no_compila_cuando_dos_capacidades_derivan_el_mismo_nombre(
+    def test_the_plan_fails_to_compile_when_two_capabilities_derive_the_same_name(
         self, app_container: LoomContainer
     ) -> None:
         """Collisions are rejected across capabilities, not only within one."""
@@ -1542,7 +1538,7 @@ class TestPublishedToolNames:
                 deps=deps,
             )
 
-    async def test_el_nombre_de_la_conexion_se_normaliza_cuando_lleva_un_punto(
+    async def test_the_connection_name_is_normalized_when_it_carries_a_dot(
         self, app_container: LoomContainer
     ) -> None:
         """A connection named ``sales.eu`` must not publish a name providers reject."""
@@ -1558,7 +1554,7 @@ class TestPublishedToolNames:
 
         assert model.offered_tools == ("sql_sales_eu",)
 
-    def test_el_plan_no_compila_cuando_el_nombre_derivado_supera_los_64_caracteres(
+    def test_the_plan_fails_to_compile_when_the_derived_name_exceeds_64_characters(
         self, app_container: LoomContainer
     ) -> None:
         """The name is capped at build, not at the provider."""
@@ -1584,7 +1580,7 @@ class TestPublishedToolNames:
 
 
 class TestRefusalsAreVisibleInTheStream:
-    async def test_el_rechazo_produce_un_evento_no_ok_cuando_se_supera_una_cota(
+    async def test_the_refusal_produces_a_not_ok_event_when_a_bound_is_exceeded(
         self, app_container: LoomContainer
     ) -> None:
         """The part the tool really produced, translated as the stream would."""
@@ -1604,7 +1600,7 @@ class TestRefusalsAreVisibleInTheStream:
             (event.ok, event.summary) for event in events if isinstance(event, ToolResultEvent)
         ] == [(False, "refused")]
 
-    async def test_la_llamada_correcta_sigue_siendo_ok_cuando_el_resultado_cabe(
+    async def test_a_correct_call_still_reads_ok_when_the_result_fits(
         self, app_container: LoomContainer, sql_service: RecordingSqlQueryService
     ) -> None:
         """A refusal is distinguishable: a normal call still reads ``ok`` with its count."""
@@ -1634,7 +1630,7 @@ def whoami_capability() -> CompiledUsecaseCapability:
     return CompiledUsecaseCapability(keys=("whoami",), use_cases=(WhoAmIUseCase,))
 
 
-class TestIdentidadHastaElEjecutor:
+class TestIdentityReachesTheExecutor:
     """A granted use case declaring ``Caller()`` must receive the agent's caller.
 
     Driven through the real composition-root dependency factory and a real
@@ -1655,7 +1651,7 @@ class TestIdentidadHastaElEjecutor:
         )
         return engine, model
 
-    async def test_el_caso_de_uso_ve_al_llamante_cuando_el_agente_lo_invoca(self) -> None:
+    async def test_the_use_case_sees_the_caller_when_the_agent_invokes_it(self) -> None:
         """The subject of the agent's caller reaches the ``Caller()`` binding."""
         engine, model = self._engine_and_model()
 
@@ -1663,7 +1659,7 @@ class TestIdentidadHastaElEjecutor:
 
         assert ANALYST.subject in model.shown
 
-    async def test_no_falla_como_no_autenticado_cuando_el_agente_lo_invoca(self) -> None:
+    async def test_it_does_not_fail_as_unauthenticated_when_the_agent_invokes_it(self) -> None:
         """No ``Unauthenticated``: the executor is handed the caller explicitly."""
         engine, model = self._engine_and_model()
 

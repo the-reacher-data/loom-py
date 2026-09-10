@@ -79,10 +79,10 @@ def _runtime(
     )
 
 
-class TestElResolvedorAplicaElFiltroDelBindingQueResuelve:
-    """El fallo de autorización que PR2 midió no puede volver."""
+class TestTheResolverAppliesTheResolvingBindingsFilter:
+    """The authorization failure PR2 measured cannot return."""
 
-    async def test_admite_exactamente_lo_declarado_y_rechaza_el_resto(
+    async def test_admits_exactly_whats_declared_and_refuses_the_rest(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -112,7 +112,7 @@ class TestElResolvedorAplicaElFiltroDelBindingQueResuelve:
                 await handle.call_untyped("delete", {})
             assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
 
-    async def test_dos_casos_de_uso_sobre_un_servidor_no_colisionan(
+    async def test_two_use_cases_over_one_server_do_not_collide(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -143,7 +143,7 @@ class TestElResolvedorAplicaElFiltroDelBindingQueResuelve:
             # served either one.
             assert first._session is second._session  # noqa: SLF001
 
-    async def test_mutar_para_leer_el_include_del_grant_compartido_deja_esto_en_rojo(
+    async def test_reading_the_shared_grants_include_instead_of_the_bindings_own_fails_this(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -182,8 +182,8 @@ class TestElResolvedorAplicaElFiltroDelBindingQueResuelve:
             assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
 
 
-class TestElSpanDistingueElCaminoDeCasoDeUso:
-    async def test_el_span_nombra_el_servidor_mcp_y_no_el_agente(
+class TestTheSpanDistinguishesTheUseCasePath:
+    async def test_the_span_names_the_mcp_server_and_not_the_agent(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -258,10 +258,10 @@ class TestTimeoutComesFromTheServersOwnDeadline:
         assert _SERVER_A in str(excinfo.value), str(excinfo.value)
 
 
-class TestServidorInalcanzableTolerado:
-    """FR-07/T303: la degradación en llamada, no en arranque."""
+class TestUnreachableServerTolerated:
+    """FR-07/T303: degradation on call, not on startup."""
 
-    async def test_el_arranque_pasa_y_la_primera_llamada_es_tool_unavailable(
+    async def test_startup_passes_and_the_first_call_is_tool_unavailable(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -295,7 +295,7 @@ class TestServidorInalcanzableTolerado:
                 await handle.call("search", {}, expect=dict)
             assert typed.value.code is AgentRunErrorCode.TOOL_UNAVAILABLE
 
-    async def test_un_runtime_nunca_entrado_lanza_runtime_error_no_tool_unavailable(
+    async def test_a_runtime_never_entered_raises_runtime_error_not_tool_unavailable(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,

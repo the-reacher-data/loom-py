@@ -68,10 +68,10 @@ def _runtime(engines: dict[str, ScriptedEngine], container: LoomContainer) -> Ag
     )
 
 
-class TestSondaAPruebaDeFallos:
+class TestFailureResistantProbe:
     """One agent's failing probe must not silence the whole runtime."""
 
-    async def test_marca_el_agente_como_no_disponible_cuando_su_sonda_falla(
+    async def test_marks_the_agent_unavailable_when_its_probe_fails(
         self, container: LoomContainer
     ) -> None:
         """A raising ``health`` becomes a health state, not a dead task."""
@@ -83,7 +83,7 @@ class TestSondaAPruebaDeFallos:
 
         assert health.status == "unavailable"
 
-    async def test_no_muestra_el_texto_del_fallo_cuando_su_sonda_falla(
+    async def test_shows_no_failure_text_when_its_probe_fails(
         self, container: LoomContainer
     ) -> None:
         """The probe reaches a provider: its failure text never reaches a scrape."""
@@ -95,7 +95,7 @@ class TestSondaAPruebaDeFallos:
 
         assert "vendor.internal" not in (health.detail or "")
 
-    async def test_sigue_sondeando_al_resto_cuando_una_sonda_falla(
+    async def test_keeps_probing_the_rest_when_one_probe_fails(
         self, container: LoomContainer
     ) -> None:
         """The loop moves on to the next agent instead of ending."""
@@ -110,9 +110,7 @@ class TestSondaAPruebaDeFallos:
 
         assert health.status == "ok"
 
-    async def test_se_recupera_cuando_la_sonda_vuelve_a_responder(
-        self, container: LoomContainer
-    ) -> None:
+    async def test_recovers_when_the_probe_answers_again(self, container: LoomContainer) -> None:
         """The probe is still alive after the failure: the next pass reports ``ok``."""
         engine = ProbeFailingEngine(failures=1)
         engines: dict[str, ScriptedEngine] = {_FAILING: engine}

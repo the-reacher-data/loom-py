@@ -190,11 +190,11 @@ def _mcp_wired(
     return executor, runtime
 
 
-class TestElCaminoRealCompilaArrancaResuelveYLlamaConCeroPlanesDeAgente:
+class TestTheRealPathCompilesStartsResolvesAndCallsWithZeroAgentPlans:
     """T501 items 1 and 8: one call over the worker's shared session,
     proven with zero compiled agent plans naming the server at all."""
 
-    async def test_el_resultado_llega_por_la_sesion_que_el_arranque_abrio(
+    async def test_the_result_arrives_over_the_session_startup_opened(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -215,10 +215,10 @@ class TestElCaminoRealCompilaArrancaResuelveYLlamaConCeroPlanesDeAgente:
         assert session.calls == [("search", {"q": "widgets"})]
 
 
-class TestUnServidorCompartidoPorUnAgenteYUnCasoDeUso:
+class TestAServerSharedByAnAgentAndAUseCase:
     """T501 item 2: measured with a real factory call counter, not a log."""
 
-    async def test_la_fabrica_y_el_listado_se_invocan_una_sola_vez(
+    async def test_the_factory_and_the_listing_are_invoked_only_once(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -245,10 +245,10 @@ class TestUnServidorCompartidoPorUnAgenteYUnCasoDeUso:
         assert session.listed == 1
 
 
-class TestElCasoDeUsoAlcanzaLoQueElAgenteExcluye:
+class TestTheUseCaseReachesWhatTheAgentExcludes:
     """T501 item 3: pinned in one test, over the real chain both ways."""
 
-    async def test_el_caso_de_uso_llega_y_la_vista_del_agente_sigue_sin_alcanzarlo(
+    async def test_the_use_case_reaches_it_while_the_agents_view_still_does_not(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -274,7 +274,7 @@ class TestElCasoDeUsoAlcanzaLoQueElAgenteExcluye:
         assert use_case_result == {"ok": True}
 
 
-class TestElIncludeQueNoCasaNadaAbortaPorElCaminoReal:
+class TestAnIncludeMatchingNothingAbortsThroughTheRealPath:
     """T501 item 4: an ``include`` matching nothing aborts start-up through
     ``_compile_use_case_mcp`` itself, not through a hand-built
     ``UseCaseMcpGrant`` — ``test_use_case_mcp_runtime.py`` pins this same
@@ -283,7 +283,7 @@ class TestElIncludeQueNoCasaNadaAbortaPorElCaminoReal:
     glue that carries ``binding.include`` into the compiled capability.
     """
 
-    async def test_un_include_que_no_casa_nada_aborta_con_tool_filter_matches_nothing(
+    async def test_an_include_matching_nothing_aborts_with_tool_filter_matches_nothing(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -310,10 +310,10 @@ class TestElIncludeQueNoCasaNadaAbortaPorElCaminoReal:
         assert AgentErrorCode.MCP_SERVER_UNKNOWN not in codes
 
 
-class TestDosCasosDeUsoIncludesDisjuntosSobreUnaSolaSesion:
+class TestTwoUseCasesWithDisjointIncludesOverOneSession:
     """T501 item 9: measured on the shared session, not only on ``tools()``."""
 
-    async def test_cada_uno_admite_solo_lo_suyo_sobre_la_misma_sesion(
+    async def test_each_one_admits_only_its_own_over_the_same_session(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -343,10 +343,12 @@ class TestDosCasosDeUsoIncludesDisjuntosSobreUnaSolaSesion:
         assert session.listed == 1
 
 
-class TestElEjemploCompletoCorreSinRedNiServidorMcp:
+class TestTheFullExampleRunsWithoutNetworkOrMcpServer:
     """T501 item 7: the same use case item 1 runs live, now offline."""
 
-    async def test_el_resultado_refleja_lo_programado_en_el_doble(self, identity: Identity) -> None:
+    async def test_the_result_reflects_what_was_scripted_on_the_double(
+        self, identity: Identity
+    ) -> None:
         gateway = McpHandleDouble(_SERVER).with_tools("search")
         gateway.on_call_untyped("search", {"hits": 2})
 
@@ -357,10 +359,10 @@ class TestElEjemploCompletoCorreSinRedNiServidorMcp:
         assert result == {"hits": 2}
 
 
-class TestElDobleYElCaminoRealCoincidenEnElRechazo:
+class TestTheDoubleAndTheRealPathAgreeOnTheRefusal:
     """T501 item 10 (B6): the same call, refused the same way, both paths."""
 
-    async def test_ambos_caminos_rechazan_la_misma_llamada_fuera_de_include(
+    async def test_both_paths_refuse_the_same_call_outside_include(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -418,13 +420,11 @@ USE_CASES = [LookUpKnowledgeUseCase]
 """
 
 
-class TestSinSeccionAiElArranqueAbortaSiUnCasoDeUsoDeclaraElMarcador:
+class TestWithNoAiSectionStartupAbortsIfAUseCaseDeclaresTheMarker:
     """T501 item 6 (the ``create_app`` half): no unit test drives this —
     ``test_fastapi_auto_mcp_markers.py`` calls ``_verify_mcp_markers`` directly."""
 
-    def test_create_app_aborta_nombrando_el_caso_de_uso_y_el_parametro(
-        self, tmp_path: Path
-    ) -> None:
+    def test_create_app_aborts_naming_the_use_case_and_the_parameter(self, tmp_path: Path) -> None:
         app_module = "loom_noai_mcp_fixture_app"
         manifest_module = "loom_noai_mcp_fixture_manifest"
         sys.modules.pop(manifest_module, None)

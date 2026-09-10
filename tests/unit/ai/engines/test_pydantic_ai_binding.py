@@ -38,7 +38,7 @@ def aws_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 class TestModelBinding:
-    def test_bedrock_lleva_region_y_credenciales_cuando_se_resuelve(self, aws_profile: str) -> None:
+    def test_bedrock_carries_region_and_credentials_when_resolved(self, aws_profile: str) -> None:
         """The Bedrock binding carries region and profile into the client."""
         target = InferenceTarget(
             provider="bedrock",
@@ -58,7 +58,7 @@ class TestModelBinding:
         ("provider", "model_id"),
         [("openai", "gpt-5.2"), ("anthropic", "claude-sonnet-4-5")],
     )
-    def test_el_modelo_lleva_el_id_del_vendor_cuando_se_resuelve(
+    def test_the_model_carries_the_vendor_id_when_resolved(
         self, provider: str, model_id: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """OpenAI and Anthropic bind the vendor model id unchanged."""
@@ -70,7 +70,7 @@ class TestModelBinding:
         assert resolve_model(target).model_name == model_id
 
     @pytest.mark.parametrize("provider", ["openai", "anthropic"])
-    def test_lee_la_clave_de_la_variable_que_nombra_credentials_ref(
+    def test_reads_the_key_from_the_variable_credentials_ref_names(
         self, provider: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``credentials_ref`` names the variable holding the key, never the key."""
@@ -83,7 +83,7 @@ class TestModelBinding:
 
         assert model.client.api_key == "the-real-key"
 
-    def test_lee_la_variable_por_defecto_del_sdk_cuando_no_hay_credentials_ref(
+    def test_reads_the_sdks_default_variable_when_there_is_no_credentials_ref(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without a reference the vendor SDK reads its own variable."""
@@ -93,7 +93,7 @@ class TestModelBinding:
         assert resolve_model(target).client.api_key == "sdk-default"
 
     @pytest.mark.parametrize("provider", ["openai", "anthropic", "gateway"])
-    def test_falla_nombrando_la_variable_cuando_no_esta_puesta(
+    def test_fails_naming_the_variable_when_it_is_unset(
         self, provider: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An unset variable is a start-up failure, not a 401 on the first call."""
@@ -113,7 +113,7 @@ class TestModelBinding:
         assert "VENDOR_API_KEY" in issue.message
         assert provider in issue.message
 
-    def test_falla_nombrando_los_proveedores_cuando_el_vendor_es_desconocido(self) -> None:
+    def test_fails_naming_the_providers_for_an_unknown_vendor(self) -> None:
         """An unknown provider dies at start-up, naming what this release binds."""
         target = InferenceTarget(provider="unheard-of", model="x")
 
@@ -126,7 +126,7 @@ class TestModelBinding:
         assert "extra" not in issue.message
         assert "not installed" not in issue.message
 
-    def test_falla_pidiendo_la_region_cuando_bedrock_no_la_trae(self) -> None:
+    def test_fails_asking_for_the_region_when_bedrock_lacks_it(self) -> None:
         """A Bedrock binding without a region fails before any request."""
         target = InferenceTarget(provider="bedrock", model="x")
 
@@ -135,13 +135,13 @@ class TestModelBinding:
 
         assert failure.value.issues[0].code is AgentErrorCode.PROVIDER_SETTING_MISSING
 
-    def test_los_proveedores_soportados_son_los_documentados(self) -> None:
+    def test_the_supported_providers_are_the_documented_ones(self) -> None:
         """The dispatch map is the whole vendor surface of this release."""
         assert frozenset({"bedrock", "openai", "anthropic", "gateway"}) == SUPPORTED_PROVIDERS
 
 
 class TestSpecTranslation:
-    def test_el_spec_lleva_el_esquema_y_las_politicas_cuando_se_traduce(self) -> None:
+    def test_the_spec_carries_the_schema_and_the_policies_when_translated(self) -> None:
         """The plan's output schema and limits reach the engine's own spec."""
         plan: AgentPlan = make_plan(retries=3)
 
@@ -150,7 +150,7 @@ class TestSpecTranslation:
         assert spec.output_schema == dict(plan.output.schema)
         assert spec.retries == 3
 
-    def test_el_spec_no_lleva_tool_timeout_cuando_loom_ya_lo_aplica(self) -> None:
+    def test_the_spec_carries_no_tool_timeout_since_loom_already_applies_it(self) -> None:
         """``tool_timeout_ms`` has one enforcer, so the engine gets no deadline.
 
         Projecting it here as well raced loom's own ``asyncio.timeout`` over
@@ -162,7 +162,7 @@ class TestSpecTranslation:
 
         assert spec.tool_timeout is None
 
-    def test_el_spec_no_lleva_metadata_ni_modelo_cuando_se_traduce(self) -> None:
+    def test_the_spec_carries_no_metadata_or_model_when_translated(self) -> None:
         """Ownership facts and the concrete model never travel in the spec."""
         spec = build_agent_spec(make_plan())
 
@@ -220,7 +220,7 @@ def _create_engine(plan: AgentPlan) -> None:
 
 
 class TestOutputMode:
-    def test_tool_envuelve_el_esquema_en_tool_output_y_llega_a_from_spec(
+    def test_tool_wraps_the_schema_in_tool_output_and_reaches_from_spec(
         self, from_spec: _FromSpecRecorder
     ) -> None:
         """``tool`` pins the tool-call mode around the plan's own schema."""
@@ -235,7 +235,7 @@ class TestOutputMode:
         assert from_spec.kwargs is not None
         assert from_spec.kwargs["output_type"] is marker
 
-    def test_native_envuelve_el_esquema_en_native_output_y_llega_a_from_spec(
+    def test_native_wraps_the_schema_in_native_output_and_reaches_from_spec(
         self, from_spec: _FromSpecRecorder
     ) -> None:
         """``native`` pins the provider's structured-output mode, one type only."""
@@ -251,7 +251,7 @@ class TestOutputMode:
         assert from_spec.kwargs is not None
         assert from_spec.kwargs["output_type"] is marker
 
-    def test_no_pasa_output_type_cuando_el_binding_no_declara_modo(
+    def test_passes_no_output_type_when_the_binding_declares_no_mode(
         self, from_spec: _FromSpecRecorder
     ) -> None:
         """Absent mode: the call is today's call, no ``output_type`` keyword at all."""
@@ -263,7 +263,7 @@ class TestOutputMode:
         assert from_spec.kwargs is not None
         assert "output_type" not in from_spec.kwargs
 
-    def test_falla_cuando_el_modo_no_es_ninguno_de_los_dos(self) -> None:
+    def test_fails_when_the_mode_is_neither_of_the_two(self) -> None:
         """Fail closed: an unhandled mode raises instead of degrading to ``native``.
 
         Reachable only past the config check (a plan built in process), which
@@ -274,7 +274,7 @@ class TestOutputMode:
         with pytest.raises(AssertionError):
             build_output_type(plan)
 
-    def test_el_marcador_no_lleva_nombre_ni_descripcion(self) -> None:
+    def test_the_marker_carries_no_name_or_description(self) -> None:
         """Mirrors the engine's own wrapping of ``output_schema``: bare marker."""
         tool = build_output_type(_plan_with_output_mode("tool"))
         native = build_output_type(_plan_with_output_mode("native"))
@@ -288,7 +288,7 @@ class TestOutputMode:
 
 
 class TestEntryPoint:
-    def test_el_motor_se_resuelve_por_entry_point_cuando_se_pide_por_nombre(self) -> None:
+    def test_the_engine_resolves_by_entry_point_when_requested_by_name(self) -> None:
         """``ai.engine: pydantic-ai`` resolves, handshake included (FR-021)."""
         from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
         from loom.ai.registry import resolve_engine_provider

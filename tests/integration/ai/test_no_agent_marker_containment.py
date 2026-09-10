@@ -22,7 +22,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SENTINEL = "NO_MARKER_APP_OK"
 
 
-def test_create_app_no_importa_loom_ai_cuando_no_hay_seccion_ai() -> None:
+def test_create_app_does_not_import_loom_ai_when_there_is_no_ai_section() -> None:
     """``create_app`` on a plain, agent-less application never imports ``loom.ai``."""
     result = subprocess.run(
         [sys.executable, str(_HELPER)],

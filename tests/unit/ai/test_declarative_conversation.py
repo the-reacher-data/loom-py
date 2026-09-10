@@ -64,23 +64,21 @@ def _codes(error: AgentCompilationError) -> list[AgentErrorCode]:
     return [issue.code for issue in error.issues]
 
 
-def test_decode_spec_devuelve_conversation_spec_cuando_se_declara_conversation() -> None:
+def test_decode_spec_returns_conversation_spec_when_conversation_is_declared() -> None:
     """``conversation: {usecase: k}`` decodes to ``ConversationSpec(usecase="k")`` (AC1)."""
     spec = _decode(_payload_with_conversation())
 
     assert spec.conversation == ConversationSpec(usecase=_LOADER_USECASE)
 
 
-def test_decode_spec_deja_conversation_en_none_cuando_no_se_declara() -> None:
+def test_decode_spec_leaves_conversation_as_none_when_not_declared() -> None:
     """The loader is optional and additive: an artifact without it keeps decoding (AC1)."""
     spec = _decode(_payload_without_conversation())
 
     assert spec.conversation is None
 
 
-def test_decode_spec_falla_con_spec_unknown_field_cuando_conversation_lleva_una_clave_extra() -> (
-    None
-):
+def test_decode_spec_fails_with_spec_unknown_field_when_conversation_has_an_extra_key() -> None:
     """An unrecognised key inside ``conversation`` is rejected, never dropped (AC1)."""
     payload = _payload_with_conversation()
     payload["conversation"]["ttl"] = 3
@@ -92,7 +90,7 @@ def test_decode_spec_falla_con_spec_unknown_field_cuando_conversation_lleva_una_
     assert _codes(exc.value) == [AgentErrorCode.SPEC_UNKNOWN_FIELD]
 
 
-def test_decode_spec_falla_cuando_conversation_no_nombra_ningun_usecase() -> None:
+def test_decode_spec_fails_when_conversation_names_no_usecase() -> None:
     """``usecase`` is the whole declaration; an empty loader object is malformed."""
     payload = _payload_with_conversation()
     payload["conversation"] = {}
@@ -102,14 +100,14 @@ def test_decode_spec_falla_cuando_conversation_no_nombra_ningun_usecase() -> Non
         decode_spec(encoded)
 
 
-def test_el_esquema_publicado_acepta_el_artefacto_cuando_declara_conversation() -> None:
+def test_the_published_schema_accepts_the_artifact_declaring_conversation() -> None:
     """What the decoder accepts, the published schema accepts too (AC1)."""
     validator = Draft202012Validator(agent_spec_json_schema(1))
 
     assert list(validator.iter_errors(_payload_with_conversation())) == []
 
 
-def test_el_esquema_publicado_rechaza_conversation_cuando_lleva_una_clave_extra() -> None:
+def test_the_published_schema_rejects_conversation_with_an_extra_key() -> None:
     """The schema is as strict as the struct: unknown keys inside ``conversation`` fail."""
     payload = _payload_with_conversation()
     payload["conversation"]["ttl"] = 3

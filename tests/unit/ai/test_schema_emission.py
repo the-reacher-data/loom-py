@@ -92,12 +92,12 @@ def _ordered(value: Any) -> Any:
     return value
 
 
-def test_el_esquema_emitido_es_identico_al_contrato_publicado_cuando_se_serializa() -> None:
+def test_the_emitted_schema_is_identical_to_the_published_contract() -> None:
     """The emitted schema should be byte-for-byte the committed contract file."""
     assert _serialise(_emitted()) == _CONTRACT_PATH.read_text(encoding="utf-8")
 
 
-def test_las_politicas_emitidas_declaran_run_timeout_ms_cuando_se_construye_el_esquema() -> None:
+def test_emitted_policies_declare_run_timeout_ms() -> None:
     """The whole-run budget is part of the published policy vocabulary (FR-033a)."""
     assert _policy_properties(_emitted())["run_timeout_ms"] == {
         "type": "integer",
@@ -107,7 +107,7 @@ def test_las_politicas_emitidas_declaran_run_timeout_ms_cuando_se_construye_el_e
     }
 
 
-def test_las_politicas_emitidas_declaran_max_history_bytes_cuando_se_construye_el_esquema() -> None:
+def test_emitted_policies_declare_max_history_bytes() -> None:
     """The history ceiling is part of the published policy vocabulary (FR-061)."""
     assert _policy_properties(_emitted())["max_history_bytes"] == {
         "type": "integer",
@@ -159,7 +159,7 @@ def test_the_published_schema_rejects_a_spend_cap_out_of_range() -> None:
     assert _schema_errors(payload) != []
 
 
-def test_la_capacidad_sql_emitida_exige_las_cotas_de_resultado_cuando_se_construye() -> None:
+def test_the_emitted_sql_capability_requires_result_bounds() -> None:
     """An unbounded query is not representable: both bounds are required (FR-046b)."""
     assert _sql_variant(_emitted())["required"] == [
         "kind",
@@ -169,12 +169,12 @@ def test_la_capacidad_sql_emitida_exige_las_cotas_de_resultado_cuando_se_constru
     ]
 
 
-def test_el_hook_de_salida_emitido_exige_el_usecase_cuando_se_construye() -> None:
+def test_the_emitted_output_hook_requires_the_usecase() -> None:
     """``on_output`` names one use case and naming it is the whole declaration (002/AC1)."""
     assert _emitted()["$defs"]["on_output"]["required"] == ["usecase"]
 
 
-def test_el_cargador_de_conversacion_emitido_exige_el_usecase_cuando_se_construye() -> None:
+def test_the_emitted_conversation_loader_requires_the_usecase() -> None:
     """``conversation`` names one use case and naming it is the whole declaration (006/AC1)."""
     assert _emitted()["$defs"]["conversation"]["required"] == ["usecase"]
 
@@ -183,7 +183,7 @@ def test_el_cargador_de_conversacion_emitido_exige_el_usecase_cuando_se_construy
     ("kind", "reference"),
     [("mcp", "server"), ("a2a", "agent"), ("skills", "library")],
 )
-def test_la_capacidad_emitida_exige_su_referencia_por_nombre_cuando_se_construye(
+def test_the_emitted_capability_requires_its_reference_by_name(
     kind: str,
     reference: str,
 ) -> None:
@@ -193,7 +193,7 @@ def test_la_capacidad_emitida_exige_su_referencia_por_nombre_cuando_se_construye
     assert variant["required"] == ["kind", reference]
 
 
-def test_la_capacidad_native_emitida_cierra_el_vocabulario_de_tools_cuando_se_construye() -> None:
+def test_the_emitted_native_capability_closes_the_tool_vocabulary() -> None:
     """``native`` names one provider tool from a closed list, and nothing else (030/AC-1)."""
     variant = _capability_variant(_emitted(), "native")
 
@@ -203,7 +203,7 @@ def test_la_capacidad_native_emitida_cierra_el_vocabulario_de_tools_cuando_se_co
 
 
 @pytest.mark.parametrize("kind", ["mcp", "a2a", "skills"])
-def test_la_capacidad_emitida_declara_el_filtro_plano_cuando_se_construye(kind: str) -> None:
+def test_the_emitted_capability_declares_the_flat_filter(kind: str) -> None:
     """The three filtered kinds share one flat include/exclude vocabulary."""
     properties = _capability_variant(_emitted(), kind)["properties"]
 
@@ -245,20 +245,20 @@ def test_emitted_python_capability_rejects_a_sibling_of_factory() -> None:
 
 
 @pytest.mark.parametrize("retired", ["tool_filter", "refs", "url", "headers_ref", "timeout_ms"])
-def test_el_esquema_emitido_no_declara_el_vocabulario_retirado_cuando_se_construye(
+def test_the_emitted_schema_declares_no_retired_vocabulary(
     retired: str,
 ) -> None:
     """Addresses and credentials are deployment facts; they left the artifact."""
     assert retired not in _property_names(_emitted())
 
 
-def test_agent_spec_json_schema_falla_cuando_la_version_no_esta_publicada() -> None:
+def test_agent_spec_json_schema_fails_for_an_unpublished_version() -> None:
     """An unpublished spec version is a programming error, not an empty document."""
     with pytest.raises(ValueError, match="spec version 2"):
         agent_spec_json_schema(2)
 
 
-def test_el_esquema_publicado_viaja_dentro_del_paquete_cuando_se_localiza() -> None:
+def test_the_published_schema_lives_inside_the_package() -> None:
     """The schema file must live under the installed package, not under 'specs/'.
 
     A consumer validates against a file it can extract from the wheel or the sdist;
@@ -271,7 +271,7 @@ def test_el_esquema_publicado_viaja_dentro_del_paquete_cuando_se_localiza() -> N
     assert path.parent.parent.name == "declarative"
 
 
-def test_localizar_el_esquema_falla_cuando_la_version_no_esta_publicada() -> None:
+def test_locating_the_schema_fails_for_an_unpublished_version() -> None:
     """An unpublished spec version is a programming error, not a missing file."""
     with pytest.raises(ValueError, match="spec version 2"):
         agent_spec_schema_path(2)

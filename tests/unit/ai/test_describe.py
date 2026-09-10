@@ -226,24 +226,22 @@ def full_plan() -> AgentPlan:
     )
 
 
-class TestProyeccionDelAgente:
+class TestAgentProjection:
     """The agent-level projection publishes the contract and nothing else."""
 
-    def test_publica_el_nombre_cuando_describe_un_plan(self, full_plan: AgentPlan) -> None:
+    def test_publishes_the_name(self, full_plan: AgentPlan) -> None:
         """The name is how a caller addresses the agent."""
         assert describe_agent(full_plan).name == _AGENT
 
-    def test_publica_la_version_de_spec_cuando_describe_un_plan(self, full_plan: AgentPlan) -> None:
+    def test_publishes_the_spec_version(self, full_plan: AgentPlan) -> None:
         """``spec_version`` tells a client which artifact format compiled."""
         assert describe_agent(full_plan).spec_version == 1
 
-    def test_publica_el_esquema_de_salida_cuando_describe_un_plan(
-        self, full_plan: AgentPlan
-    ) -> None:
+    def test_publishes_the_output_schema(self, full_plan: AgentPlan) -> None:
         """``output_schema`` is published; the built decoder never is."""
         assert _normalise(describe_agent(full_plan).output_schema) == _normalise(_OUTPUT_SCHEMA)
 
-    def test_publica_las_politicas_cuando_describe_un_plan(self, full_plan: AgentPlan) -> None:
+    def test_publishes_the_policies(self, full_plan: AgentPlan) -> None:
         """The execution limits are published as a plain mapping."""
         assert dict(describe_agent(full_plan).policies) == {
             "retries": 3,
@@ -279,13 +277,13 @@ class TestProyeccionDelAgente:
         payload = json.loads(msgspec.json.encode(encoded))
         assert payload["policies"]["max_usd"] == 2.0
 
-    def test_publica_la_procedencia_cuando_el_plan_la_conoce(self, full_plan: AgentPlan) -> None:
+    def test_publishes_the_source_path_when_the_plan_carries_one(
+        self, full_plan: AgentPlan
+    ) -> None:
         """``source_path`` is provenance, not secret material."""
         assert describe_agent(full_plan).source_path == _SOURCE_PATH
 
-    def test_conserva_el_orden_de_las_capacidades_cuando_describe_un_plan(
-        self, full_plan: AgentPlan
-    ) -> None:
+    def test_preserves_the_order_of_capabilities(self, full_plan: AgentPlan) -> None:
         """Capabilities are described in the order the plan carries them."""
         described = describe_agent(full_plan)
 
@@ -299,18 +297,18 @@ class TestProyeccionDelAgente:
         )
 
 
-class TestAjustesPorKind:
+class TestSettingsByKind:
     """Each kind publishes exactly its allow-listed settings, never the handles."""
 
-    def test_publica_solo_las_claves_cuando_la_capacidad_es_usecase(self) -> None:
+    def test_publishes_only_the_keys_for_a_usecase_capability(self) -> None:
         """The granted keys are public; the resolved use-case types are not."""
         assert _settings_of(_usecase_capability()) == {"keys": _USECASE_KEYS}
 
-    def test_publica_la_herramienta_cuando_la_capacidad_es_native(self) -> None:
+    def test_publishes_the_tool_name_for_a_native_capability(self) -> None:
         """A provider tool publishes its name, which is the whole of the grant."""
         assert _settings_of(CompiledNativeCapability(tool="web_search")) == {"tool": "web_search"}
 
-    def test_publica_conexion_y_limites_cuando_la_capacidad_es_sql(self) -> None:
+    def test_publishes_connection_and_limits_for_a_sql_capability(self) -> None:
         """The connection name and its caps are public; the DSN is not."""
         assert _settings_of(_sql_capability()) == {
             "connection": _SQL_CONNECTION,
@@ -318,7 +316,7 @@ class TestAjustesPorKind:
             "max_result_bytes": 1_000_000,
         }
 
-    def test_publica_servidor_y_filtro_cuando_la_capacidad_es_mcp(self) -> None:
+    def test_publishes_server_and_filter_for_a_mcp_capability(self) -> None:
         """Server name, transport, filter and deadline are public; URL and headers are not."""
         assert _settings_of(_mcp_capability()) == {
             "server": _MCP_SERVER,
@@ -328,7 +326,7 @@ class TestAjustesPorKind:
             "timeout_ms": 15000,
         }
 
-    def test_publica_libreria_y_nombres_cuando_la_capacidad_es_skills(self) -> None:
+    def test_publishes_library_and_names_for_a_skills_capability(self) -> None:
         """The library and the selected skills are public; the directory is not."""
         assert _settings_of(_skills_capability()) == {
             "library": _SKILLS_LIBRARY,
@@ -342,7 +340,7 @@ class TestAjustesPorKind:
             "params": ("max_results", "radius_km"),
         }
 
-    def test_publica_agente_y_filtro_cuando_la_capacidad_es_a2a(self) -> None:
+    def test_publishes_agent_and_filter_for_a_a2a_capability(self) -> None:
         """The remote agent name and filter are public; URL and headers are not."""
         assert _settings_of(_a2a_capability()) == {
             "agent": _A2A_AGENT,
@@ -351,10 +349,10 @@ class TestAjustesPorKind:
         }
 
 
-class TestKindDesconocido:
+class TestUnknownKind:
     """An unknown kind is never dumped wholesale: that is how exclusion holds."""
 
-    def test_falla_cuando_la_capacidad_es_de_un_kind_no_registrado(self) -> None:
+    def test_fails_for_a_capability_of_an_unregistered_kind(self) -> None:
         """A capability with no registered projection is reported, not guessed."""
         plan = _make_plan(
             capabilities=cast("tuple[CompiledCapability, ...]", (_QuantumCapability(),))
@@ -364,10 +362,10 @@ class TestKindDesconocido:
             describe_agent(plan)
 
 
-class TestContribuidorDeAgentes:
+class TestAgentsContributor:
     """``describe_agents`` is the callable ``describe_app`` resolves by reference."""
 
-    def test_conserva_el_orden_de_los_planes_cuando_describe_una_secuencia(self) -> None:
+    def test_preserves_the_order_of_the_plans(self) -> None:
         """The contribution lists agents in the order the plans were compiled."""
         plans = (
             _make_plan(name="beta", capabilities=()),
@@ -376,19 +374,17 @@ class TestContribuidorDeAgentes:
 
         assert [agent["name"] for agent in describe_agents(plans)] == ["beta", "alpha"]
 
-    def test_devuelve_builtins_serializables_cuando_describe_una_secuencia(
-        self, full_plan: AgentPlan
-    ) -> None:
+    def test_returns_json_encodable_builtins(self, full_plan: AgentPlan) -> None:
         """The contribution is JSON-encodable without a custom encoder."""
         described = describe_agents((full_plan,))
 
         assert json.loads(json.dumps(described))[0]["name"] == _AGENT
 
 
-class TestHookDeCodificacion:
+class TestEncodingHook:
     """The encoding hook is fail-closed: it converts by exact type, not by protocol."""
 
-    def test_rechaza_un_mapping_que_no_es_dict_ni_mappingproxy(self) -> None:
+    def test_rejects_a_mapping_that_is_neither_dict_nor_mappingproxy(self) -> None:
         """A ``Mapping`` written to refuse encoding is rejected, not unwrapped.
 
         ``_RedactedOptions`` exists so msgspec cannot encode a resolved
@@ -399,17 +395,15 @@ class TestHookDeCodificacion:
         with pytest.raises(IntrospectionError):
             _as_builtin(options)
 
-    def test_convierte_un_mappingproxy_cuando_lo_recibe(self) -> None:
+    def test_converts_a_mappingproxy_into_a_plain_dict(self) -> None:
         """The read-only mapping a compiled schema carries becomes a plain dict."""
         assert _as_builtin(MappingProxyType({"type": "object"})) == {"type": "object"}
 
 
-class TestHojasDeSettings:
+class TestSettingsLeaves:
     """``settings`` publishes scalars only: a struct there would encode natively."""
 
-    def test_toda_hoja_es_escalar_cuando_describe_todos_los_kinds(
-        self, full_plan: AgentPlan
-    ) -> None:
+    def test_every_settings_leaf_is_a_scalar(self, full_plan: AgentPlan) -> None:
         """``msgspec`` encodes by runtime type, so only scalars may reach ``settings``.
 
         A ``Struct`` or nested mapping slipped into a projector would expand

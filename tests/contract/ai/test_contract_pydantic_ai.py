@@ -54,7 +54,7 @@ def test_pydantic_ai_engine_satisfies_the_shared_agent_engine_contract() -> None
 
 
 class TestOutputValidation:
-    async def test_run_rechaza_la_respuesta_cuando_el_modelo_anade_un_campo_de_mas(
+    async def test_run_rejects_the_response_when_the_model_adds_an_extra_field(
         self,
     ) -> None:
         """A strict decode rejects an unknown field; it is never passed through."""
@@ -68,7 +68,7 @@ class TestOutputValidation:
 
         assert failure.value.code is AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION
 
-    async def test_stream_termina_en_error_cuando_el_modelo_anade_un_campo_de_mas(
+    async def test_stream_ends_in_error_when_the_model_adds_an_extra_field(
         self,
     ) -> None:
         """The same violation terminates a stream with one coded error."""
@@ -86,7 +86,7 @@ class TestOutputValidation:
             AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION
         ]
 
-    async def test_run_acepta_la_respuesta_cuando_cumple_el_esquema_estricto(self) -> None:
+    async def test_run_accepts_the_response_when_it_matches_the_strict_schema(self) -> None:
         """The declared shape decodes into the validated answer."""
         engine = build_engine(
             make_plan(schema=STRICT_SCHEMA), answering_model(encode({"answer": "ok"}))
@@ -98,7 +98,7 @@ class TestOutputValidation:
 
 
 class TestSerializationPasses:
-    async def test_serialization_hace_una_decodificacion_y_ningun_encode_por_run(
+    async def test_serialization_decodes_once_and_encodes_never_per_run(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """One loom-side decode of the payload, zero loom-side encodes."""
@@ -115,7 +115,7 @@ class TestSerializationPasses:
         assert decoder.decodes == 1, "the answer must be decoded exactly once"
         assert encodes == [], f"loom must not encode the answer: {encodes}"
 
-    async def test_serialization_hace_una_decodificacion_por_stream(
+    async def test_serialization_decodes_once_per_stream(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A streamed run decodes the answer once, when it terminates."""

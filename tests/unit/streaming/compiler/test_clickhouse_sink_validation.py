@@ -35,7 +35,7 @@ def _flow() -> StreamFlow[Order, Result]:
     )
 
 
-def test_compila_cuando_la_base_de_datos_del_sink_esta_declarada(
+def test_compiles_when_the_sinks_database_is_declared(
     streaming_kafka_config: DictConfig,
 ) -> None:
     """With the sink and its database declared, compilation succeeds."""
@@ -56,7 +56,7 @@ def test_compila_cuando_la_base_de_datos_del_sink_esta_declarada(
     assert plan.name == "clickhouse_sink_flow"
 
 
-def test_falla_en_compilacion_cuando_falta_la_base_de_datos_del_sink(
+def test_compilation_fails_when_the_sinks_database_is_missing(
     streaming_kafka_config: DictConfig,
 ) -> None:
     """A missing ``database`` section is a compilation issue, not a runtime crash."""

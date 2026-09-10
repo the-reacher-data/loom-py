@@ -105,7 +105,7 @@ def _assert_this_turn_only(raw: bytes | None) -> None:
 
 
 class TestHistory:
-    async def test_el_modelo_ve_el_historial_antes_del_prompt_cuando_run_lleva_conversacion(
+    async def test_the_model_sees_the_history_before_the_prompt_when_run_carries_a_conversation(
         self,
     ) -> None:
         seen: list[list[ModelMessage]] = []
@@ -117,7 +117,7 @@ class TestHistory:
         assert [message.kind for message in seen[0]] == ["request", "response", "request"]
         assert _prompts(seen[0]) == ["how is the cluster?", _PROMPT]
 
-    async def test_devuelve_solo_los_mensajes_de_este_turno_cuando_run_lleva_conversacion(
+    async def test_returns_only_this_turns_messages_when_run_carries_a_conversation(
         self,
     ) -> None:
         engine = _engine([])
@@ -128,7 +128,7 @@ class TestHistory:
 
         _assert_this_turn_only(result.messages)
 
-    async def test_el_final_lleva_los_mismos_mensajes_cuando_el_stream_lleva_conversacion(
+    async def test_the_final_carries_the_same_messages_when_the_stream_carries_a_conversation(
         self,
     ) -> None:
         seen: list[list[ModelMessage]] = []
@@ -139,7 +139,7 @@ class TestHistory:
         assert _prompts(seen[0]) == ["how is the cluster?", _PROMPT]
         _assert_this_turn_only(_final(events).messages)
 
-    async def test_estampa_el_id_cuando_la_conversacion_no_tiene_historial(self) -> None:
+    async def test_stamps_the_id_when_the_conversation_has_no_history(self) -> None:
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen)
 
@@ -150,7 +150,7 @@ class TestHistory:
 
 
 class TestSingleShot:
-    async def test_no_serializa_mensajes_cuando_run_no_lleva_conversacion(self) -> None:
+    async def test_serialises_no_messages_when_run_carries_no_conversation(self) -> None:
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen)
 
@@ -159,7 +159,7 @@ class TestSingleShot:
         assert _prompts(seen[0]) == [_PROMPT]
         assert result.messages is None
 
-    async def test_no_serializa_mensajes_cuando_el_stream_no_lleva_conversacion(self) -> None:
+    async def test_serialises_no_messages_when_the_stream_carries_no_conversation(self) -> None:
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen)
 
@@ -170,7 +170,7 @@ class TestSingleShot:
 
 
 class TestMalformedHistory:
-    async def test_run_falla_sin_llamar_al_modelo_cuando_el_historial_no_es_json(self) -> None:
+    async def test_run_fails_without_calling_the_model_when_the_history_is_not_json(self) -> None:
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen)
 
@@ -184,7 +184,7 @@ class TestMalformedHistory:
         assert failure.value.usage is None
         assert seen == []
 
-    async def test_el_stream_emite_un_error_sin_llamar_al_modelo_cuando_el_historial_no_es_json(
+    async def test_the_stream_emits_an_error_without_calling_the_model_when_the_history_is_not_json(
         self,
     ) -> None:
         seen: list[list[ModelMessage]] = []
@@ -200,7 +200,7 @@ class TestMalformedHistory:
         ]
         assert seen == []
 
-    async def test_health_conserva_la_caida_del_proveedor_cuando_run_rechaza_el_historial(
+    async def test_health_keeps_the_providers_outage_when_run_rejects_the_history(
         self,
     ) -> None:
         """A history that does not decode is not a provider outcome.
@@ -217,7 +217,7 @@ class TestMalformedHistory:
         assert failure.value.code is AgentRunErrorCode.CONVERSATION_LOAD_FAILED
         assert (await engine.health()).status == "unavailable"
 
-    async def test_health_conserva_la_caida_del_proveedor_cuando_el_stream_rechaza_el_historial(
+    async def test_health_keeps_the_providers_outage_when_the_stream_rejects_the_history(
         self,
     ) -> None:
         """The streamed rejection leaves the last provider outcome untouched too."""
@@ -229,7 +229,7 @@ class TestMalformedHistory:
         assert events[-1].code is AgentRunErrorCode.CONVERSATION_LOAD_FAILED
         assert (await engine.health()).status == "unavailable"
 
-    async def test_run_falla_cuando_el_historial_no_es_una_lista_de_mensajes(self) -> None:
+    async def test_run_fails_when_the_history_is_not_a_list_of_messages(self) -> None:
         engine = _engine([])
         conversation = _conversation(b'{"kind": "request"}')
 
@@ -240,7 +240,7 @@ class TestMalformedHistory:
 
 
 class TestRetries:
-    async def test_reenvia_el_mismo_historial_cuando_run_reintenta(self) -> None:
+    async def test_resends_the_same_history_when_run_retries(self) -> None:
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen, retries=2, failures=2)
 
@@ -251,7 +251,7 @@ class TestRetries:
         _assert_same_history_every_attempt(seen)
         _assert_this_turn_only(result.messages)
 
-    async def test_reenvia_el_mismo_historial_cuando_el_stream_reintenta(self) -> None:
+    async def test_resends_the_same_history_when_the_stream_retries(self) -> None:
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen, retries=2, failures=2)
 

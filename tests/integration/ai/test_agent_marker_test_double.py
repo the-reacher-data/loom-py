@@ -86,8 +86,8 @@ def _triage_double(severity: int) -> AgentHandleDouble:
     return double
 
 
-class TestElCasoDeUsoCompletoCorreSinRedSinModeloSinBaseDeDatos:
-    async def test_el_resultado_refleja_las_respuestas_programadas(self) -> None:
+class TestTheFullUseCaseRunsWithoutNetworkModelOrDatabase:
+    async def test_the_result_reflects_the_scripted_responses(self) -> None:
         result = await (
             UseCaseTest(TriageIncidentUseCase())
             .with_caller(_CALLER)
@@ -104,7 +104,7 @@ class TestElCasoDeUsoCompletoCorreSinRedSinModeloSinBaseDeDatos:
             escalated=True,
         )
 
-    async def test_una_severidad_baja_no_escala(self) -> None:
+    async def test_a_low_severity_does_not_escalate(self) -> None:
         result = await (
             UseCaseTest(TriageIncidentUseCase())
             .with_caller(_CALLER)
@@ -115,7 +115,7 @@ class TestElCasoDeUsoCompletoCorreSinRedSinModeloSinBaseDeDatos:
 
         assert result.escalated is False
 
-    async def test_el_doble_registra_la_consulta_sql_y_la_llamada_a_la_herramienta(self) -> None:
+    async def test_the_double_records_the_sql_query_and_the_tool_call(self) -> None:
         double = _triage_double(severity=2)
 
         await (
@@ -133,7 +133,7 @@ class TestElCasoDeUsoCompletoCorreSinRedSinModeloSinBaseDeDatos:
         assert tool_calls[0].tool == "search_incident"
         assert tool_calls[0].arguments["incident_id"] == "INC-102"
 
-    async def test_el_doble_registra_el_prompt_de_la_ejecucion_del_modelo(self) -> None:
+    async def test_the_double_records_the_models_run_prompt(self) -> None:
         double = _triage_double(severity=3)
 
         await (
@@ -147,8 +147,8 @@ class TestElCasoDeUsoCompletoCorreSinRedSinModeloSinBaseDeDatos:
         assert double.run_calls[0].prompt == "Assess INC-103."
 
 
-class TestSinDobleRegistradoElArranqueFallaCerrado:
-    async def test_declarar_el_marcador_sin_doble_falla_con_un_error_claro(self) -> None:
+class TestWithoutADoubleRegisteredStartupFailsClosed:
+    async def test_declaring_the_marker_without_a_double_fails_with_a_clear_error(self) -> None:
         with pytest.raises(RuntimeError, match=_AGENT_NAME):
             await (
                 UseCaseTest(TriageIncidentUseCase())

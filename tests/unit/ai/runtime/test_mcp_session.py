@@ -1,16 +1,16 @@
-"""La sesion declara si necesita serializacion; el runtime deja de decidirlo.
+"""A session declares whether it needs serialisation; the runtime stops deciding it.
 
-``mcp_session_for`` es el unico punto que decide si envuelve una sesion en
-``SharedMcpSession``: lo hace por defecto, y deja la sesion tal cual cuando
-esta declara :class:`~loom.ai.abc.ConcurrentMcpSession`. Estos tests miden lo
-que importa -- que varias llamadas concurrentes sobre una sesion declarada
-corren de verdad en paralelo, no solo que el candado desaparece -- y fijan lo
-contrario: una sesion sin declarar sigue serializando. Cubren tambien la
-cancelacion en ambas formas, que no se comporta igual (B1): ``SharedMcpSession``
-sigue drenando la llamada cancelada antes de soltar su candado, para que sus
-vecinas en la misma sesion sigan siendo utilizables; una sesion declarada
-concurrente no sostiene ningun candado que proteger, asi que cancelarla vuelve
-al llamante de inmediato en vez de drenar.
+``mcp_session_for`` is the only point that decides whether to wrap a session in
+``SharedMcpSession``: it does so by default, and leaves the session as-is when it
+declares :class:`~loom.ai.abc.ConcurrentMcpSession`. These tests measure what
+matters -- that several concurrent calls on a declared session really do run in
+parallel, not merely that the lock is gone -- and pin the opposite: an
+undeclared session keeps serialising. They also cover cancellation in both
+shapes, which does not behave the same way (B1): ``SharedMcpSession`` still
+drains the cancelled call before releasing its lock, so its neighbours on the
+same session remain usable; a session declared concurrent holds no lock to
+protect, so cancelling it returns to the caller immediately instead of
+draining.
 """
 
 from __future__ import annotations
@@ -91,45 +91,45 @@ async def _call_many(session: McpSession, count: int) -> float:
     return time.monotonic() - start
 
 
-class TestLaDeclaracionDeConcurrencia:
-    """``mcp_session_for`` lee la declaracion de la sesion, no decide por ella."""
+class TestConcurrencyDeclaration:
+    """``mcp_session_for`` reads the session's declaration, it does not decide for it."""
 
-    async def test_una_sesion_que_declara_concurrencia_queda_sin_envolver(self) -> None:
+    async def test_a_session_declaring_concurrency_is_left_unwrapped(self) -> None:
         session = _DelayedConcurrentSession()
         assert mcp_session_for(session, label="crm") is session
 
-    async def test_una_sesion_que_no_declara_nada_se_envuelve_en_shared(self) -> None:
+    async def test_a_session_declaring_nothing_is_wrapped_in_shared(self) -> None:
         session = _DelayedSession()
         wrapped = mcp_session_for(session, label="crm")
         assert isinstance(wrapped, SharedMcpSession)
         assert wrapped is not session
 
 
-class TestElParalelismoDeVerdad:
-    """El criterio de exito no es que el candado desaparezca: es que N llamadas
-    concurrentes sobre una concesion corran de verdad en paralelo. El lado
-    "declarada" de ese criterio (O3) no lo mide un doble sin candado propio
-    -- ``_DelayedConcurrentSession`` corre en paralelo por construccion, y
-    nada de produccion puede ponerlo en rojo -- sino el camino real, que
-    atraviesa ``mcp_session_for`` y ``_ToolsetSession``
+class TestRealParallelism:
+    """The success criterion is not that the lock disappears: it is that N
+    concurrent calls on one grant really do run in parallel. The "declared"
+    side of that criterion (O3) is not measured by a double with no lock of
+    its own -- ``_DelayedConcurrentSession`` runs in parallel by
+    construction, and nothing in production can turn it red -- but by the
+    real path, which crosses ``mcp_session_for`` and ``_ToolsetSession``
     (``tests/unit/ai/engines/test_pydantic_ai_mcp_concurrency.py``)."""
 
-    async def test_una_sesion_sin_declarar_sigue_serializando(self) -> None:
+    async def test_an_undeclared_session_keeps_serialising(self) -> None:
         session = _DelayedSession()
         wrapped = mcp_session_for(session, label="crm")
         elapsed = await _call_many(wrapped, 8)
-        # Ocho llamadas en fila se parecen a ocho, no a una.
+        # Eight calls in a row look like eight, not one.
         assert elapsed > _CALL_DELAY * 6
 
 
-class TestElDrenadoAlCancelar:
-    """Una llamada cancelada a mitad de ``SharedMcpSession`` no debe
-    desincronizar a sus vecinas: se drena antes de soltar el candado. Una
-    sesion declarada concurrente no sostiene ningun candado que proteger, asi
-    que su cancelacion vuelve al llamante de inmediato en lugar de drenar
+class TestDrainingOnCancellation:
+    """A call cancelled halfway through ``SharedMcpSession`` must not
+    desynchronise its neighbours: it drains before releasing the lock. A
+    session declared concurrent holds no lock to protect, so its
+    cancellation returns to the caller immediately instead of draining
     (B1)."""
 
-    async def test_shared_mcp_session_drena_la_llamada_cancelada(self) -> None:
+    async def test_shared_mcp_session_drains_the_cancelled_call(self) -> None:
         session = _DelayedSession(delay=0.1)
         shared = SharedMcpSession(session, label="crm")
         task = asyncio.create_task(shared.call_tool("victim", {}))
@@ -141,13 +141,13 @@ class TestElDrenadoAlCancelar:
             pass
         else:
             raise AssertionError("expected the cancelled call to re-raise")
-        # Drenada antes de soltar el candado: ya deberia constar como terminada.
+        # Drained before releasing the lock: it should already count as finished.
         assert session.finished == ["victim"]
-        # Y el candado sigue usable para la siguiente vecina.
+        # And the lock is still usable for the next neighbour.
         await shared.call_tool("neighbour", {})
         assert session.finished == ["victim", "neighbour"]
 
-    async def test_sesion_concurrente_no_drena_al_cancelar(self) -> None:
+    async def test_a_concurrent_session_does_not_drain_on_cancellation(self) -> None:
         session = _DelayedConcurrentSession(delay=0.1)
         task = asyncio.create_task(session.call_tool("victim", {}))
         await asyncio.sleep(0.01)
@@ -158,12 +158,14 @@ class TestElDrenadoAlCancelar:
             pass
         else:
             raise AssertionError("expected the cancelled call to re-raise")
-        # Orden, no reloj: sin candado que sostener, la cancelacion ya
-        # regreso al llamante -- y sin escudo, la llamada abandonada nunca
-        # llega a completarse.
+        # Order, not the clock: with no lock to hold, the cancellation has
+        # already returned to the caller -- and with no shield, the
+        # abandoned call never reaches completion.
         assert session.finished == []
 
-    async def test_una_vecina_concurrente_no_se_bloquea_cuando_cancelan_a_la_otra(self) -> None:
+    async def test_a_concurrent_neighbour_is_not_blocked_when_the_other_is_cancelled(
+        self,
+    ) -> None:
         session = _DelayedConcurrentSession(delay=0.1)
         start = time.monotonic()
         victim = asyncio.create_task(session.call_tool("victim", {}))
@@ -172,9 +174,9 @@ class TestElDrenadoAlCancelar:
         victim.cancel()
         await neighbour
         elapsed = time.monotonic() - start
-        # La vecina corria en paralelo desde el principio: termina alrededor de
-        # su propio delay, no del doble -- que es lo que tardaria si hubiese
-        # quedado en cola detras del drenado de la cancelada.
+        # The neighbour was running in parallel from the start: it finishes
+        # around its own delay, not double it -- which is what it would take
+        # if it had been queued behind the cancelled call's draining.
         assert elapsed < 0.15
         try:
             await victim
@@ -184,21 +186,20 @@ class TestElDrenadoAlCancelar:
             raise AssertionError("expected the cancelled call to re-raise")
 
 
-class TestLaCorutinaSeConstruyeConElCandadoYaTomado:
-    """Un llamante cancelado mientras espera el turno no debe dejar una
-    corutina propia sin ejecutar nunca (H6): ``SharedMcpSession`` solo
-    construye la llamada del siguiente turno una vez que ya tiene el
-    candado."""
+class TestTheCoroutineIsBuiltWithTheLockAlreadyHeld:
+    """A caller cancelled while waiting its turn must never leave a coroutine
+    of its own unexecuted forever (H6): ``SharedMcpSession`` only builds the
+    next turn's call once it already holds the lock."""
 
-    async def test_el_llamante_en_cola_no_construye_su_corutina_si_lo_cancelan(self) -> None:
+    async def test_a_queued_caller_does_not_build_its_coroutine_if_cancelled(self) -> None:
         session = _CountingSession()
         shared = SharedMcpSession(session, label="crm")
         holder = asyncio.create_task(shared.call_tool("holder", {}))
         await asyncio.sleep(0)
         queued = asyncio.create_task(shared.call_tool("queued", {}))
         await asyncio.sleep(0)
-        # ``queued`` sigue esperando el candado: cancelarlo aqui no debe
-        # haber construido ya su propia corutina de ``call_tool``.
+        # ``queued`` is still waiting for the lock: cancelling it here must
+        # not have already built its own ``call_tool`` coroutine.
         queued.cancel()
         try:
             await queued
@@ -207,5 +208,5 @@ class TestLaCorutinaSeConstruyeConElCandadoYaTomado:
         else:
             raise AssertionError("expected the queued call to re-raise")
         await holder
-        # Solo la que sostuvo el candado llego a construir su corutina.
+        # Only the one holding the lock got to build its coroutine.
         assert session.built == 1
