@@ -19,7 +19,7 @@ from loom.ai.errors import (
 )
 
 
-def test_hook_failed_es_de_aplicacion_y_no_reintentable() -> None:
+def test_hook_failed_is_application_class_and_not_retriable() -> None:
     """The hook is not retried: its class is ``APPLICATION`` and never retriable."""
     code = AgentRunErrorCode.HOOK_FAILED
 
@@ -27,14 +27,14 @@ def test_hook_failed_es_de_aplicacion_y_no_reintentable() -> None:
     assert is_retriable(code) is False
 
 
-def test_el_error_de_ejecucion_no_lleva_interaction_id_cuando_no_se_indica() -> None:
+def test_the_run_error_carries_no_interaction_id_when_none_is_given() -> None:
     """Pre-admission failures have no interaction to name."""
     error = AgentRunError(AgentRunErrorCode.HOOK_FAILED, "the output hook failed")
 
     assert error.interaction_id is None
 
 
-def test_el_error_de_ejecucion_conserva_el_interaction_id_cuando_se_indica() -> None:
+def test_the_run_error_keeps_the_interaction_id_when_given() -> None:
     """The keyword survives so a transport can echo the interaction to the caller."""
     error = AgentRunError(
         AgentRunErrorCode.HOOK_FAILED, "the output hook failed", interaction_id="int-1"
@@ -45,13 +45,13 @@ def test_el_error_de_ejecucion_conserva_el_interaction_id_cuando_se_indica() -> 
     assert str(error) == "the output hook failed"
 
 
-def test_el_status_http_de_hook_failed_esta_mapeado_explicitamente() -> None:
+def test_hook_failed_has_an_explicit_http_status_mapping() -> None:
     from loom.ai.fastapi.endpoints import _STATUS_BY_CODE
 
     assert _STATUS_BY_CODE[AgentRunErrorCode.HOOK_FAILED] == 500
 
 
-def test_conversation_load_failed_es_de_aplicacion_y_no_reintentable() -> None:
+def test_conversation_load_failed_is_application_class_and_not_retriable() -> None:
     """The loader is the application's own use case: never retried (U1, AC7)."""
     code = AgentRunErrorCode.CONVERSATION_LOAD_FAILED
 
@@ -59,13 +59,13 @@ def test_conversation_load_failed_es_de_aplicacion_y_no_reintentable() -> None:
     assert is_retriable(code) is False
 
 
-def test_el_status_http_de_conversation_load_failed_esta_mapeado_explicitamente() -> None:
+def test_conversation_load_failed_has_an_explicit_http_status_mapping() -> None:
     from loom.ai.fastapi.endpoints import _STATUS_BY_CODE
 
     assert _STATUS_BY_CODE[AgentRunErrorCode.CONVERSATION_LOAD_FAILED] == 500
 
 
-def test_el_mensaje_de_conversation_load_failed_es_el_texto_fijo() -> None:
+def test_conversation_load_failed_message_is_the_fixed_text() -> None:
     """The client text is fixed (D8): it never carries the loader's detail."""
     assert (
         CONVERSATION_LOAD_FAILED_MESSAGE
@@ -73,7 +73,7 @@ def test_el_mensaje_de_conversation_load_failed_es_el_texto_fijo() -> None:
     )
 
 
-def test_conversation_load_timeout_es_de_infraestructura_y_reintentable() -> None:
+def test_conversation_load_timeout_is_infrastructure_class_and_retriable() -> None:
     """A loader cut at its bound is a slow store, not a broken use case (FR-063)."""
     code = AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT
 
@@ -81,12 +81,12 @@ def test_conversation_load_timeout_es_de_infraestructura_y_reintentable() -> Non
     assert is_retriable(code) is True
 
 
-def test_el_status_http_de_conversation_load_timeout_esta_mapeado_explicitamente() -> None:
+def test_conversation_load_timeout_has_an_explicit_http_status_mapping() -> None:
     from loom.ai.fastapi.endpoints import _STATUS_BY_CODE
 
     assert _STATUS_BY_CODE[AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT] == 504
 
 
-def test_el_mensaje_de_conversation_load_timeout_es_el_texto_fijo() -> None:
+def test_conversation_load_timeout_message_is_the_fixed_text() -> None:
     """The client text is fixed: it never names the loader or its store."""
     assert CONVERSATION_LOAD_TIMEOUT_MESSAGE == "the conversation loader exceeded its time limit"

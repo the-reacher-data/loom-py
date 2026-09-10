@@ -109,24 +109,24 @@ async def _collect(frames: AsyncIterator[bytes]) -> list[bytes]:
     return [frame async for frame in frames]
 
 
-class TestFormatoDeTrama:
+class TestFrameFormat:
     """Every frame matches the published wire shape."""
 
     @pytest.mark.parametrize("name", _NAMES)
-    def test_emite_el_nombre_del_evento_cuando_codifica(self, name: str) -> None:
+    def test_emits_the_events_name_when_encoding(self, name: str) -> None:
         """The SSE ``event:`` line carries the event's contract name."""
         event, _ = _EVENTS[name]
 
         assert _split_frame(encode_sse_event(event))[0] == name
 
     @pytest.mark.parametrize("name", _NAMES)
-    def test_emite_los_campos_del_contrato_cuando_codifica(self, name: str) -> None:
+    def test_emits_the_contracts_fields_when_encoding(self, name: str) -> None:
         """The data payload carries exactly the contract's field names."""
         event, payload = _EVENTS[name]
 
         assert _split_frame(encode_sse_event(event))[1] == payload
 
-    def test_no_emite_messages_cuando_el_final_los_lleva(self) -> None:
+    def test_does_not_emit_messages_even_when_the_final_carries_them(self) -> None:
         """The run's new messages never reach the wire: ``final`` keeps its four keys."""
         event, payload = _EVENTS["final"]
         assert isinstance(event, FinalEvent)
@@ -135,13 +135,13 @@ class TestFormatoDeTrama:
         assert _split_frame(encode_sse_event(with_messages))[1] == payload
 
     @pytest.mark.parametrize("name", _NAMES)
-    def test_no_filtra_el_tag_type_cuando_codifica(self, name: str) -> None:
+    def test_does_not_leak_the_type_tag_when_encoding(self, name: str) -> None:
         """The ``type`` tag lives on the event line, never inside the payload."""
         event, _ = _EVENTS[name]
 
         assert "type" not in _split_frame(encode_sse_event(event))[1]
 
-    def test_emite_interaction_id_y_hook_result_cuando_el_final_los_lleva(self) -> None:
+    def test_emits_the_interaction_id_and_hook_result_when_the_final_carries_them(self) -> None:
         """A ``final`` minted by the runtime carries the id and the hook's result verbatim."""
         event = FinalEvent(
             output={"answer": "42"},
@@ -155,7 +155,7 @@ class TestFormatoDeTrama:
         assert payload["interaction_id"] == "a" * 32
         assert payload["hook_result"] == {"triage_id": "a" * 32}
 
-    def test_emite_interaction_id_cuando_el_error_lo_lleva(self) -> None:
+    def test_emits_the_interaction_id_when_the_error_carries_it(self) -> None:
         """An ``error`` raised after admission carries the id that names the server log line."""
         event = ErrorEvent(
             code=AgentRunErrorCode.HOOK_FAILED, message="hook failed", interaction_id="b" * 32
@@ -164,10 +164,10 @@ class TestFormatoDeTrama:
         assert _split_frame(encode_sse_event(event))[1]["interaction_id"] == "b" * 32
 
 
-class TestTerminacion:
+class TestTermination:
     """Exactly one terminal frame per stream, and ``usage`` only on ``final``."""
 
-    async def test_emite_un_unico_terminal_cuando_el_stream_acaba_en_final(self) -> None:
+    async def test_emits_a_single_terminal_frame_when_the_stream_ends_in_final(self) -> None:
         """A successful stream carries exactly one terminal frame (SC-011)."""
         events = (TextDeltaEvent(text="a"), FinalEvent(output={"answer": "42"}, usage=_USAGE))
         frames = await _collect(stream_sse(_iterate(events), heartbeat_ms=1000))
@@ -175,7 +175,7 @@ class TestTerminacion:
 
         assert [name for name in names if name in {"final", "error"}] == ["final"]
 
-    async def test_emite_un_unico_terminal_cuando_el_stream_acaba_en_error(self) -> None:
+    async def test_emits_a_single_terminal_frame_when_the_stream_ends_in_error(self) -> None:
         """A failed stream carries exactly one terminal frame (SC-011)."""
         events = (
             TextDeltaEvent(text="a"),
@@ -186,7 +186,7 @@ class TestTerminacion:
 
         assert [name for name in names if name in {"final", "error"}] == ["error"]
 
-    async def test_solo_final_lleva_usage_cuando_recorre_el_stream(self) -> None:
+    async def test_only_final_carries_usage_while_walking_the_stream(self) -> None:
         """No frame other than ``final`` carries a ``usage`` key."""
         events = (
             TextDeltaEvent(text="a"),
@@ -200,21 +200,21 @@ class TestTerminacion:
         assert carriers == ["final"]
 
 
-class TestFalloEnBanda:
+class TestInBandFailure:
     """A failure after the first byte can only travel in-band (FR-032)."""
 
     async def _failing_stream(self) -> AsyncIterator[AgentEvent]:
         yield TextDeltaEvent(text="Demand rose ")
         raise RuntimeError("provider exploded")
 
-    async def test_emite_un_error_en_banda_cuando_falla_tras_el_primer_delta(self) -> None:
+    async def test_emits_an_in_band_error_when_it_fails_after_the_first_delta(self) -> None:
         """The injected failure arrives as an ``error`` frame, not an exception."""
         frames = await _collect(stream_sse(self._failing_stream(), heartbeat_ms=1000))
         names = [_split_frame(frame)[0] for frame in frames]
 
         assert names == ["text_delta", "error"]
 
-    async def test_no_emite_final_cuando_falla_tras_el_primer_delta(self) -> None:
+    async def test_emits_no_final_when_it_fails_after_the_first_delta(self) -> None:
         """The stream ends at the in-band error; nothing follows it."""
         frames = await _collect(stream_sse(self._failing_stream(), heartbeat_ms=1000))
         names = [_split_frame(frame)[0] for frame in frames]
@@ -222,29 +222,29 @@ class TestFalloEnBanda:
         assert "final" not in names
 
 
-class TestDespachoSinReflexion:
+class TestDispatchWithoutReflection:
     """The encoder dispatches on the event class, never on reflection (T084)."""
 
-    def test_despacha_por_clase_cuando_codifica(self) -> None:
+    def test_dispatches_by_class_when_encoding(self) -> None:
         """The module-level dispatch map covers exactly the five event types."""
         expected = {TextDeltaEvent, ToolCallEvent, ToolResultEvent, ErrorEvent, FinalEvent}
 
         assert set(streaming_module._DISPATCH) == expected
 
-    def test_no_usa_isinstance_cuando_codifica(self) -> None:
+    def test_uses_no_isinstance_when_encoding(self) -> None:
         """No ``isinstance`` chain in the module: dispatch is a map lookup."""
         source = Path(str(streaming_module.__file__)).read_text(encoding="utf-8")
 
         assert "isinstance(" not in source
 
-    def test_no_usa_dunder_name_cuando_codifica(self) -> None:
+    def test_uses_no_dunder_name_when_encoding(self) -> None:
         """No ``__name__`` reflection on the most frequent event of all."""
         source = Path(str(streaming_module.__file__)).read_text(encoding="utf-8")
 
         assert "__name__" not in source
 
 
-class TestLatidos:
+class TestHeartbeats:
     """Comment frames keep a silent stream alive without a background task."""
 
     async def _silent_then_events(self) -> AsyncIterator[AgentEvent]:
@@ -252,13 +252,13 @@ class TestLatidos:
         yield TextDeltaEvent(text="late")
         yield FinalEvent(output={"answer": "42"}, usage=_USAGE)
 
-    async def test_emite_ping_cuando_el_stream_calla(self) -> None:
+    async def test_emits_a_ping_when_the_stream_goes_silent(self) -> None:
         """A silence longer than ``heartbeat_ms`` produces comment frames."""
         frames = await _collect(stream_sse(self._silent_then_events(), heartbeat_ms=10))
 
         assert frames.count(HEARTBEAT_FRAME) >= 2
 
-    async def test_conserva_el_orden_cuando_hubo_latidos(self) -> None:
+    async def test_keeps_the_order_after_heartbeats(self) -> None:
         """The events after a silence still arrive, and in order."""
         frames = await _collect(stream_sse(self._silent_then_events(), heartbeat_ms=10))
         names = [_split_frame(frame)[0] for frame in frames if frame != HEARTBEAT_FRAME]
@@ -266,7 +266,7 @@ class TestLatidos:
         assert names == ["text_delta", "final"]
 
 
-class TestCancelacion:
+class TestCancellation:
     """Cancelling the consumer cancels the run and leaves nothing behind (T092)."""
 
     @staticmethod
@@ -300,7 +300,7 @@ class TestCancelacion:
         await asyncio.sleep(0)
         return asyncio.all_tasks() - before - {asyncio.current_task()}  # type: ignore[arg-type]
 
-    async def test_el_motor_observa_cancelled_cuando_se_cancela_el_consumidor(
+    async def test_the_engine_observes_cancelled_when_the_consumer_is_cancelled(
         self, identity: Identity
     ) -> None:
         """The engine stream sees ``CancelledError``, so the run really stops."""
@@ -310,7 +310,7 @@ class TestCancelacion:
 
         assert engine.cancelled is True
 
-    async def test_no_sobrevive_ninguna_tarea_cuando_se_cancela_el_consumidor(
+    async def test_no_task_survives_when_the_consumer_is_cancelled(
         self, identity: Identity
     ) -> None:
         """No task outlives the cancelled consumer (no bare ``create_task``)."""
@@ -320,7 +320,7 @@ class TestCancelacion:
 
         assert survivors == set()
 
-    async def test_no_emite_mas_eventos_cuando_se_cancela_el_consumidor(
+    async def test_emits_no_more_events_when_the_consumer_is_cancelled(
         self, identity: Identity
     ) -> None:
         """Nothing is produced after cancellation (FR-033)."""

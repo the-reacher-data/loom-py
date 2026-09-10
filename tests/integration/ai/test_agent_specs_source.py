@@ -183,13 +183,11 @@ def _codes(failure: AgentCompilationError) -> tuple[AgentErrorCode, ...]:
     return tuple(issue.code for issue in failure.issues)
 
 
-class TestManifestComoUnicaFuente:
+class TestManifestAsTheOnlySource:
     """A manifest may be the only place the agents of an application are declared."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_compila_los_agentes_cuando_solo_el_manifiesto_los_declara(
-        self, tmp_path: Path
-    ) -> None:
+    def test_compiles_the_agents_when_only_the_manifest_declares_them(self, tmp_path: Path) -> None:
         """``AGENTS`` alone compiles the artifacts it names."""
         config_path = _write_project(tmp_path, manifest_agents=[_SPEC_GLOB], config_specs=[])
 
@@ -198,11 +196,13 @@ class TestManifestComoUnicaFuente:
         assert [agent["name"] for agent in description["agents"]] == [_AGENT]
 
 
-class TestFuentesExcluyentes:
+class TestExclusiveSources:
     """Declaring the artifacts twice is an error, never a silent precedence."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_falla_cuando_manifiesto_y_configuracion_declaran_agentes(self, tmp_path: Path) -> None:
+    def test_fails_when_the_manifest_and_the_config_both_declare_agents(
+        self, tmp_path: Path
+    ) -> None:
         """Two sources means half the declaration would be ignored."""
         config_path = _write_project(
             tmp_path, manifest_agents=[_SPEC_GLOB], config_specs=[_SPEC_GLOB]
@@ -214,7 +214,7 @@ class TestFuentesExcluyentes:
         assert AgentErrorCode.AGENT_SPECS_CONFLICT in _codes(failure.value)
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_falla_cuando_ninguna_fuente_declara_agentes(self, tmp_path: Path) -> None:
+    def test_fails_when_no_source_declares_agents(self, tmp_path: Path) -> None:
         """An ``ai:`` section that names no artifact configures nothing."""
         config_path = _write_project(tmp_path, manifest_agents=[], config_specs=None)
 
@@ -224,10 +224,10 @@ class TestFuentesExcluyentes:
         assert AgentErrorCode.AGENT_SPECS_MISSING in _codes(failure.value)
 
 
-class TestManifiestoSinSeccionAi:
+class TestManifestWithNoAiSection:
     """Agents declared with no deployment to compile them against are refused."""
 
-    def test_falla_cuando_el_manifiesto_declara_agentes_sin_seccion_ai(
+    def test_fails_when_the_manifest_declares_agents_with_no_ai_section(
         self, tmp_path: Path
     ) -> None:
         """The operator is told which attribute and which section disagree."""

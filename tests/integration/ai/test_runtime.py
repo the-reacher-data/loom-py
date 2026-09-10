@@ -70,10 +70,10 @@ def _build_runtime(
     )
 
 
-class TestCicloDeVida:
+class TestLifecycle:
     """Opening and closing the live clients through one exit stack (T072/T077)."""
 
-    async def test_abre_todos_los_clientes_cuando_entra_el_runtime(
+    async def test_opens_every_client_when_the_runtime_is_entered(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -98,7 +98,7 @@ class TestCicloDeVida:
         async with runtime:
             assert sorted(lifecycle_log) == ["open:a", "open:b"]
 
-    async def test_cierra_en_orden_inverso_cuando_sale_el_runtime(
+    async def test_closes_in_reverse_order_when_the_runtime_exits(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -130,7 +130,7 @@ class TestCicloDeVida:
 
         assert lifecycle_log == ["open:a", "open:b", "close:b", "close:a"]
 
-    async def test_construye_un_solo_motor_cuando_hay_varias_invocaciones(
+    async def test_builds_a_single_engine_across_multiple_invocations(
         self,
         lifecycle_log: list[str],
         identity: Identity,
@@ -159,7 +159,7 @@ class TestCicloDeVida:
 
         assert provider.calls == ["analyst"]
 
-    async def test_abre_el_cliente_una_sola_vez_cuando_hay_varias_invocaciones(
+    async def test_opens_the_client_once_across_multiple_invocations(
         self,
         lifecycle_log: list[str],
         identity: Identity,
@@ -187,7 +187,7 @@ class TestCicloDeVida:
 
         assert lifecycle_log.count("open:a") == 1
 
-    async def test_rechaza_el_cierre_cuando_sale_en_otra_tarea(
+    async def test_refuses_the_close_when_exiting_from_another_task(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -217,10 +217,10 @@ class TestCicloDeVida:
             await runtime.__aexit__(None, None, None)
 
 
-class TestArranqueConcurrente:
+class TestConcurrentStartup:
     """Start-up is concurrent, bounded and never hangs (T077)."""
 
-    async def test_arranca_en_paralelo_cuando_hay_varios_clientes(
+    async def test_starts_in_parallel_across_multiple_clients(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -254,7 +254,7 @@ class TestArranqueConcurrente:
 
         assert elapsed < 0.070, f"start-up took {elapsed:.3f}s; the two clients ran in sequence"
 
-    async def test_aborta_nombrando_el_servidor_cuando_no_conecta(
+    async def test_aborts_naming_the_server_when_it_does_not_connect(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -288,7 +288,7 @@ class TestArranqueConcurrente:
 
         assert _SERVER_A in str(failure.value)
 
-    async def test_reporta_mcp_server_unreachable_cuando_no_conecta(
+    async def test_reports_mcp_server_unreachable_when_it_does_not_connect(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -321,7 +321,7 @@ class TestArranqueConcurrente:
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
 
 
-class TestPresupuestoDeArranque:
+class TestStartupBudget:
     """``startup_timeout_ms`` bounds the whole of start-up exactly once."""
 
     @staticmethod
@@ -357,7 +357,7 @@ class TestPresupuestoDeArranque:
             config_kwargs={"startup_timeout_ms": 80},
         )
 
-    async def test_no_supera_el_presupuesto_cuando_hay_varias_capacidades_mcp(
+    async def test_does_not_exceed_the_budget_across_multiple_mcp_capabilities(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -378,7 +378,7 @@ class TestPresupuestoDeArranque:
             f"start-up took {elapsed:.3f}s: the budget was spent once per capability"
         )
 
-    async def test_nombra_el_servidor_cuando_expira_el_presupuesto(
+    async def test_names_the_server_when_the_budget_expires(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -395,7 +395,7 @@ class TestPresupuestoDeArranque:
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
         assert _SERVER_C in str(failure.value)
 
-    async def test_lista_las_herramientas_una_vez_cuando_dos_planes_comparten_servidor(
+    async def test_lists_the_tools_once_when_two_plans_share_a_server(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -419,7 +419,7 @@ class TestPresupuestoDeArranque:
         async with runtime:
             assert session.listed == 1
 
-    async def test_aplica_el_filtro_de_cada_plan_cuando_comparten_servidor(
+    async def test_applies_each_plans_own_filter_when_they_share_a_server(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -447,10 +447,10 @@ class TestPresupuestoDeArranque:
         assert "second" in str(failure.value)
 
 
-class TestFiltroDeHerramientas:
+class TestToolFilter:
     """Declared filters are applied against the real tool list (T073)."""
 
-    async def test_aborta_cuando_el_filtro_no_casa_ninguna_herramienta(
+    async def test_aborts_when_the_filter_matches_no_tool(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -473,7 +473,7 @@ class TestFiltroDeHerramientas:
 
         assert AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING in _codes(failure.value)
 
-    async def test_arranca_cuando_el_filtro_casa_una_herramienta(
+    async def test_starts_when_the_filter_matches_a_tool(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -494,7 +494,7 @@ class TestFiltroDeHerramientas:
         async with runtime:
             assert runtime.has_agent("analyst")
 
-    async def test_arranca_cuando_un_glob_casa_parte_de_las_herramientas(
+    async def test_starts_when_a_glob_matches_part_of_the_tools(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -515,7 +515,7 @@ class TestFiltroDeHerramientas:
         async with runtime:
             assert runtime.has_agent("analyst")
 
-    async def test_aborta_cuando_el_glob_no_casa_ninguna_herramienta(
+    async def test_aborts_when_the_glob_matches_no_tool(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -538,7 +538,7 @@ class TestFiltroDeHerramientas:
 
         assert AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING in _codes(failure.value)
 
-    async def test_aborta_cuando_el_exclude_vacia_lo_que_el_glob_incluye(
+    async def test_aborts_when_exclude_empties_what_the_glob_includes(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -561,7 +561,7 @@ class TestFiltroDeHerramientas:
 
         assert AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING in _codes(failure.value)
 
-    async def test_nombra_el_servidor_registrado_y_no_su_url_cuando_el_filtro_falla(
+    async def test_names_the_registered_server_and_not_its_url_when_the_filter_fails(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -587,10 +587,10 @@ class TestFiltroDeHerramientas:
         assert mcp_server_url(_SERVER_A) not in message
 
 
-class TestDerivaDeSoloLectura:
+class TestReadOnlyDrift:
     """Live SQL configuration is re-verified at start-up (T079, FR-046)."""
 
-    async def test_aborta_cuando_la_conexion_ya_no_es_de_solo_lectura(
+    async def test_aborts_when_the_connection_is_no_longer_read_only(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -611,7 +611,7 @@ class TestDerivaDeSoloLectura:
 
         assert AgentErrorCode.SQL_READONLY_DRIFT in _codes(failure.value)
 
-    async def test_nombra_la_conexion_cuando_hay_deriva(
+    async def test_names_the_connection_when_there_is_drift(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -632,7 +632,7 @@ class TestDerivaDeSoloLectura:
 
         assert "reporting" in str(failure.value)
 
-    async def test_arranca_cuando_la_conexion_sigue_siendo_de_solo_lectura(
+    async def test_starts_when_the_connection_is_still_read_only(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -652,10 +652,10 @@ class TestDerivaDeSoloLectura:
             assert runtime.agent_names() == ("analyst",)
 
 
-class TestSesionMcpCompartida:
+class TestSharedMcpSession:
     """A cancelled caller must not poison a shared JSON-RPC session (T078)."""
 
-    async def test_completa_la_llamada_en_vuelo_cuando_se_cancela_el_llamador(self) -> None:
+    async def test_completes_the_in_flight_call_when_the_caller_is_cancelled(self) -> None:
         """The shielded in-flight call runs to completion despite cancellation."""
         session = InterleavingSensitiveSession(delay_ms=20)
         shared = SharedMcpSession(session, label="alpha")  # type: ignore[arg-type]
@@ -669,7 +669,7 @@ class TestSesionMcpCompartida:
 
         assert session.completed == ["a"], "the in-flight JSON-RPC call was abandoned mid-frame"
 
-    async def test_devuelve_su_propio_resultado_cuando_el_vecino_se_cancela(self) -> None:
+    async def test_returns_its_own_result_when_the_neighbour_is_cancelled(self) -> None:
         """The surviving caller gets its own answer, never the cancelled one's."""
         session = InterleavingSensitiveSession(delay_ms=20)
         shared = SharedMcpSession(session, label="alpha")  # type: ignore[arg-type]
@@ -686,7 +686,7 @@ class TestSesionMcpCompartida:
         result = await second
         assert result.structured == "b"
 
-    async def test_no_entrelaza_las_llamadas_cuando_comparten_la_sesion(self) -> None:
+    async def test_does_not_interleave_calls_when_they_share_the_session(self) -> None:
         """Two concurrent runs over one session are serialised, never interleaved."""
         session = InterleavingSensitiveSession(delay_ms=20)
         shared = SharedMcpSession(session, label="alpha")  # type: ignore[arg-type]

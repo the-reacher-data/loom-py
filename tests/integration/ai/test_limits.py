@@ -70,10 +70,10 @@ def _tool_script(iterations: int) -> tuple[AgentEvent, ...]:
     return tuple(events)
 
 
-class TestRunsConcurrentes:
+class TestConcurrentRuns:
     """``max_concurrent_runs`` is a per-worker admission bound, not a queue."""
 
-    async def test_rechaza_con_too_many_runs_cuando_el_cupo_esta_agotado(
+    async def test_refuses_with_too_many_runs_when_the_quota_is_exhausted(
         self,
         identity: Identity,
         deps: StubDepsFactory,
@@ -92,7 +92,7 @@ class TestRunsConcurrentes:
 
         assert failure.value.code is AgentRunErrorCode.TOO_MANY_RUNS
 
-    async def test_falla_de_inmediato_cuando_el_cupo_esta_agotado(
+    async def test_fails_immediately_when_the_quota_is_exhausted(
         self,
         identity: Identity,
         deps: StubDepsFactory,
@@ -115,10 +115,10 @@ class TestRunsConcurrentes:
         assert elapsed < 0.020, f"the refusal queued for {elapsed:.3f}s instead of failing fast"
 
 
-class TestPresupuestoDeEjecucion:
+class TestExecutionBudget:
     """``run_timeout_ms`` is a wall-clock budget for the whole run."""
 
-    async def test_termina_con_run_timeout_cuando_el_stream_es_lento(
+    async def test_ends_with_run_timeout_when_the_stream_is_slow(
         self,
         identity: Identity,
         deps: StubDepsFactory,
@@ -135,10 +135,10 @@ class TestPresupuestoDeEjecucion:
         assert failure.value.code is AgentRunErrorCode.RUN_TIMEOUT
 
 
-class TestIteraciones:
+class TestIterations:
     """``max_iterations`` counts tool calls and names the limit it enforces."""
 
-    async def test_termina_con_max_iterations_cuando_hay_demasiadas_llamadas(
+    async def test_ends_with_max_iterations_when_there_are_too_many_calls(
         self,
         identity: Identity,
         deps: StubDepsFactory,
@@ -154,7 +154,7 @@ class TestIteraciones:
 
         assert failure.value.code is AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED
 
-    async def test_nombra_el_limite_cuando_agota_las_iteraciones(
+    async def test_names_the_limit_when_iterations_are_exhausted(
         self,
         identity: Identity,
         deps: StubDepsFactory,
@@ -171,10 +171,10 @@ class TestIteraciones:
         assert "2" in str(failure.value)
 
 
-class TestTimeoutDeHerramienta:
+class TestToolTimeout:
     """``tool_timeout_ms`` bounds the gap between a call and its result."""
 
-    async def test_termina_con_tool_timeout_cuando_la_herramienta_se_estanca(
+    async def test_ends_with_tool_timeout_when_the_tool_stalls(
         self,
         identity: Identity,
         deps: StubDepsFactory,
@@ -196,7 +196,7 @@ class TestTimeoutDeHerramienta:
 
         assert failure.value.code is AgentRunErrorCode.TOOL_TIMEOUT
 
-    async def test_nombra_la_herramienta_cuando_expira_el_timeout(
+    async def test_names_the_tool_when_the_timeout_expires(
         self,
         identity: Identity,
         deps: StubDepsFactory,

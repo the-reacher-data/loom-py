@@ -81,10 +81,10 @@ def _wired(
     return executor, runtime
 
 
-class TestElMangoCorreComoElLlamanteVerificado:
-    """Propiedad 1: la capacidad corre como el llamante verificado, no como el worker."""
+class TestTheHandleRunsAsTheVerifiedCaller:
+    """Property 1: the capability runs as the verified caller, not as the worker."""
 
-    async def test_la_identidad_que_llega_al_motor_es_la_del_ejecutor(
+    async def test_the_identity_reaching_the_engine_is_the_executors(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = RecordingScriptedEngine()
@@ -101,10 +101,10 @@ class TestElMangoCorreComoElLlamanteVerificado:
         assert result["caller_subject"] == "alice"
         assert engine.identities == [_ALICE]
 
-    async def test_dos_llamantes_distintos_nunca_se_cruzan(
+    async def test_two_different_callers_never_cross(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """Ejecuciones concurrentes ligan cada una su propio llamante."""
+        """Concurrent runs each bind their own caller."""
         bob = Identity(subject="bob", mechanism="test")
         engine = RecordingScriptedEngine()
         executor, runtime = _wired(
@@ -125,10 +125,10 @@ class TestElMangoCorreComoElLlamanteVerificado:
         assert sorted(i.subject for i in engine.identities) == ["alice", "bob"]
 
 
-class TestUnParametroNoSobrescribeLaIdentidadVerificada:
-    """Propiedad 2: el defecto de la PR de SQL, fijado aquí desde el principio."""
+class TestAParameterDoesNotOverrideTheVerifiedIdentity:
+    """Property 2: the SQL PR's defect, pinned here from the start."""
 
-    async def test_un_parametro_primitivo_llamado_identity_no_llega_al_modelo(
+    async def test_a_primitive_parameter_named_identity_never_reaches_the_model(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = RecordingScriptedEngine()
@@ -176,13 +176,13 @@ class _CallbackScriptedEngine(RecordingScriptedEngine):
             yield event
 
 
-class TestCicloYProfundidadPorElMarcador:
-    """Propiedad 6 (primera mitad): rechazos de ciclo y de profundidad."""
+class TestCycleAndDepthThroughTheMarker:
+    """Property 6 (first half): cycle and depth refusals."""
 
-    async def test_una_corrida_anidada_de_otro_agente_excede_la_profundidad_por_defecto(
+    async def test_a_nested_run_of_another_agent_exceeds_the_default_depth(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """El caso de uso interno declara su propio Agent(); no cabe con max_agent_depth=1."""
+        """The inner use case declares its own Agent(); it does not fit with max_agent_depth=1."""
         inner_engine = RecordingScriptedEngine()
         compiler_and_executor = marker_use_case_executor(OuterMarkerUseCase, InnerMarkerUseCase)
         _, executor = compiler_and_executor
@@ -206,7 +206,7 @@ class TestCicloYProfundidadPorElMarcador:
 
         assert inner_engine.identities == []
 
-    async def test_una_profundidad_elevada_deja_pasar_la_corrida_anidada(
+    async def test_a_raised_depth_lets_the_nested_run_through(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         inner_engine = RecordingScriptedEngine()
@@ -232,10 +232,10 @@ class TestCicloYProfundidadPorElMarcador:
         assert inner_engine.identities == [_ALICE]
 
 
-class TestElPermisoDeConcurrenciaSeRechazaEnVezDeEncolarse:
-    """Propiedad 6 (segunda mitad): sin cola, un cupo agotado se rechaza al instante."""
+class TestTheConcurrencyPermitIsRefusedInsteadOfQueued:
+    """Property 6 (second half): with no queue, an exhausted quota is refused instantly."""
 
-    async def test_una_segunda_corrida_se_rechaza_mientras_la_primera_sigue_abierta(
+    async def test_a_second_run_is_refused_while_the_first_is_still_open(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         # First event fires immediately (started), second after 40ms, holding

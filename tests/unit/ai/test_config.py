@@ -76,7 +76,7 @@ _UNSAFE_URL_IDS: list[str] = [
 
 
 class TestModelBindingValidation:
-    def test_falla_con_inference_target_incomplete_cuando_bedrock_no_declara_region(
+    def test_fails_with_inference_target_incomplete_when_bedrock_declares_no_region(
         self,
     ) -> None:
         """A bedrock binding without ``region`` is unusable and must be rejected."""
@@ -88,7 +88,7 @@ class TestModelBindingValidation:
         assert AgentErrorCode.INFERENCE_TARGET_INCOMPLETE in _codes(excinfo.value)
 
     @pytest.mark.parametrize("mode", ["prompted", "xml"])
-    def test_falla_con_output_mode_unknown_cuando_el_modo_no_es_tool_ni_native(
+    def test_fails_with_output_mode_unknown_when_the_mode_is_neither_tool_nor_native(
         self, mode: str
     ) -> None:
         """Only ``tool`` and ``native`` are offered; the issue names the role and both."""
@@ -106,7 +106,7 @@ class TestModelBindingValidation:
         assert "tool, native" in issue.message
 
     @pytest.mark.parametrize("mode", ["tool", "native", None])
-    def test_acepta_el_binding_cuando_output_mode_es_valido_o_no_se_declara(
+    def test_accepts_the_binding_when_output_mode_is_valid_or_undeclared(
         self, mode: str | None
     ) -> None:
         """A declared valid mode, or none at all, loads without issues."""
@@ -116,7 +116,7 @@ class TestModelBindingValidation:
 
         assert config.models["default"].output_mode == mode
 
-    def test_falla_con_output_mode_unknown_cuando_el_modo_llega_por_yaml(self) -> None:
+    def test_fails_with_output_mode_unknown_when_the_mode_arrives_via_yaml(self) -> None:
         """The decode path reports the loom issue, not a raw msgspec error.
 
         The struct field is deliberately ``str``: a ``Literal`` would make
@@ -144,11 +144,11 @@ models:
         assert "reporting" in issue.message
         assert "tool, native" in issue.message
 
-    def test_las_constantes_de_modo_derivan_del_tipo(self) -> None:
+    def test_the_mode_constants_derive_from_the_type(self) -> None:
         """``OUTPUT_MODES`` and ``OutputMode`` cannot drift: one derives from the other."""
         assert get_args(OutputMode) == OUTPUT_MODES
 
-    def test_el_repr_muestra_output_mode_cuando_se_declara(self) -> None:
+    def test_the_repr_shows_output_mode_when_declared(self) -> None:
         """``output_mode`` is not a secret, so the redacting repr shows it."""
         target = InferenceTarget(provider="openai", model="gpt-test", output_mode="native")
 
@@ -166,7 +166,7 @@ class TestLiteralSecretRejection:
         ],
         ids=["aws_access_key", "sk_token", "with_spaces", "url_userinfo"],
     )
-    def test_falla_cuando_credentials_ref_es_un_secreto_literal(
+    def test_fails_when_credentials_ref_is_a_literal_secret(
         self,
         literal_secret: str,
     ) -> None:
@@ -190,7 +190,7 @@ class TestLiteralSecretRejection:
         ],
         ids=["aws_access_key", "sk_token", "with_spaces", "url_userinfo"],
     )
-    def test_el_mensaje_no_contiene_el_secreto_cuando_se_rechaza_un_literal(
+    def test_the_message_does_not_contain_the_secret_when_a_literal_is_rejected(
         self,
         literal_secret: str,
     ) -> None:
@@ -208,7 +208,7 @@ class TestLiteralSecretRejection:
 
 
 class TestA2AConfig:
-    def test_falla_con_a2a_expose_empty_cuando_expose_esta_vacio(self) -> None:
+    def test_fails_with_a2a_expose_empty_when_expose_is_empty(self) -> None:
         """Empty ``expose`` means none, never all (FR-041a); it must be rejected."""
         with pytest.raises(AgentCompilationError) as excinfo:
             A2AConfig(base_url="https://agents.example.com", expose=())
@@ -217,12 +217,12 @@ class TestA2AConfig:
 
 
 class TestAgentEndpointConfig:
-    def test_falla_la_construccion_cuando_no_se_declara_auth(self) -> None:
+    def test_fails_construction_when_auth_is_not_declared(self) -> None:
         """``auth`` has no default: omitting it must fail at construction."""
         with pytest.raises(TypeError):
             AgentEndpointConfig(enabled=True)  # type: ignore[call-arg]
 
-    def test_allow_anonymous_es_false_cuando_no_se_declara(self) -> None:
+    def test_allow_anonymous_is_false_when_not_declared(self) -> None:
         """Anonymous access is opt-in per agent (FR-045a)."""
         endpoint = AgentEndpointConfig(enabled=True, auth="oidc")
 
@@ -235,42 +235,42 @@ class TestAiConfigDefaults:
         """Build a minimal valid config relying on every default."""
         return _config({"default": _complete_target()})
 
-    def test_startup_timeout_ms_por_defecto_cuando_no_se_declara(
+    def test_startup_timeout_ms_defaults_when_not_declared(
         self,
         config: AiConfig,
     ) -> None:
         assert config.startup_timeout_ms == 10000
 
-    def test_max_concurrent_runs_por_defecto_cuando_no_se_declara(
+    def test_max_concurrent_runs_defaults_when_not_declared(
         self,
         config: AiConfig,
     ) -> None:
         assert config.max_concurrent_runs == 8
 
-    def test_max_prompt_bytes_por_defecto_cuando_no_se_declara(
+    def test_max_prompt_bytes_defaults_when_not_declared(
         self,
         config: AiConfig,
     ) -> None:
         assert config.max_prompt_bytes == 65536
 
-    def test_health_cache_ttl_ms_por_defecto_cuando_no_se_declara(
+    def test_health_cache_ttl_ms_defaults_when_not_declared(
         self,
         config: AiConfig,
     ) -> None:
         assert config.health_cache_ttl_ms == 5000
 
-    def test_remote_clients_es_required_por_defecto_cuando_no_se_declara(
+    def test_remote_clients_defaults_to_required_when_not_declared(
         self,
         config: AiConfig,
     ) -> None:
         """Start-up keeps failing on an unreachable remote unless opted out (D4)."""
         assert config.remote_clients == "required"
 
-    def test_a2a_es_none_cuando_no_se_declara(self, config: AiConfig) -> None:
+    def test_a2a_is_none_when_not_declared(self, config: AiConfig) -> None:
         """Absent ``a2a`` means no card and no A2A endpoints (FR-041)."""
         assert config.a2a is None
 
-    def test_endpoints_esta_vacio_cuando_no_se_declara(self, config: AiConfig) -> None:
+    def test_endpoints_is_empty_when_not_declared(self, config: AiConfig) -> None:
         """An agent absent from ``endpoints`` is never mounted (FR-029a)."""
         assert dict(config.endpoints) == {}
 
@@ -279,7 +279,7 @@ class TestMcpServerRegistry:
     """``ai.mcp_servers`` is where an artifact's ``server:`` name is located."""
 
     @pytest.mark.parametrize("url", _UNSAFE_URLS, ids=_UNSAFE_URL_IDS)
-    def test_falla_con_mcp_url_invalid_cuando_la_url_no_es_segura(self, url: str) -> None:
+    def test_fails_with_mcp_url_invalid_when_the_url_is_not_safe(self, url: str) -> None:
         """Only a plain ``https`` URL without userinfo or query string is accepted."""
         mcp_servers = {"knowledge": McpServerConfig(url=url)}
 
@@ -288,7 +288,7 @@ class TestMcpServerRegistry:
 
         assert AgentErrorCode.MCP_URL_INVALID in _codes(excinfo.value)
 
-    def test_el_mensaje_no_contiene_el_userinfo_cuando_se_rechaza_la_url(self) -> None:
+    def test_the_message_does_not_contain_the_userinfo_when_the_url_is_rejected(self) -> None:
         """The rejection must not leak the credential embedded in the URL."""
         mcp_servers = {
             "knowledge": McpServerConfig(url="https://user:s3cr3t@knowledge.example.com/mcp")
@@ -299,7 +299,7 @@ class TestMcpServerRegistry:
 
         assert "s3cr3t" not in str(excinfo.value)
 
-    def test_falla_con_credentials_inline_cuando_headers_ref_es_un_secreto_literal(self) -> None:
+    def test_fails_with_credentials_inline_when_headers_ref_is_a_literal_secret(self) -> None:
         """``headers_ref`` references headers; it never carries them (FR-018)."""
         server = McpServerConfig(
             url="https://knowledge.example.com/mcp",
@@ -311,7 +311,7 @@ class TestMcpServerRegistry:
 
         assert AgentErrorCode.MCP_CREDENTIALS_INLINE in _codes(excinfo.value)
 
-    def test_el_mensaje_no_contiene_el_secreto_cuando_se_rechaza_headers_ref(self) -> None:
+    def test_the_message_does_not_contain_the_secret_when_headers_ref_is_rejected(self) -> None:
         """The rejection itself must not leak the very secret it rejects."""
         literal = "sk-abc123def456ghi789"
         server = McpServerConfig(url="https://knowledge.example.com/mcp", headers_ref=literal)
@@ -322,7 +322,7 @@ class TestMcpServerRegistry:
         assert literal not in str(excinfo.value)
 
     @pytest.mark.parametrize("timeout_ms", [0, -1, 600001], ids=["zero", "negative", "above_max"])
-    def test_falla_con_policy_out_of_range_cuando_el_timeout_esta_fuera_de_rango(
+    def test_fails_with_policy_out_of_range_when_the_timeout_is_out_of_range(
         self,
         timeout_ms: int,
     ) -> None:
@@ -334,7 +334,7 @@ class TestMcpServerRegistry:
 
         assert AgentErrorCode.POLICY_OUT_OF_RANGE in _codes(excinfo.value)
 
-    def test_acepta_el_servidor_cuando_la_url_y_la_referencia_son_validas(self) -> None:
+    def test_accepts_the_server_when_the_url_and_the_reference_are_valid(self) -> None:
         """The happy case: an https URL, a reference-shaped secret and a sane deadline."""
         server = McpServerConfig(
             url="https://knowledge.example.com/mcp",
@@ -346,11 +346,11 @@ class TestMcpServerRegistry:
 
         assert config.mcp_servers["knowledge"] == server
 
-    def test_timeout_ms_por_defecto_cuando_no_se_declara(self) -> None:
+    def test_timeout_ms_defaults_when_not_declared(self) -> None:
         """The documented per-call deadline applies when the deployment stays silent."""
         assert McpServerConfig(url="https://knowledge.example.com/mcp").timeout_ms == 20000
 
-    def test_mcp_servers_esta_vacio_cuando_no_se_declara(self) -> None:
+    def test_mcp_servers_is_empty_when_not_declared(self) -> None:
         """No server is reachable by default; every name must be declared."""
         assert dict(_config_with().mcp_servers) == {}
 
@@ -374,7 +374,7 @@ def _issues_with(error: AgentCompilationError, code: AgentErrorCode) -> list[str
 class TestMcpStdioTransport:
     """``transport: stdio`` runs the server as a subprocess of the worker (US1, US2)."""
 
-    def test_acepta_stdio_con_command_y_args_sin_url(self) -> None:
+    def test_accepts_stdio_with_command_and_args_and_no_url(self) -> None:
         """A stdio server is located by its command, never by a URL (FR-001, FR-004)."""
         server = _stdio_server()
 
@@ -383,7 +383,7 @@ class TestMcpStdioTransport:
         assert config.mcp_servers["search"].transport == "stdio"
         assert config.mcp_servers["search"].url is None
 
-    def test_falla_con_transport_invalid_y_nota_de_seguridad_cuando_stdio_lleva_headers_ref(
+    def test_fails_with_transport_invalid_and_a_security_note_when_stdio_carries_headers_ref(
         self,
     ) -> None:
         """No connection exists to authenticate; the message says what stdio implies (FR-006)."""
@@ -397,7 +397,7 @@ class TestMcpStdioTransport:
         assert "subprocess of this worker" in messages[0]
         assert "no connection to authenticate" in messages[0]
 
-    def test_falla_con_transport_invalid_cuando_stdio_lleva_auth(self) -> None:
+    def test_fails_with_transport_invalid_when_stdio_carries_auth(self) -> None:
         """An ``auth`` strategy authenticates a connection; stdio opens none (FR-005)."""
         server = _stdio_server(auth={"kind": "bearer", "token_ref": "ai/search/token"})
 
@@ -413,9 +413,9 @@ class TestMcpStdioTransport:
             {"command": ""},
             {"url": "https://search.example.com/mcp"},
         ],
-        ids=["sin_command", "command_vacio", "con_url"],
+        ids=["no_command", "empty_command", "with_url"],
     )
-    def test_falla_con_transport_invalid_cuando_stdio_es_incoherente(
+    def test_fails_with_transport_invalid_when_stdio_is_incoherent(
         self, overrides: dict[str, object]
     ) -> None:
         """stdio requires a non-empty ``command`` and refuses ``url`` (FR-004)."""
@@ -434,9 +434,9 @@ class TestMcpStdioTransport:
             {"env": {"HOME": "/tmp"}},
             {"url": None},
         ],
-        ids=["con_command", "con_args", "con_env", "sin_url"],
+        ids=["with_command", "with_args", "with_env", "no_url"],
     )
-    def test_falla_con_transport_invalid_cuando_http_es_incoherente(
+    def test_fails_with_transport_invalid_when_http_is_incoherent(
         self, overrides: dict[str, object]
     ) -> None:
         """http requires ``url`` and refuses the subprocess fields (FR-003)."""
@@ -449,7 +449,7 @@ class TestMcpStdioTransport:
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
 
-    def test_falla_con_transport_invalid_listando_los_aceptados_cuando_el_transporte_es_desconocido(
+    def test_fails_with_transport_invalid_listing_the_accepted_ones_for_an_unknown_transport(
         self,
     ) -> None:
         """An unknown transport is refused and the message names the accepted ones (FR-002)."""
@@ -463,8 +463,10 @@ class TestMcpStdioTransport:
         assert "http" in messages[0]
         assert "stdio" in messages[0]
 
-    @pytest.mark.parametrize("literal", ["sk abc", "sk{x}"], ids=["con_espacio", "con_llave"])
-    def test_falla_con_credentials_inline_en_env_sin_repetir_el_valor(self, literal: str) -> None:
+    @pytest.mark.parametrize("literal", ["sk abc", "sk{x}"], ids=["with_space", "with_brace"])
+    def test_fails_with_credentials_inline_in_env_without_repeating_the_value(
+        self, literal: str
+    ) -> None:
         """A value shaped like a broken interpolation is refused; the message omits it (FR-007)."""
         server = _stdio_server(env={"API_KEY": literal})
 
@@ -479,7 +481,7 @@ class TestMcpStdioTransport:
         assert [issue.field for issue in issues] == ["env.API_KEY"]
         assert literal not in str(excinfo.value)
 
-    def test_acepta_un_token_resuelto_en_env(self) -> None:
+    def test_accepts_a_token_already_resolved_in_env(self) -> None:
         """``env`` carries values already resolved by the secrets resolver (FR-007)."""
         server = _stdio_server(env={"GITHUB_TOKEN": "ghp_abc"})
 
@@ -487,7 +489,7 @@ class TestMcpStdioTransport:
 
         assert config.mcp_servers["search"].env == {"GITHUB_TOKEN": "ghp_abc"}
 
-    def test_falla_con_transport_invalid_cuando_el_nombre_de_env_no_es_valido(self) -> None:
+    def test_fails_with_transport_invalid_when_the_env_name_is_not_valid(self) -> None:
         """An environment variable name is an identifier; anything else is a typo (FR-007)."""
         server = _stdio_server(env={"BAD KEY": "value"})
 
@@ -497,7 +499,7 @@ class TestMcpStdioTransport:
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
         assert [issue.field for issue in excinfo.value.issues] == ["env.BAD KEY"]
 
-    def test_falla_con_policy_out_of_range_cuando_el_timeout_es_cero_bajo_stdio(self) -> None:
+    def test_fails_with_policy_out_of_range_when_the_timeout_is_zero_under_stdio(self) -> None:
         """The per-call deadline is bounded whatever the transport (FR-003, FR-004)."""
         server = _stdio_server(timeout_ms=0)
 
@@ -506,7 +508,7 @@ class TestMcpStdioTransport:
 
         assert _codes(excinfo.value) == [AgentErrorCode.POLICY_OUT_OF_RANGE]
 
-    def test_transport_es_http_cuando_no_se_declara(self) -> None:
+    def test_transport_defaults_to_http_when_not_declared(self) -> None:
         """A server declared today keeps its meaning: an HTTP endpoint (FR-001)."""
         assert McpServerConfig(url="https://search.example.com/mcp").transport == "http"
 
@@ -515,7 +517,7 @@ class TestA2AAgentRegistry:
     """``ai.a2a_agents`` is where an artifact's ``agent:`` name is located."""
 
     @pytest.mark.parametrize("url", _UNSAFE_URLS, ids=_UNSAFE_URL_IDS)
-    def test_falla_con_a2a_url_invalid_cuando_la_url_no_es_segura(self, url: str) -> None:
+    def test_fails_with_a2a_url_invalid_when_the_url_is_not_safe(self, url: str) -> None:
         """Remote agents are held to the same URL rules as remote tool servers."""
         a2a_agents = {"translations": A2AAgentConfig(url=url)}
 
@@ -524,7 +526,7 @@ class TestA2AAgentRegistry:
 
         assert AgentErrorCode.A2A_URL_INVALID in _codes(excinfo.value)
 
-    def test_falla_con_credentials_inline_cuando_headers_ref_es_un_secreto_literal(self) -> None:
+    def test_fails_with_credentials_inline_when_headers_ref_is_a_literal_secret(self) -> None:
         """``headers_ref`` references headers; it never carries them (FR-018)."""
         agent = A2AAgentConfig(
             url="https://translations.example.com/a2a",
@@ -536,7 +538,7 @@ class TestA2AAgentRegistry:
 
         assert AgentErrorCode.MCP_CREDENTIALS_INLINE in _codes(excinfo.value)
 
-    def test_acepta_el_agente_cuando_la_url_y_la_referencia_son_validas(self) -> None:
+    def test_accepts_the_agent_when_the_url_and_the_reference_are_valid(self) -> None:
         """The happy case: an https URL and a reference-shaped secret."""
         agent = A2AAgentConfig(
             url="https://translations.example.com/a2a",
@@ -547,23 +549,23 @@ class TestA2AAgentRegistry:
 
         assert config.a2a_agents["translations"] == agent
 
-    def test_a2a_agents_esta_vacio_cuando_no_se_declara(self) -> None:
+    def test_a2a_agents_is_empty_when_not_declared(self) -> None:
         """No remote agent is reachable by default; every name must be declared."""
         assert dict(_config_with().a2a_agents) == {}
 
 
 class TestSkillsRoot:
-    def test_skills_root_es_none_cuando_no_se_declara(self) -> None:
+    def test_skills_root_is_none_when_not_declared(self) -> None:
         """A bare library name needs a root; without one the compiler must complain."""
         assert _config_with().skills_root is None
 
-    def test_conserva_el_skills_root_cuando_se_declara(self) -> None:
+    def test_keeps_the_skills_root_when_declared(self) -> None:
         """The root is deployment-owned; the artifact never carries a path."""
         assert _config_with(skills_root="/srv/app/skills").skills_root == "/srv/app/skills"
 
 
 class TestAggregatedRegistryIssues:
-    def test_acumula_una_incidencia_por_registro_invalido_cuando_ambos_fallan(self) -> None:
+    def test_accumulates_one_issue_per_invalid_registry_entry_when_both_fail(self) -> None:
         """One raise reports every faulty entry, never the first one only (FR-011)."""
         mcp_servers = {"knowledge": McpServerConfig(url="http://knowledge.example.com/mcp")}
         a2a_agents = {"translations": A2AAgentConfig(url="http://translations.example.com/a2a")}
@@ -581,10 +583,10 @@ class TestRemoteClients:
     """``ai.remote_clients`` decides whether a remote that will not open is fatal."""
 
     @pytest.mark.parametrize("mode", ["required", "optional"])
-    def test_conserva_el_modo_cuando_es_uno_de_los_validos(self, mode: str) -> None:
+    def test_keeps_the_mode_when_it_is_one_of_the_valid_ones(self, mode: str) -> None:
         assert _config_with(remote_clients=mode).remote_clients == mode
 
-    def test_falla_con_remote_clients_unknown_cuando_el_modo_no_existe(self) -> None:
+    def test_fails_with_remote_clients_unknown_when_the_mode_does_not_exist(self) -> None:
         """An unknown mode must fail the config load, not silently mean ``required``."""
         document = b"""
 engine: pydantic-ai
@@ -602,7 +604,7 @@ remote_clients: maybe
 
         assert _codes(excinfo.value) == [AgentErrorCode.REMOTE_CLIENTS_UNKNOWN]
 
-    def test_el_mensaje_nombra_la_clave_y_los_dos_modos_cuando_rechaza_el_valor(self) -> None:
+    def test_the_message_names_the_key_and_both_modes_when_rejecting_the_value(self) -> None:
         """The reader must learn what to write without opening the source."""
         with pytest.raises(AgentCompilationError) as excinfo:
             _config_with(remote_clients="maybe")
@@ -617,22 +619,22 @@ remote_clients: maybe
 class TestMaxAgentDepth:
     """``ai.max_agent_depth`` below 1 would refuse every run, top-level included."""
 
-    def test_conserva_el_valor_por_defecto(self) -> None:
+    def test_keeps_the_default_value(self) -> None:
         assert _config_with().max_agent_depth == 1
 
     @pytest.mark.parametrize("depth", [1, 2, 5])
-    def test_conserva_un_valor_de_al_menos_uno(self, depth: int) -> None:
+    def test_keeps_a_value_of_at_least_one(self, depth: int) -> None:
         assert _config_with(max_agent_depth=depth).max_agent_depth == depth
 
     @pytest.mark.parametrize("depth", [0, -1])
-    def test_falla_con_max_agent_depth_invalid_por_debajo_de_uno(self, depth: int) -> None:
+    def test_fails_with_max_agent_depth_invalid_below_one(self, depth: int) -> None:
         """Zero would silently refuse the top-level run too, not only nesting."""
         with pytest.raises(AgentCompilationError) as excinfo:
             _config_with(max_agent_depth=depth)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MAX_AGENT_DEPTH_INVALID]
 
-    def test_el_mensaje_nombra_la_clave_y_el_minimo(self) -> None:
+    def test_the_message_names_the_key_and_the_minimum(self) -> None:
         with pytest.raises(AgentCompilationError) as excinfo:
             _config_with(max_agent_depth=0)
 

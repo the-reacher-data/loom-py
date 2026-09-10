@@ -96,17 +96,17 @@ def _isolated_sharing() -> Any:
     remote_auth._STRATEGIES._by_endpoint.clear()
 
 
-class TestHeadersRefLlegaAlCliente:
+class TestHeadersRefReachesTheClient:
     """The compile-time refusal is gone; the header must actually travel."""
 
-    def test_el_cliente_lleva_la_cabecera_cuando_el_servidor_declara_headers_ref(self) -> None:
+    def test_the_client_carries_the_header_when_the_server_declares_headers_ref(self) -> None:
         capability = CompiledMcpCapability(
             server="orders", url=_URL, headers_ref="X-API-Key=abc123"
         )
 
         assert _transport(capability).headers == {"X-API-Key": "abc123"}
 
-    def test_el_cliente_no_lleva_credencial_cuando_el_servidor_no_declara_ninguna(self) -> None:
+    def test_the_client_carries_no_credential_when_the_server_declares_none(self) -> None:
         """The no-auth path is unchanged, which is what keeps artifacts portable."""
         capability = CompiledMcpCapability(server="orders", url=_URL)
 
@@ -116,10 +116,10 @@ class TestHeadersRefLlegaAlCliente:
         assert getattr(transport, "auth", None) is None
 
 
-class TestEstrategiaOauth:
+class TestOauthStrategy:
     """``kind: oauth`` runs the MCP client's own flow, not one loom wrote."""
 
-    def test_el_cliente_monta_su_propio_flujo_oauth(self) -> None:
+    def test_the_client_mounts_its_own_oauth_flow(self) -> None:
         from fastmcp.client.auth.oauth import OAuth
 
         capability = CompiledMcpCapability(
@@ -131,17 +131,17 @@ class TestEstrategiaOauth:
         assert isinstance(_transport(capability).auth, OAuth)
 
 
-class TestEstrategiaBearer:
+class TestBearerStrategy:
     """``kind: bearer`` is the shape configuration cannot express by hand."""
 
-    def test_el_transporte_conserva_el_objeto_que_construyo_la_estrategia(self) -> None:
+    def test_the_transport_keeps_the_object_the_strategy_built(self) -> None:
         """fastmcp special-cases only OAuth and strings; everything else passes through."""
         built = shared_mcp_auth(_BEARER.server, _BEARER.auth)
 
         assert _transport(_BEARER).auth is built
 
     @pytest.mark.parametrize("flavour", _FLAVOURS)
-    def test_la_peticion_lleva_authorization_bearer_en_las_dos_librerias(
+    def test_the_request_carries_authorization_bearer_across_both_libraries(
         self, flavour: str
     ) -> None:
         """Asserted on the wire, through the client the transport really drives."""
@@ -150,25 +150,25 @@ class TestEstrategiaBearer:
         assert _header_on_the_wire(flavour, auth, "Authorization") == f"Bearer {_TOKEN}"
 
 
-class TestEstrategiaStatic:
+class TestStaticStrategy:
     """``kind: static`` is the ``auth`` block's spelling of the ``headers_ref`` shorthand."""
 
-    def test_el_transporte_conserva_el_objeto_que_construyo_la_estrategia(self) -> None:
+    def test_the_transport_keeps_the_object_the_strategy_built(self) -> None:
         built = shared_mcp_auth(_STATIC.server, _STATIC.auth)
 
         assert _transport(_STATIC).auth is built
 
     @pytest.mark.parametrize("flavour", _FLAVOURS)
-    def test_la_peticion_lleva_la_cabecera_fija_en_las_dos_librerias(self, flavour: str) -> None:
+    def test_the_request_carries_the_fixed_header_across_both_libraries(self, flavour: str) -> None:
         auth = _transport(_STATIC).auth
 
         assert _header_on_the_wire(flavour, auth, "X-API-Key") == "abc123"
 
 
-class TestEstrategiaDeTerceros:
+class TestThirdPartyStrategy:
     """The extension point is only real if someone who is not loom can use it."""
 
-    def test_el_cliente_recibe_la_estrategia_construida_con_sus_ajustes(
+    def test_the_client_receives_the_strategy_built_with_its_own_settings(
         self, tmp_path: Path
     ) -> None:
         capability = CompiledMcpCapability(
@@ -191,9 +191,7 @@ class TestEstrategiaDeTerceros:
             "/agents/prod/agent-sales",
         )
 
-    def test_dos_agentes_del_mismo_servidor_comparten_una_sola_instancia(
-        self, tmp_path: Path
-    ) -> None:
+    def test_two_agents_of_the_same_server_share_a_single_instance(self, tmp_path: Path) -> None:
         """Identity, not equality: one credential per server, however many agents hold it."""
         capability = CompiledMcpCapability(
             server="orders",

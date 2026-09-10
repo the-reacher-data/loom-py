@@ -394,7 +394,7 @@ class TestGeneratedClassNamesAreDistinct:
 
 
 class TestGeneratedClassesReportTheirOwnModule:
-    """A generated class names its origin under introspection, not ``types`` (M1)."""
+    """A generated class names its origin under introspection, not ``types``."""
 
     def test_module_is_loom_rest_config_not_types(self) -> None:
         cfg = {

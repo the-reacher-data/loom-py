@@ -108,13 +108,13 @@ def _declared_output_kinds() -> set[str]:
     return {_read_artifact(path)["output"]["kind"] for path in _corpus_paths()}
 
 
-def test_el_corpus_no_esta_vacio_cuando_se_resuelve_el_patron() -> None:
+def test_the_corpus_is_not_empty_once_the_pattern_resolves() -> None:
     """A silently empty corpus would make every per-file test vacuously green."""
     assert _corpus_paths() != ()
 
 
 @pytest.mark.parametrize("path", _corpus_paths(), ids=_corpus_ids())
-def test_el_artefacto_decodifica_cuando_pertenece_al_corpus(path: Path) -> None:
+def test_the_artifact_decodes(path: Path) -> None:
     """Each corpus entry decodes through ``load_specs`` into the v1 struct."""
     decoded = load_specs([path.relative_to(_CORPUS_DIR).as_posix()], _CORPUS_DIR)
 
@@ -122,7 +122,7 @@ def test_el_artefacto_decodifica_cuando_pertenece_al_corpus(path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", _corpus_paths(), ids=_corpus_ids())
-def test_el_artefacto_valida_contra_el_esquema_emitido_cuando_pertenece_al_corpus(
+def test_the_artifact_validates_against_the_emitted_schema(
     path: Path,
 ) -> None:
     """Each corpus entry validates against the schema Loom publishes for v1."""
@@ -131,22 +131,22 @@ def test_el_artefacto_valida_contra_el_esquema_emitido_cuando_pertenece_al_corpu
     assert list(validator.iter_errors(_read_artifact(path))) == []
 
 
-def test_la_decodificacion_no_reporta_incidencias_cuando_el_corpus_es_v1_vigente() -> None:
+def test_decoding_reports_no_issues_for_the_current_v1_corpus() -> None:
     """The corpus targets the current spec version, so nothing is deprecated."""
     assert [entry.issues for entry in _load_corpus()] == [()] * len(_corpus_paths())
 
 
-def test_el_corpus_cubre_todos_los_kinds_de_capacidad_cuando_se_recorre_entero() -> None:
+def test_the_corpus_covers_every_capability_kind() -> None:
     """Every capability kind of the format has at least one fixture."""
     assert _declared_capability_kinds() == set(_CAPABILITY_KINDS)
 
 
-def test_el_corpus_cubre_todos_los_kinds_de_salida_cuando_se_recorre_entero() -> None:
+def test_the_corpus_covers_every_output_kind() -> None:
     """Every output kind of the format has at least one fixture."""
     assert _declared_output_kinds() == set(_OUTPUT_KINDS)
 
 
-def test_cada_artefacto_vive_en_un_directorio_con_su_nombre_cuando_se_recorre_el_corpus() -> None:
+def test_each_artifact_lives_in_a_directory_named_after_it() -> None:
     """The layout is one directory per agent, named after the agent."""
     mismatched = [
         path.parent.name
@@ -157,7 +157,7 @@ def test_cada_artefacto_vive_en_un_directorio_con_su_nombre_cuando_se_recorre_el
     assert mismatched == []
 
 
-def test_el_corpus_cubre_las_dos_formas_de_libreria_cuando_se_recorre_entero() -> None:
+def test_the_corpus_covers_both_skill_library_forms() -> None:
     """Both resolution forms are exercised: beside the artifact and shared."""
     libraries = _declared_skill_libraries()
     local = {library for library in libraries if library.startswith(_LOCAL_LIBRARY_PREFIX)}
@@ -166,7 +166,7 @@ def test_el_corpus_cubre_las_dos_formas_de_libreria_cuando_se_recorre_entero() -
     assert (bool(local), bool(shared)) == (True, True)
 
 
-def test_ninguna_capacidad_declara_una_url_cuando_se_recorre_el_corpus() -> None:
+def test_no_capability_declares_a_url() -> None:
     """Artifacts name what they reach; addresses are deployment facts."""
     located = [
         (path.parent.name, key)
@@ -179,7 +179,7 @@ def test_ninguna_capacidad_declara_una_url_cuando_se_recorre_el_corpus() -> None
 
 
 @pytest.mark.parametrize("library", _skill_libraries(), ids=_skill_library_ids())
-def test_la_libreria_solo_contiene_paquetes_de_skill_cuando_se_lista(library: Path) -> None:
+def test_the_library_contains_only_skill_packages(library: Path) -> None:
     """Only immediate children are discovered, so every child must be one skill."""
     unusable = [
         child.name
@@ -191,7 +191,7 @@ def test_la_libreria_solo_contiene_paquetes_de_skill_cuando_se_lista(library: Pa
 
 
 @pytest.mark.parametrize("library", _skill_libraries(), ids=_skill_library_ids())
-def test_la_libreria_se_carga_con_el_harness_cuando_pertenece_al_corpus(library: Path) -> None:
+def test_the_library_loads_with_the_harness(library: Path) -> None:
     """Constructing ``Skills`` is the assertion: it parses and validates every manifest.
 
     A malformed frontmatter, a ``name`` disagreeing with its directory, an empty

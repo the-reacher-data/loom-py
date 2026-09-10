@@ -59,21 +59,21 @@ def _codes(error: AgentCompilationError) -> list[AgentErrorCode]:
     return [issue.code for issue in error.issues]
 
 
-def test_decode_spec_devuelve_output_hook_spec_cuando_se_declara_on_output() -> None:
+def test_decode_spec_returns_output_hook_spec_when_on_output_is_declared() -> None:
     """``on_output: {usecase: k}`` decodes to ``OutputHookSpec(usecase="k")`` (AC1)."""
     spec = _decode(_payload_with_hook())
 
     assert spec.on_output == OutputHookSpec(usecase=_HOOK_USECASE)
 
 
-def test_decode_spec_deja_on_output_en_none_cuando_no_se_declara() -> None:
+def test_decode_spec_leaves_on_output_as_none_when_not_declared() -> None:
     """The hook is optional and additive: an artifact without it keeps decoding (AC1)."""
     spec = _decode(_payload_without_hook())
 
     assert spec.on_output is None
 
 
-def test_decode_spec_falla_con_spec_unknown_field_cuando_on_output_lleva_una_clave_extra() -> None:
+def test_decode_spec_fails_with_spec_unknown_field_when_on_output_has_an_extra_key() -> None:
     """An unrecognised key inside ``on_output`` is rejected, never dropped (AC1, FR-005)."""
     payload = _payload_with_hook()
     payload["on_output"]["retries"] = 3
@@ -85,7 +85,7 @@ def test_decode_spec_falla_con_spec_unknown_field_cuando_on_output_lleva_una_cla
     assert _codes(exc.value) == [AgentErrorCode.SPEC_UNKNOWN_FIELD]
 
 
-def test_decode_spec_falla_cuando_on_output_no_nombra_ningun_usecase() -> None:
+def test_decode_spec_fails_when_on_output_names_no_usecase() -> None:
     """``usecase`` is the whole declaration; an empty hook object is malformed."""
     payload = _payload_with_hook()
     payload["on_output"] = {}
@@ -95,14 +95,14 @@ def test_decode_spec_falla_cuando_on_output_no_nombra_ningun_usecase() -> None:
         decode_spec(encoded)
 
 
-def test_el_esquema_publicado_acepta_el_artefacto_cuando_declara_on_output() -> None:
+def test_the_published_schema_accepts_the_artifact_declaring_on_output() -> None:
     """What the decoder accepts, the published schema accepts too (AC1)."""
     validator = Draft202012Validator(agent_spec_json_schema(1))
 
     assert list(validator.iter_errors(_payload_with_hook())) == []
 
 
-def test_el_esquema_publicado_rechaza_on_output_cuando_lleva_una_clave_extra() -> None:
+def test_the_published_schema_rejects_on_output_with_an_extra_key() -> None:
     """The schema is as strict as the struct: unknown keys inside ``on_output`` fail."""
     payload = _payload_with_hook()
     payload["on_output"]["retries"] = 3

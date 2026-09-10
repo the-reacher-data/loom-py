@@ -36,10 +36,10 @@ _AGENT = "triage"
 _SERVER = "alpha-tools"
 
 
-class TestUnServidorSoloDeCasoDeUsoQuedaFueraDeLaSonda:
+class TestAUseCaseOnlyServerIsLeftOutOfTheProbe:
     """T605: the probe reports what an agent declared, not what a use case reached."""
 
-    async def test_el_arranque_reporta_ok_y_el_servidor_no_aparece_en_los_checks(
+    async def test_startup_reports_ok_and_the_server_does_not_appear_in_the_checks(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,

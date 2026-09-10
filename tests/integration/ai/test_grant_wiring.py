@@ -151,24 +151,24 @@ def _runtime(plan: AgentPlan) -> AgentRuntime:
 class TestGrantA2A:
     """The provider announces ``a2a``, so the compiler admits it and it runs."""
 
-    def test_el_provider_anuncia_a2a_cuando_se_le_pregunta(self) -> None:
+    def test_the_provider_announces_a2a_when_asked(self) -> None:
         """Announcing the kind is what makes the compiler admit the grant."""
         assert "a2a" in PydanticAIEngineProvider().supported_capability_kinds()
 
-    def test_el_compilador_admite_el_grant_cuando_el_agente_esta_registrado(self) -> None:
+    def test_the_compiler_admits_the_grant_when_the_agent_is_registered(self) -> None:
         """Through the real compiler: one compiled capability, not zero."""
         plan = _compile(A2ACapability(agent=_REMOTE))
 
         assert [capability.kind for capability in plan.capabilities] == ["a2a"]
 
-    async def test_el_runtime_arranca_cuando_el_artefacto_concede_a2a(self) -> None:
+    async def test_the_runtime_starts_when_the_artifact_grants_a2a(self) -> None:
         """Start-up opens the remote client and builds the engine for the plan."""
         plan = _compile(A2ACapability(agent=_REMOTE))
 
         async with _runtime(plan) as runtime:
             assert runtime.has_agent(_AGENT)
 
-    async def test_el_agente_declara_la_capacidad_a2a_cuando_ha_arrancado(self) -> None:
+    async def test_the_agent_declares_the_a2a_capability_once_started(self) -> None:
         """The started agent reports the kind, so the mount announces it too."""
         plan = _compile(A2ACapability(agent=_REMOTE))
 
@@ -193,14 +193,16 @@ class TestGrantMcp:
             _capabilities, "_mcp_server", lambda capability, context: FunctionToolset([])
         )
 
-    async def test_el_runtime_arranca_cuando_el_artefacto_concede_mcp(self) -> None:
+    async def test_the_runtime_starts_when_the_artifact_grants_mcp(self) -> None:
         """The grant no longer fails start-up for want of a client factory."""
         plan = _compile(McpCapability(server=_SERVER))
 
         async with _runtime(plan) as runtime:
             assert runtime.has_agent(_AGENT)
 
-    async def test_valida_el_filtro_contra_el_servidor_cuando_el_grant_lo_declara(self) -> None:
+    async def test_validates_the_filter_against_the_server_when_the_grant_declares_it(
+        self,
+    ) -> None:
         """A declared filter is checked against the tools the server lists."""
         plan = _compile(McpCapability(server=_SERVER, include=("alpha",)))
 
@@ -208,7 +210,7 @@ class TestGrantMcp:
             assert runtime.has_agent(_AGENT)
 
 
-class TestGrantsCombinados:
+class TestCombinedGrants:
     """Both grants in one artifact still start: the two factories coexist."""
 
     @pytest.fixture(autouse=True)
@@ -220,7 +222,7 @@ class TestGrantsCombinados:
             _capabilities, "_mcp_server", lambda capability, context: FunctionToolset([])
         )
 
-    async def test_el_runtime_arranca_cuando_el_artefacto_concede_ambos(self) -> None:
+    async def test_the_runtime_starts_when_the_artifact_grants_both(self) -> None:
         """One plan, two live dependencies, one entered runtime."""
         plan = _compile(McpCapability(server=_SERVER), A2ACapability(agent=_REMOTE))
 

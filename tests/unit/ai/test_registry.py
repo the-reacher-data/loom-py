@@ -95,7 +95,7 @@ def _codes(error: AgentCompilationError) -> list[AgentErrorCode]:
 
 
 class TestEngineNotFound:
-    def test_falla_con_engine_not_found_cuando_no_hay_entry_points(
+    def test_fails_with_engine_not_found_when_there_are_no_entry_points(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -106,7 +106,7 @@ class TestEngineNotFound:
 
         assert AgentErrorCode.ENGINE_NOT_FOUND in _codes(excinfo.value)
 
-    def test_el_mensaje_nombra_los_engines_instalados_cuando_el_pedido_no_existe(
+    def test_the_message_names_the_installed_engines_when_the_requested_one_is_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -120,7 +120,7 @@ class TestEngineNotFound:
 
 
 class TestHandshakeOnTheInstance:
-    def test_resuelve_el_engine_cuando_declara_el_handshake_solo_en_la_instancia(
+    def test_resolves_the_engine_when_the_handshake_is_declared_only_on_the_instance(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -159,13 +159,13 @@ class TestEngineDuplicate:
             resolve_engine_provider(_ENGINE_NAME)
         return excinfo.value
 
-    def test_falla_con_engine_duplicate_cuando_dos_distribuciones_lo_registran(
+    def test_fails_with_engine_duplicate_when_two_distributions_register_it(
         self,
         duplicate_error: AgentCompilationError,
     ) -> None:
         assert AgentErrorCode.ENGINE_DUPLICATE in _codes(duplicate_error)
 
-    def test_el_mensaje_nombra_ambas_distribuciones_cuando_hay_duplicado(
+    def test_the_message_names_both_distributions_on_a_duplicate(
         self,
         duplicate_error: AgentCompilationError,
     ) -> None:
@@ -176,7 +176,7 @@ class TestEngineDuplicate:
 
 
 class TestEngineApiMismatch:
-    def test_falla_con_engine_api_mismatch_cuando_falta_el_handshake(
+    def test_fails_with_engine_api_mismatch_when_the_handshake_is_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -191,7 +191,7 @@ class TestEngineApiMismatch:
 
         assert AgentErrorCode.ENGINE_API_MISMATCH in _codes(excinfo.value)
 
-    def test_falla_con_engine_api_mismatch_cuando_la_version_no_esta_soportada(
+    def test_fails_with_engine_api_mismatch_when_the_version_is_unsupported(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -214,26 +214,26 @@ class TestEngineApiMismatch:
 
 
 class TestProviderHelpers:
-    def test_falla_con_provider_not_installed_cuando_el_sdk_no_esta(self) -> None:
+    def test_fails_with_provider_not_installed_when_the_sdk_is_missing(self) -> None:
         with pytest.raises(AgentCompilationError) as excinfo:
             require_provider_sdk("bedrock", "loom_nonexistent_sdk_xyz", "ai-bedrock")
 
         assert AgentErrorCode.PROVIDER_NOT_INSTALLED in _codes(excinfo.value)
 
-    def test_el_mensaje_nombra_el_extra_cuando_el_sdk_no_esta(self) -> None:
+    def test_the_message_names_the_extra_when_the_sdk_is_missing(self) -> None:
         """The failure must tell the operator which extra to install."""
         with pytest.raises(AgentCompilationError) as excinfo:
             require_provider_sdk("bedrock", "loom_nonexistent_sdk_xyz", "ai-bedrock")
 
         assert "ai-bedrock" in str(excinfo.value)
 
-    def test_falla_con_provider_setting_missing_cuando_falta_un_setting(self) -> None:
+    def test_fails_with_provider_setting_missing_when_a_setting_is_absent(self) -> None:
         with pytest.raises(AgentCompilationError) as excinfo:
             require_provider_setting("bedrock", "region", None)
 
         assert AgentErrorCode.PROVIDER_SETTING_MISSING in _codes(excinfo.value)
 
-    def test_el_mensaje_nombra_el_setting_cuando_falta(self) -> None:
+    def test_the_message_names_the_missing_setting(self) -> None:
         """The failure must name the missing setting, not just the provider."""
         with pytest.raises(AgentCompilationError) as excinfo:
             require_provider_setting("bedrock", "region", None)

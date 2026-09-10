@@ -59,19 +59,19 @@ class TestClassification:
             ),
         ],
     )
-    def test_el_codigo_es_el_declarado_cuando_falla_el_proveedor(
+    def test_the_code_is_the_declared_one_when_the_provider_fails(
         self, error: Exception, expected: AgentRunErrorCode
     ) -> None:
         """Each provider failure lands on its documented code."""
         assert classify(error) is expected
 
-    def test_el_codigo_se_respeta_cuando_el_fallo_ya_venia_codificado(self) -> None:
+    def test_the_code_is_respected_when_the_failure_was_already_coded(self) -> None:
         """An already-coded failure is never reclassified."""
         original = AgentRunError(AgentRunErrorCode.UNAUTHORIZED, "denied")
 
         assert classify(original) is AgentRunErrorCode.UNAUTHORIZED
 
-    def test_los_fallos_de_proveedor_son_infraestructura_y_reintentables(self) -> None:
+    def test_provider_failures_are_infrastructure_class_and_retriable(self) -> None:
         """FR-028: both provider codes are the retriable class."""
         for code in (
             AgentRunErrorCode.PROVIDER_UNAVAILABLE,
@@ -80,7 +80,7 @@ class TestClassification:
             assert run_error_class(code) is AgentRunErrorClass.INFRASTRUCTURE
             assert is_retriable(code)
 
-    def test_la_violacion_de_esquema_no_es_reintentable(self) -> None:
+    def test_a_schema_violation_is_not_retriable(self) -> None:
         """Model behaviour is final at this level; retrying it is the caller's call."""
         code = AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION
 
@@ -89,7 +89,7 @@ class TestClassification:
 
 
 class TestRetryPolicy:
-    async def test_reintenta_el_numero_declarado_cuando_el_fallo_es_infraestructura(
+    async def test_retries_the_declared_number_of_times_for_an_infrastructure_failure(
         self,
     ) -> None:
         """``policies.retries`` extra attempts, and not one more."""
@@ -101,7 +101,7 @@ class TestRetryPolicy:
 
         assert attempts.calls == 3, "one attempt plus the two declared retries"
 
-    async def test_no_reintenta_cuando_el_fallo_no_es_reintentable(self) -> None:
+    async def test_does_not_retry_when_the_failure_is_not_retriable(self) -> None:
         """An authorization failure is final on the first attempt."""
         attempts = _attempt_counter(AgentRunError(AgentRunErrorCode.UNAUTHORIZED, "denied"))
         engine = _engine(retries=2, failure=attempts)
@@ -114,7 +114,7 @@ class TestRetryPolicy:
 
 
 class TestEventCoverage:
-    def test_todos_los_eventos_del_motor_estan_clasificados(self) -> None:
+    def test_every_engine_event_is_classified(self) -> None:
         """Canary: a new engine event kind must be mapped or explicitly ignored."""
         known = MAPPED_EVENT_KINDS | IGNORED_EVENT_KINDS
 
@@ -122,7 +122,7 @@ class TestEventCoverage:
 
         assert not unclassified, f"pydantic-ai added event kinds: {sorted(unclassified)}"
 
-    def test_no_se_clasifica_ningun_evento_inexistente(self) -> None:
+    def test_no_nonexistent_event_is_classified(self) -> None:
         """The lists describe the engine, not a wish: no phantom kinds."""
         phantom = (MAPPED_EVENT_KINDS | IGNORED_EVENT_KINDS) - _engine_event_kinds()
 

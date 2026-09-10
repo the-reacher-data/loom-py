@@ -342,7 +342,7 @@ def _sse_names(payload: str) -> list[str]:
 class TestCard:
     """The published card is a valid A2A card and says nothing about the wiring."""
 
-    async def test_valida_contra_el_sdk_cuando_publica_la_card(
+    async def test_validates_against_the_sdk_when_it_publishes_the_card(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """T135: the served card validates against the A2A SDK's own model.
@@ -361,7 +361,7 @@ class TestCard:
         assert card.url == f"{_BASE_URL}{_PREFIX}/{_AGENT}"
         assert card.capabilities.streaming is True
 
-    async def test_no_publica_el_cableado_cuando_publica_la_card(
+    async def test_does_not_publish_the_wiring_when_it_publishes_the_card(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Instructions and capability wiring never appear in the card."""
@@ -371,7 +371,7 @@ class TestCard:
         assert "answer" not in response.text
         assert "fake-model" not in response.text
 
-    async def test_sirve_la_card_sin_credenciales_cuando_hay_autenticacion(
+    async def test_serves_the_card_without_credentials_when_authentication_is_enabled(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The card path is the sole authentication exclusion (FR-041b)."""
@@ -380,7 +380,7 @@ class TestCard:
 
         assert response.status_code == 200
 
-    async def test_responde_401_cuando_invocan_sin_credenciales(
+    async def test_responds_401_when_invoked_without_credentials(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The invocation path is never excluded, whatever the card allows."""
@@ -390,10 +390,10 @@ class TestCard:
         assert response.status_code == 401
 
 
-class TestOpcionalidad:
+class TestOptionality:
     """With no ``ai.a2a`` section nothing at all is published (T149, FR-041)."""
 
-    async def test_no_monta_rutas_cuando_no_hay_seccion_a2a(
+    async def test_mounts_no_routes_when_there_is_no_a2a_section(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """No section means no card route and no invocation route."""
@@ -413,7 +413,7 @@ class TestOpcionalidad:
 
         assert not [path for path in _route_paths(app) if path.startswith(_PREFIX)]
 
-    async def test_no_publica_un_agente_sin_plan_compilado(
+    async def test_does_not_publish_an_agent_without_a_compiled_plan(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A name in ``expose`` with no compiled agent is not published."""
@@ -425,10 +425,10 @@ class TestOpcionalidad:
         assert f"{_PREFIX}/{_AGENT}" in paths
 
 
-class TestMetodos:
+class TestMethods:
     """``message/send`` runs the agent; every other method answers explicitly."""
 
-    async def test_devuelve_una_tarea_terminal_cuando_envia_un_mensaje(
+    async def test_returns_a_terminal_task_when_it_sends_a_message(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """``message/send`` answers a task already in a terminal state."""
@@ -452,7 +452,7 @@ class TestMetodos:
             "tasks/pushNotificationConfig/set",
         ],
     )
-    async def test_responde_error_explicito_cuando_el_metodo_no_esta_soportado(
+    async def test_responds_an_explicit_error_when_the_method_is_unsupported(
         self, deps: StubDepsFactory, container: LoomContainer, method: str
     ) -> None:
         """Unsupported methods are HTTP 200 with a ``-32004`` naming the method."""
@@ -465,7 +465,7 @@ class TestMetodos:
         assert body["error"]["data"]["method"] == method
         assert body["id"] == 7
 
-    async def test_responde_method_not_found_cuando_el_metodo_es_desconocido(
+    async def test_responds_method_not_found_when_the_method_is_unknown(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An unknown method is ``-32601``, echoing the request id."""
@@ -476,7 +476,7 @@ class TestMetodos:
 
         assert response.json()["error"]["code"] == -32601
 
-    async def test_responde_parse_error_cuando_el_cuerpo_no_es_json(
+    async def test_responds_parse_error_when_the_body_is_not_json(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An unreadable body is ``-32700``."""
@@ -487,7 +487,7 @@ class TestMetodos:
 
         assert response.json()["error"]["code"] == -32700
 
-    async def test_responde_invalid_request_cuando_falta_el_metodo(
+    async def test_responds_invalid_request_when_the_method_is_missing(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A JSON body that is not a JSON-RPC request is ``-32600``."""
@@ -500,7 +500,7 @@ class TestMetodos:
         assert body["error"]["code"] == -32600
         assert body["id"] == 3
 
-    async def test_responde_invalid_params_cuando_no_hay_parte_de_texto(
+    async def test_responds_invalid_params_when_there_is_no_text_part(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A message with no text part is ``-32602``."""
@@ -515,7 +515,7 @@ class TestMetodos:
 class TestStreaming:
     """``message/stream`` projects the same union the HTTP surface projects."""
 
-    async def test_emite_la_tarea_inicial_y_los_eventos_proyectados(
+    async def test_emits_the_initial_task_and_the_projected_events(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The stream opens with the task and closes on a final status update."""
@@ -536,7 +536,7 @@ class TestStreaming:
         ]
         assert results[-1]["final"] is True
 
-    async def test_no_publica_la_capability_cuando_el_run_usa_una_herramienta(
+    async def test_does_not_publish_the_capability_when_the_run_uses_a_tool(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Neither the capability key, its arguments nor the summary reach the wire."""
@@ -551,7 +551,7 @@ class TestStreaming:
         assert _SECRET_SUMMARY not in response.text
         assert "call-1" not in response.text
 
-    async def test_publica_solo_el_ordinal_opaco_cuando_el_run_usa_una_herramienta(
+    async def test_publishes_only_the_opaque_ordinal_when_the_run_uses_a_tool(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A tool call publishes ``step n/m`` and nothing else."""
@@ -564,7 +564,7 @@ class TestStreaming:
         working = _stream_results(response.text)[2]
         assert working["status"]["message"]["parts"] == [{"kind": "text", "text": "step 1/8"}]
 
-    async def test_proyecta_los_mismos_eventos_que_la_superficie_http(
+    async def test_projects_the_same_events_as_the_http_surface(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """T136: both surfaces are projections of one union (FR-039a).
@@ -637,10 +637,10 @@ class TestUsageOnTheAgentSpan:
         assert meta["gen_ai.usage.cost_known"] is True
 
 
-class TestRedaccionDeFallos:
+class TestFailureRedaction:
     """A failed run publishes its stable code and nothing else (T151 B1, B2)."""
 
-    async def test_no_devuelve_el_mensaje_del_fallo_cuando_el_run_falla(
+    async def test_does_not_return_the_failure_message_when_the_run_fails(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """``message/send`` never echoes ``AgentRunError.message``.
@@ -658,7 +658,7 @@ class TestRedaccionDeFallos:
         assert _RUN_CANARY not in response.text
         assert "usecase_pricing" not in response.text
 
-    async def test_devuelve_el_codigo_estable_cuando_el_run_falla(
+    async def test_returns_the_stable_code_when_the_run_fails(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The caller still gets the code, plus a fixed catalogue detail."""
@@ -675,7 +675,7 @@ class TestRedaccionDeFallos:
             "detail": "a capability call exceeded its time limit",
         }
 
-    async def test_no_devuelve_el_texto_de_la_excepcion_cuando_el_fallo_es_inesperado(
+    async def test_does_not_return_the_exception_text_when_the_failure_is_unexpected(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The catch-all answers a fixed message, like the HTTP surface does.
@@ -693,14 +693,14 @@ class TestRedaccionDeFallos:
         assert response.json()["error"]["data"]["detail"] == "An unexpected error occurred"
 
 
-class TestConversaciones:
+class TestConversations:
     """``contextId`` is the ``conversation_id``, on both methods (008 AC1-AC5, AC9)."""
 
     @staticmethod
     def _agent_spans(recorder: RecordingObserver) -> list[object]:
         return [event for event in recorder.events if event.scope is Scope.AGENT]
 
-    async def test_entrega_el_context_id_al_hook_cuando_el_cliente_lo_envia(
+    async def test_delivers_the_context_id_to_the_hook_when_the_client_sends_it(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -723,7 +723,7 @@ class TestConversaciones:
         assert [cmd.conversation_id for cmd in conversation_recorder.commands] == ["c-42"]
 
     @pytest.mark.parametrize("context_id", [None, ""])
-    async def test_acuna_un_context_id_cuando_el_cliente_no_lo_envia(
+    async def test_mints_a_context_id_when_the_client_does_not_send_one(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -747,7 +747,7 @@ class TestConversaciones:
         assert re.fullmatch(r"[0-9a-f]{32}", minted)
         assert [cmd.conversation_id for cmd in conversation_recorder.commands] == [minted]
 
-    async def test_estampa_el_context_id_en_cada_frame_cuando_hace_stream(
+    async def test_stamps_the_context_id_on_every_frame_when_it_streams(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -772,7 +772,7 @@ class TestConversaciones:
         assert [result["contextId"] for result in results] == ["c-42"] * len(results)
         assert [cmd.conversation_id for cmd in conversation_recorder.commands] == ["c-42"]
 
-    async def test_entrega_el_context_id_al_loader_y_al_engine_cuando_el_plan_declara_conversation(
+    async def test_delivers_the_context_id_to_the_loader_and_the_engine_over_a_conversational_plan(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -798,7 +798,7 @@ class TestConversaciones:
 
     @pytest.mark.parametrize("method", ["message/send", "message/stream"])
     @pytest.mark.parametrize("context_id", ["x" * 129, 7])
-    async def test_rechaza_con_32602_cuando_el_context_id_no_tiene_forma(
+    async def test_refuses_with_32602_when_the_context_id_is_malformed(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -829,7 +829,7 @@ class TestConversaciones:
         assert self._agent_spans(observer) == []
 
     @pytest.mark.parametrize("method", ["message/send", "message/stream"])
-    async def test_rechaza_con_32001_cuando_el_mensaje_continua_un_task(
+    async def test_refuses_with_32001_when_the_message_continues_a_task(
         self,
         conversation_deps: RecordingDepsFactory,
         conversation_recorder: ConversationRecorder,
@@ -857,7 +857,7 @@ class TestConversaciones:
         assert engine.stream_count == 0
         assert self._agent_spans(observer) == []
 
-    async def test_rechaza_con_32602_cuando_el_task_id_no_es_un_string(
+    async def test_refuses_with_32602_when_the_task_id_is_not_a_string(
         self, conversation_deps: RecordingDepsFactory, container: LoomContainer
     ) -> None:
         """A malformed ``taskId`` is a shape error, like a malformed ``contextId``."""
@@ -877,7 +877,7 @@ class TestConversaciones:
         assert "taskId" in error["data"]["reason"]
         assert engine.stream_count == 0
 
-    async def test_rechaza_con_32001_antes_de_leer_las_partes_cuando_continua_un_task(
+    async def test_refuses_with_32001_before_reading_the_parts_when_continuing_a_task(
         self, conversation_deps: RecordingDepsFactory, container: LoomContainer
     ) -> None:
         """A message continuing a task is refused on that ground even without a text part."""
@@ -897,7 +897,7 @@ class TestConversaciones:
         assert "taskId" in error["data"]["reason"]
         assert engine.stream_count == 0
 
-    async def test_ignora_el_task_id_cuando_esta_vacio(
+    async def test_ignores_the_task_id_when_it_is_empty(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """AC5: an empty ``taskId`` counts as absent and the run proceeds."""
@@ -914,10 +914,10 @@ class TestConversaciones:
         assert engine.stream_count == 1
 
 
-class TestExclusionesEfectivas:
+class TestEffectiveExclusions:
     """The FR-041b guard reads the exclusions actually mounted (T151 B3, M1)."""
 
-    async def test_falla_al_arrancar_cuando_la_exclusion_montada_abre_la_invocacion(
+    async def test_fails_to_start_when_the_mounted_exclusion_opens_the_invocation(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A mounted exclusion aborts start-up even if the caller never declares it.
@@ -938,7 +938,7 @@ class TestExclusionesEfectivas:
         assert issue.code is AgentErrorCode.AUTH_EXCLUSION_OVERLAPS_AGENTS
         assert excluded in issue.message
 
-    async def test_falla_al_arrancar_cuando_la_exclusion_cubre_otro_prefijo_de_agentes(
+    async def test_fails_to_start_when_the_exclusion_covers_another_agents_prefix(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """The HTTP prefix under guard is the one the deployment really mounts."""
@@ -951,7 +951,7 @@ class TestExclusionesEfectivas:
                 agents_prefix="/bots",
             )
 
-    async def test_arranca_cuando_la_exclusion_cubre_el_prefijo_por_defecto_no_usado(
+    async def test_starts_when_the_exclusion_covers_the_unused_default_prefix(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """With the agents mounted elsewhere, ``/agents`` is nobody's invocation path."""
@@ -963,10 +963,10 @@ class TestExclusionesEfectivas:
         )
 
 
-class TestOptOutAnonimo:
+class TestAnonymousOptOut:
     """Anonymity is granted by an active stanza only (T151 I1, I2)."""
 
-    async def test_invoca_sin_credenciales_cuando_el_stanza_activo_lo_permite(
+    async def test_invokes_without_credentials_when_the_active_stanza_allows_it(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An active stanza with ``allow_anonymous`` serves an unauthenticated caller."""
@@ -978,7 +978,7 @@ class TestOptOutAnonimo:
 
         assert response.json()["result"]["status"]["state"] == "completed"
 
-    async def test_falla_al_arrancar_cuando_el_stanza_desactivado_declara_anonimo(
+    async def test_fails_to_start_when_a_disabled_stanza_declares_anonymous(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A disabled HTTP stanza grants nothing, so its opt-out is not inherited.
@@ -994,7 +994,7 @@ class TestOptOutAnonimo:
             ) as _client:
                 pass  # pragma: no cover - binding fails before the body runs
 
-    async def test_falla_al_arrancar_cuando_publica_sin_authenticator_utilizable(
+    async def test_fails_to_start_when_publishing_without_a_usable_authenticator(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Publishing with no authenticator and no opt-out is a dead route, not a posture."""
@@ -1008,7 +1008,7 @@ class TestOptOutAnonimo:
         assert _AGENT in str(raised.value)
 
 
-class TestAnuncioDePublicacion:
+class TestPublicationAnnouncement:
     """Start-up says exactly which agents are reachable from outside."""
 
     @staticmethod
@@ -1028,7 +1028,7 @@ class TestAnuncioDePublicacion:
                 pass
         return caplog.text
 
-    async def test_nombra_al_agente_cuando_lo_publica(
+    async def test_names_the_agent_when_publishing_it(
         self, deps: StubDepsFactory, container: LoomContainer, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The announcement names the agent and the URL a stranger reaches."""
@@ -1038,7 +1038,7 @@ class TestAnuncioDePublicacion:
         assert f"{_BASE_URL}{_PREFIX}/{_AGENT}" in text
         assert card_path(_AGENT, prefix=_PREFIX) in text
 
-    async def test_no_anuncia_anonimato_cuando_el_stanza_esta_desactivado(
+    async def test_does_not_announce_anonymity_when_the_stanza_is_disabled(
         self, deps: StubDepsFactory, container: LoomContainer, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A disabled stanza is announced as what it is: not an anonymous mount."""
@@ -1050,7 +1050,7 @@ class TestAnuncioDePublicacion:
         assert "allow_anonymous=False" in text
         assert "NOT authenticated" not in text
 
-    async def test_avisa_de_que_el_context_id_es_la_credencial_cuando_el_mount_anonimo_conversa(
+    async def test_warns_the_context_id_is_the_credential_when_an_anonymous_mount_converses(
         self,
         conversation_deps: RecordingDepsFactory,
         container: LoomContainer,
@@ -1071,10 +1071,10 @@ class TestAnuncioDePublicacion:
         assert "credential" in text
 
 
-class TestLimiteDeCuerpo:
+class TestBodyLimit:
     """The prompt cap applies to the JSON-RPC route too (FR-033a)."""
 
-    async def test_rechaza_el_prompt_cuando_supera_el_maximo(
+    async def test_refuses_the_prompt_when_it_exceeds_the_maximum(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A prompt over ``ai.max_prompt_bytes`` is ``-32602``, never a run."""
@@ -1087,7 +1087,7 @@ class TestLimiteDeCuerpo:
 
         assert response.json()["error"]["code"] == -32602
 
-    async def test_rechaza_el_cuerpo_en_json_rpc_cuando_supera_el_tope(
+    async def test_refuses_the_json_rpc_body_when_it_exceeds_the_cap(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An oversized body answers ``-32602``, like the oversized prompt.
@@ -1107,7 +1107,7 @@ class TestLimiteDeCuerpo:
         assert response.status_code == 200
         assert response.json()["error"]["code"] == -32602
 
-    async def test_no_filtra_el_tope_como_respuesta_plana_cuando_supera_el_tope(
+    async def test_the_cap_does_not_leak_as_a_flat_response_when_it_is_exceeded(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Nothing past authentication may answer in the flat REST shape."""
@@ -1123,7 +1123,7 @@ class TestLimiteDeCuerpo:
         assert "code" not in payload
 
 
-class TestProtocoloDeRespuesta:
+class TestResponseProtocol:
     """Where the protocol boundary sits: authentication outside, the rest inside.
 
     ``require_caller`` runs before JSON-RPC exists for this request, so an
@@ -1133,7 +1133,7 @@ class TestProtocoloDeRespuesta:
     object, whatever the failure.
     """
 
-    async def test_responde_401_plano_cuando_falta_el_llamante_verificado(
+    async def test_responds_a_flat_401_when_the_verified_caller_is_missing(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """Authentication precedes the protocol, so it answers outside it.
@@ -1151,26 +1151,26 @@ class TestProtocoloDeRespuesta:
     @pytest.mark.parametrize(
         ("body", "expected_code"),
         [
-            pytest.param(b"not json at all", -32700, id="cuerpo-no-json"),
-            pytest.param(b'{"jsonrpc":"2.0","id":7}', -32600, id="sin-metodo"),
+            pytest.param(b"not json at all", -32700, id="non-json-body"),
+            pytest.param(b'{"jsonrpc":"2.0","id":7}', -32600, id="no-method"),
             pytest.param(
                 b'{"jsonrpc":"2.0","id":7,"method":"message/unknown","params":{}}',
                 -32601,
-                id="metodo-desconocido",
+                id="unknown-method",
             ),
             pytest.param(
                 b'{"jsonrpc":"2.0","id":7,"method":"message/send","params":{}}',
                 -32602,
-                id="sin-parte-de-texto",
+                id="no-text-part",
             ),
             pytest.param(
                 b'{"jsonrpc":"2.0","id":7,"method":"message/send","padding":"' + b"x" * 200_000,
                 -32602,
-                id="cuerpo-sobredimensionado",
+                id="oversized-body",
             ),
         ],
     )
-    async def test_responde_json_rpc_cuando_el_fallo_es_posterior_a_require_caller(
+    async def test_responds_json_rpc_when_the_failure_happens_after_require_caller(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,

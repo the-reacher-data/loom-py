@@ -61,7 +61,7 @@ def _with_loader(
     return spec_factory(conversation=ConversationSpec(usecase=key), **overrides)
 
 
-def test_reporta_usecase_unknown_cuando_la_clave_del_loader_no_esta_registrada(
+def test_reports_usecase_unknown_when_the_loaders_key_is_not_registered(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     loader_registry: UseCaseRegistry,
@@ -75,7 +75,7 @@ def test_reporta_usecase_unknown_cuando_la_clave_del_loader_no_esta_registrada(
 
 
 @pytest.mark.parametrize("output", OUTPUTS, ids=OUTPUT_IDS)
-def test_compila_el_loader_cuando_el_input_declara_conversation_id_y_contexto(
+def test_compiles_the_loader_when_the_input_declares_conversation_id_and_context(
     spec_factory: Callable[..., AgentSpecV1],
     plan_for: Callable[..., Any],
     conversations: ModuleType,
@@ -90,7 +90,7 @@ def test_compila_el_loader_cuando_el_input_declara_conversation_id_y_contexto(
     assert plan.conversation.accepted == ACCEPTED_NAMES
 
 
-def test_deja_conversation_a_none_cuando_el_artefacto_no_declara_loader(
+def test_leaves_conversation_as_none_when_the_artifact_declares_no_loader(
     spec_factory: Callable[..., AgentSpecV1],
     plan_for: Callable[..., Any],
     loader_registry: UseCaseRegistry,
@@ -117,7 +117,7 @@ def test_deja_conversation_a_none_cuando_el_artefacto_no_declara_loader(
         "no_input",
     ],
 )
-def test_reporta_input_unsatisfied_cuando_el_run_no_puede_alimentar_el_loader(
+def test_reports_input_unsatisfied_when_the_run_cannot_feed_the_loader(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     loader_registry: UseCaseRegistry,
@@ -134,7 +134,7 @@ def test_reporta_input_unsatisfied_cuando_el_run_no_puede_alimentar_el_loader(
     assert reason_fragment in issue.message
 
 
-def test_reporta_input_unsatisfied_cuando_el_use_case_no_esta_compilado(
+def test_reports_input_unsatisfied_when_the_use_case_is_not_compiled(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     conversations: ModuleType,
@@ -152,7 +152,7 @@ def test_reporta_input_unsatisfied_cuando_el_use_case_no_esta_compilado(
     assert "not compiled" in issue.message
 
 
-def test_reporta_also_granted_cuando_el_loader_tambien_es_capability(
+def test_reports_also_granted_when_the_loader_is_also_a_capability(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     loader_registry: UseCaseRegistry,
@@ -169,7 +169,7 @@ def test_reporta_also_granted_cuando_el_loader_tambien_es_capability(
     )
 
 
-def test_reporta_also_granted_cuando_el_grant_falla_por_otra_clave(
+def test_reports_also_granted_when_the_grant_fails_for_another_key(
     spec_factory: Callable[..., AgentSpecV1],
     issues_for: Callable[..., tuple[AgentCompilationIssue, ...]],
     loader_registry: UseCaseRegistry,
@@ -184,7 +184,7 @@ def test_reporta_also_granted_cuando_el_grant_falla_por_otra_clave(
     assert AgentErrorCode.USECASE_KEY_UNKNOWN in codes
 
 
-def test_no_toca_capabilities_cuando_declara_loader(
+def test_does_not_touch_capabilities_when_declaring_a_loader(
     spec_factory: Callable[..., AgentSpecV1],
     plan_for: Callable[..., Any],
     conversations: ModuleType,

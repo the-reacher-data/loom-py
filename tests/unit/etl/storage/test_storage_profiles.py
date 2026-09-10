@@ -284,7 +284,7 @@ def test_normalise_does_not_mutate_its_input() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Entry points — strictness stays per entry point (R5)
+# Entry points — strictness stays per entry point
 # ---------------------------------------------------------------------------
 
 

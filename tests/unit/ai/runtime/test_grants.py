@@ -71,10 +71,10 @@ def _view(
     )
 
 
-class TestElFiltroDelPermisoMcp:
-    """El filtro es el mismo include/exclude del artefacto, sin tocar la red."""
+class TestTheMcpGrantsFilter:
+    """The filter is the artifact's own include/exclude, without touching the network."""
 
-    async def test_una_tool_excluida_se_rechaza_sin_llamar_a_la_sesion(self) -> None:
+    async def test_an_excluded_tool_is_rejected_without_calling_the_session(self) -> None:
         capability = make_mcp_capability(exclude=("write_*",))
         catalogue = (
             McpToolInfo(name="read_orders", has_output_schema=True),
@@ -89,7 +89,7 @@ class TestElFiltroDelPermisoMcp:
         assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
         assert session.calls == []
 
-    async def test_el_mensaje_de_tool_fuera_del_permiso_es_el_que_muestra_use_case_dsl_md(
+    async def test_the_message_for_a_tool_outside_the_grant_matches_use_case_dsl_md(
         self,
     ) -> None:
         """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for ``TOOL_UNKNOWN``.
@@ -114,7 +114,7 @@ class TestElFiltroDelPermisoMcp:
             "tools this grant admits: search_incident"
         )
 
-    def test_tools_solo_lista_lo_que_el_filtro_admite(self) -> None:
+    def test_tools_lists_only_what_the_filter_admits(self) -> None:
         capability = make_mcp_capability(include=("read_*",))
         catalogue = (
             McpToolInfo(name="read_orders", has_output_schema=True),
@@ -127,10 +127,10 @@ class TestElFiltroDelPermisoMcp:
         assert view.tools() == ("read_orders",)
 
 
-class TestLlamadaTipada:
-    """``call`` decodifica el contenido estructurado en ``expect``."""
+class TestTypedCall:
+    """``call`` decodes the structured content into ``expect``."""
 
-    async def test_decodifica_el_contenido_estructurado(self) -> None:
+    async def test_decodes_the_structured_content(self) -> None:
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
         session = FakeSession(
@@ -143,7 +143,7 @@ class TestLlamadaTipada:
 
         assert result == _Severity(level=4)
 
-    async def test_una_tool_sin_esquema_se_rechaza_antes_de_la_red(self) -> None:
+    async def test_a_schemaless_tool_is_rejected_before_the_network(self) -> None:
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="untyped_tool", has_output_schema=False),)
         session = FakeSession(tools=catalogue)
@@ -155,7 +155,7 @@ class TestLlamadaTipada:
         assert excinfo.value.code is AgentRunErrorCode.TOOL_UNTYPED
         assert session.calls == []
 
-    async def test_el_mensaje_de_tool_sin_forma_es_el_que_muestra_use_case_dsl_md(self) -> None:
+    async def test_the_message_for_a_shapeless_tool_matches_use_case_dsl_md(self) -> None:
         """Pins the exact message ``docs/rest/use-case-dsl.md`` quotes for ``TOOL_UNTYPED``."""
         capability = make_mcp_capability(server="runbooks")
         catalogue = (McpToolInfo(name="legacy_lookup", has_output_schema=False),)
@@ -171,7 +171,7 @@ class TestLlamadaTipada:
             "schema; call it with call_untyped() instead"
         )
 
-    async def test_sin_contenido_estructurado_se_rechaza_como_no_estructurado(self) -> None:
+    async def test_no_structured_content_is_rejected_as_unstructured(self) -> None:
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
         session = FakeSession(
@@ -184,7 +184,7 @@ class TestLlamadaTipada:
 
         assert excinfo.value.code is AgentRunErrorCode.TOOL_RESULT_UNSTRUCTURED
 
-    async def test_un_flag_de_error_se_reporta_antes_de_intentar_decodificar(self) -> None:
+    async def test_an_error_flag_is_reported_before_attempting_to_decode(self) -> None:
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
         session = FakeSession(
@@ -200,7 +200,7 @@ class TestLlamadaTipada:
 
         assert excinfo.value.code is AgentRunErrorCode.TOOL_CALL_FAILED
 
-    async def test_un_contenido_que_no_encaja_falla_por_decodificacion(self) -> None:
+    async def test_content_that_does_not_fit_fails_to_decode(self) -> None:
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
         session = FakeSession(
@@ -216,8 +216,8 @@ class TestLlamadaTipada:
         assert "level" in str(excinfo.value)
 
 
-class TestLlamadaSinTipar:
-    async def test_devuelve_el_json_del_servidor_sin_exigir_esquema(self) -> None:
+class TestUntypedCall:
+    async def test_returns_the_servers_json_without_requiring_a_schema(self) -> None:
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="raw_tool", has_output_schema=False),)
         session = FakeSession(
@@ -230,8 +230,8 @@ class TestLlamadaSinTipar:
 
         assert result == {"anything": True}
 
-    async def test_sin_contenido_estructurado_devuelve_un_mapa_vacio(self) -> None:
-        """La ausencia legítima de contenido — no una contradicción — se pliega a ``{}``."""
+    async def test_no_structured_content_returns_an_empty_map(self) -> None:
+        """A legitimate absence of content — not a contradiction — folds to ``{}``."""
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="raw_tool", has_output_schema=False),)
         session = FakeSession(
@@ -244,8 +244,8 @@ class TestLlamadaSinTipar:
 
         assert result == {}
 
-    async def test_un_contenido_no_mapa_se_rechaza_en_vez_de_descartarse(self) -> None:
-        """Una lista o un escalar contradicen el protocolo; no se pliegan a ``{}`` en silencio."""
+    async def test_non_mapping_content_is_rejected_instead_of_discarded(self) -> None:
+        """A list or a scalar contradicts the protocol; it does not fold to ``{}`` silently."""
         capability = make_mcp_capability()
         catalogue = (McpToolInfo(name="raw_tool", has_output_schema=False),)
         session = FakeSession(
@@ -308,10 +308,10 @@ def _result(*rows: tuple[Any, ...]) -> SqlQueryResult:
     )
 
 
-class TestRolesDelPermisoSql:
-    """Los roles vienen del llamante verificado, nunca de un argumento."""
+class TestTheSqlGrantsRoles:
+    """Roles come from the verified caller, never from an argument."""
 
-    async def test_corre_con_los_roles_del_llamante_bajo_el_allowlist(self) -> None:
+    async def test_runs_with_the_callers_roles_under_the_allowlist(self) -> None:
         capability = make_sql_capability()
         capability = msgspec.structs.replace(
             capability,
@@ -329,7 +329,7 @@ class TestRolesDelPermisoSql:
 
         assert service.roles == ("analyst",)
 
-    async def test_un_llamante_anonimo_se_rechaza_antes_de_consultar(self) -> None:
+    async def test_an_anonymous_caller_is_rejected_before_querying(self) -> None:
         capability = make_sql_capability()
         capability = msgspec.structs.replace(
             capability,
@@ -350,10 +350,10 @@ class TestRolesDelPermisoSql:
         assert service.roles is None
 
 
-class TestCotasDelResultadoSql:
-    """La cota de bytes trunca en vez de rechazar."""
+class TestTheSqlResultBounds:
+    """The byte bound truncates rather than rejecting."""
 
-    async def test_recorta_filas_finales_para_no_superar_max_result_bytes(self) -> None:
+    async def test_trims_trailing_rows_to_stay_within_max_result_bytes(self) -> None:
         capability = make_sql_capability()
         capability = msgspec.structs.replace(
             capability,
@@ -383,7 +383,7 @@ class TestCotasDelResultadoSql:
             (41, 2),  # exactly both rows plus their separator
         ],
     )
-    async def test_el_corte_cae_exactamente_en_el_limite_de_bytes(
+    async def test_the_cut_falls_exactly_at_the_byte_limit(
         self, max_result_bytes: int, expected_rows: int
     ) -> None:
         """Pins the exact boundary: the encoded array overhead and the row

@@ -101,16 +101,16 @@ def _runtime(
     )
 
 
-class TestProfundidadPorDefecto:
-    """Con ``max_agent_depth`` en su valor por defecto de uno."""
+class TestDefaultDepth:
+    """With ``max_agent_depth`` at its default value of one."""
 
-    async def test_una_corrida_anidada_de_otro_agente_excede_la_profundidad(
+    async def test_a_nested_run_of_another_agent_exceeds_the_depth(
         self,
         identity: Identity,
         deps: StubDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """La corrida raíz ya agota el presupuesto por defecto de uno."""
+        """The root run already exhausts the default budget of one."""
 
         async def _nest() -> None:
             with pytest.raises(AgentRunError) as excinfo:
@@ -127,13 +127,13 @@ class TestProfundidadPorDefecto:
         async with runtime:
             await runtime.run(_OUTER, "hola", identity=identity)
 
-    async def test_una_corrida_anidada_del_mismo_agente_es_un_ciclo(
+    async def test_a_nested_run_of_the_same_agent_is_a_cycle(
         self,
         identity: Identity,
         deps: StubDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """El mismo nombre en la cadena se reporta como ciclo, no como profundidad."""
+        """The same name in the chain is reported as a cycle, not as depth."""
 
         async def _nest() -> None:
             with pytest.raises(AgentRunError) as excinfo:
@@ -148,29 +148,29 @@ class TestProfundidadPorDefecto:
         async with runtime:
             await runtime.run(_OUTER, "hola", identity=identity)
 
-    async def test_dos_corridas_seguidas_del_mismo_agente_no_se_contaminan(
+    async def test_two_consecutive_runs_of_the_same_agent_do_not_contaminate_each_other(
         self,
         identity: Identity,
         deps: StubDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """La cadena se restaura en el 'finally': dos corridas no anidadas no chocan.
+        """The chain is restored in the 'finally': two non-nested runs do not collide.
 
-        Si la restauración se perdiera, la segunda corrida vería el nombre de
-        la primera todavía en la cadena y fallaría como un ciclo espurio.
+        If the restoration were lost, the second run would still see the
+        first run's name in the chain and fail as a spurious cycle.
         """
         runtime = _runtime(max_agent_depth=1, outer_callback=None, deps=deps, container=container)
         async with runtime:
             await runtime.run(_OUTER, "hola", identity=identity)
             await runtime.run(_OUTER, "hola de nuevo", identity=identity)
 
-    async def test_una_corrida_fallida_tambien_restaura_la_cadena(
+    async def test_a_failed_run_also_restores_the_chain(
         self,
         identity: Identity,
         deps: StubDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """Un fallo dentro de la corrida no deja el nombre atascado en la cadena."""
+        """A failure inside the run does not leave the name stuck in the chain."""
 
         calls = 0
 
@@ -191,10 +191,10 @@ class TestProfundidadPorDefecto:
             await runtime.run(_OUTER, "otra vez", identity=identity)
 
 
-class TestProfundidadElevada:
-    """Con ``max_agent_depth`` elevado explícitamente por el operador."""
+class TestRaisedDepth:
+    """With ``max_agent_depth`` explicitly raised by the operator."""
 
-    async def test_una_corrida_anidada_de_otro_agente_cabe_en_el_presupuesto(
+    async def test_a_nested_run_of_another_agent_fits_the_budget(
         self,
         identity: Identity,
         deps: StubDepsFactory,

@@ -246,7 +246,7 @@ def test_custom_sql_path_excluded_from_jwt_authentication_fails_at_startup(
 
 
 def test_enabled_endpoint_without_auth_field_does_not_mount(tmp_path: Path) -> None:
-    """``enabled: true`` without ``auth`` boots the app but mounts nothing (B2)."""
+    """``enabled: true`` without ``auth`` boots the app but mounts nothing."""
     config_path = _write_project(tmp_path, sql_section=_sql_section({"enabled": True}))
     app = create_app(config_path)
     assert not any(path.startswith("/sql") for path in _route_paths(app))

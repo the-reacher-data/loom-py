@@ -122,11 +122,11 @@ def _messages(failure: AgentCompilationError) -> str:
     return "\n".join(issue.message for issue in failure.issues)
 
 
-class TestFabricaMcp:
+class TestMcpFactory:
     """An ``mcp`` grant reaches a client factory, not a missing-factory refusal."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_no_se_queja_de_la_fabrica_cuando_el_artefacto_concede_mcp(
+    def test_does_not_complain_about_the_factory_when_the_artifact_grants_mcp(
         self, tmp_path: Path
     ) -> None:
         """The wording only a factory-less runtime produces must be gone."""
@@ -137,7 +137,7 @@ class TestFabricaMcp:
         assert _MISSING_MCP_FACTORY not in _messages(_start_failure(config_path))
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_nombra_el_servidor_cuando_el_artefacto_concede_mcp(self, tmp_path: Path) -> None:
+    def test_names_the_server_when_the_artifact_grants_mcp(self, tmp_path: Path) -> None:
         """The operator is told which registered server could not be reached."""
         config_path = _write_project(
             tmp_path, specs={_MCP_AGENT: _spec(_MCP_AGENT, {"kind": "mcp", "server": _SERVER})}
@@ -146,11 +146,11 @@ class TestFabricaMcp:
         assert _SERVER in _messages(_start_failure(config_path))
 
 
-class TestFabricaA2A:
+class TestA2AFactory:
     """An ``a2a`` grant compiles at all, and then reaches its client factory."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_no_se_queja_de_la_fabrica_cuando_el_artefacto_concede_a2a(
+    def test_does_not_complain_about_the_factory_when_the_artifact_grants_a2a(
         self, tmp_path: Path
     ) -> None:
         """Same wording, same absence: the outbound factory is wired too."""
@@ -161,7 +161,7 @@ class TestFabricaA2A:
         assert _MISSING_A2A_FACTORY not in _messages(_start_failure(config_path))
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_nombra_el_agente_remoto_cuando_el_artefacto_concede_a2a(self, tmp_path: Path) -> None:
+    def test_names_the_remote_agent_when_the_artifact_grants_a2a(self, tmp_path: Path) -> None:
         """Named as the deployment registered it, never by URL (FR-038)."""
         config_path = _write_project(
             tmp_path, specs={_A2A_AGENT: _spec(_A2A_AGENT, {"kind": "a2a", "agent": _REMOTE})}
@@ -170,7 +170,9 @@ class TestFabricaA2A:
         assert _REMOTE in _messages(_start_failure(config_path))
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_no_expone_la_url_cuando_el_agente_remoto_es_inalcanzable(self, tmp_path: Path) -> None:
+    def test_does_not_expose_the_url_when_the_remote_agent_is_unreachable(
+        self, tmp_path: Path
+    ) -> None:
         """The address is deployment topology; the issue names the agent only."""
         config_path = _write_project(
             tmp_path, specs={_A2A_AGENT: _spec(_A2A_AGENT, {"kind": "a2a", "agent": _REMOTE})}

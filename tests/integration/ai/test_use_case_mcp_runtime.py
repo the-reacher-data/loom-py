@@ -78,10 +78,10 @@ def _runtime(
     )
 
 
-class TestServidorSoloDeclaradoPorUnCasoDeUso:
-    """Ningún plan de agente lo nombra; solo el binding ``Mcp()`` lo hace."""
+class TestServerDeclaredOnlyByAUseCase:
+    """No agent plan names it; only the ``Mcp()`` binding does."""
 
-    async def test_se_abre_y_se_lista_aunque_ningun_agente_lo_declare(
+    async def test_opens_and_lists_even_though_no_agent_declares_it(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -104,7 +104,7 @@ class TestServidorSoloDeclaradoPorUnCasoDeUso:
         assert grant is not None
         assert grant.capability.server == _SERVER_A
 
-    async def test_cero_planes_de_agente_arranca_verifica_include_y_la_llamada_funciona(
+    async def test_zero_agent_plans_still_starts_verifies_include_and_the_call_works(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -150,7 +150,7 @@ class TestServidorSoloDeclaradoPorUnCasoDeUso:
                 await view.call_untyped("delete", {})
             assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
 
-    async def test_un_include_que_no_casa_nada_aborta_nombrando_caso_de_uso_parametro_y_servidor(
+    async def test_an_include_matching_nothing_aborts_naming_the_use_case_parameter_and_server(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -174,7 +174,7 @@ class TestServidorSoloDeclaradoPorUnCasoDeUso:
         assert _PARAMETER in message
         assert _SERVER_A in message
 
-    async def test_la_expiracion_del_listado_sigue_abortando(
+    async def test_the_listings_expiry_still_aborts(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -198,10 +198,10 @@ class TestServidorSoloDeclaradoPorUnCasoDeUso:
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
 
 
-class TestServidorCompartidoConUnAgente:
-    """Un agente y un caso de uso declaran el mismo servidor."""
+class TestServerSharedWithAnAgent:
+    """An agent and a use case declare the same server."""
 
-    async def test_el_cliente_y_el_listado_ocurren_una_sola_vez(
+    async def test_the_client_and_the_listing_happen_only_once(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -225,7 +225,7 @@ class TestServidorCompartidoConUnAgente:
 
         assert grant is not None
 
-    async def test_el_include_del_caso_de_uso_alcanza_lo_que_el_agente_excluye(
+    async def test_the_use_cases_include_reaches_what_the_agent_excludes(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -281,10 +281,10 @@ class TestServidorCompartidoConUnAgente:
             assert result == {"ok": True}
 
 
-class TestDosCasosDeUsoSobreElMismoServidor:
-    """FR-15/AC3a: cada uno con su propio ``include``, sin colisionar."""
+class TestTwoUseCasesOverTheSameServer:
+    """FR-15/AC3a: each with its own ``include``, without colliding."""
 
-    async def test_cada_lookup_es_inequivoco(
+    async def test_each_lookup_is_unambiguous(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
@@ -316,16 +316,16 @@ class TestDosCasosDeUsoSobreElMismoServidor:
         assert grant.capability.exclude == ()
 
 
-class TestGuardiasDeRetornoTemprano:
-    """Las dos guardas que T203 debe atravesar (S6, `_lifecycle.py`)."""
+class TestEarlyReturnGuards:
+    """The two guards T203 must pass through (S6, `_lifecycle.py`)."""
 
-    async def test_cero_planes_de_agente_igual_abre_el_servidor(
+    async def test_zero_agent_plans_still_opens_the_server(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """Mutar el paso 4 (contribuir bajo la guarda) debe poner esto en rojo."""
+        """Mutating step 4 (contributing under the guard) must fail this test."""
         session = RecordingMcpSession(tools=("search",))
         clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
         runtime = _runtime(
@@ -338,15 +338,16 @@ class TestGuardiasDeRetornoTemprano:
         async with runtime:
             assert lifecycle_log == ["open:a"]
 
-    async def test_cero_planes_de_agente_igual_lista_y_verifica_el_include(
+    async def test_zero_agent_plans_still_lists_and_verifies_the_include(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """Mutar el paso 5 (contribuir bajo la guarda) debe poner esto en rojo:
-        el catálogo se quedaría vacío y la llamada fallaría con TOOL_UNKNOWN
-        contra un servidor que abrió limpio, en vez de abortar el arranque."""
+        """Mutating step 5 (contributing under the guard) must fail this test:
+        the catalogue would stay empty and the call would fail with
+        TOOL_UNKNOWN against a cleanly opened server, instead of aborting
+        start-up."""
         session = RecordingMcpSession(tools=("search",))
         clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
         runtime = _runtime(
@@ -362,10 +363,10 @@ class TestGuardiasDeRetornoTemprano:
         assert AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING in _codes(failure.value)
 
 
-class TestUseCaseMcpGrantAntesDeEntrar:
-    """H4: ``use_case_mcp_grant`` exige un runtime entrado, como ``_require_slot``."""
+class TestUseCaseMcpGrantBeforeEntering:
+    """H4: ``use_case_mcp_grant`` requires an entered runtime, like ``_require_slot``."""
 
-    def test_lanza_runtime_error_si_nunca_se_entro(
+    def test_raises_runtime_error_if_never_entered(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         runtime = _runtime(
@@ -379,18 +380,18 @@ class TestUseCaseMcpGrantAntesDeEntrar:
             runtime.use_case_mcp_grant(_SERVER_A)
 
 
-class TestUseCaseGrantsSeLimpianAlSalir:
-    """H5: ``__aexit__`` vacía ``_use_case_grants`` (T203), no solo ``_grants``.
+class TestUseCaseGrantsAreClearedOnExit:
+    """H5: ``__aexit__`` empties ``_use_case_grants`` (T203), not only ``_grants``.
 
-    Blanco: ``use_case_mcp_grant`` nunca observa esto por su propia guarda
-    (``_stack is None``), así que se lee el diccionario privado directamente,
-    igual que ``test_runtime_remote_clients.py`` ya lee ``runtime._health``.
-    Sin este vaciado un runtime reentrado repartiría, durante la ventana
-    entre ``__aexit__`` y el siguiente ``__aenter__`` que fallase antes de
-    reconstruirlo, grants que apuntan a sesiones ya cerradas.
+    White-box: ``use_case_mcp_grant`` never observes this through its own
+    guard (``_stack is None``), so the private dict is read directly, exactly
+    as ``test_runtime_remote_clients.py`` already reads ``runtime._health``.
+    Without this clearing, a re-entered runtime would hand out, during the
+    window between ``__aexit__`` and a subsequent ``__aenter__`` that failed
+    before rebuilding it, grants pointing at already-closed sessions.
     """
 
-    async def test_tras_salir_el_diccionario_de_grants_queda_vacio(
+    async def test_the_grants_dict_is_empty_after_exit(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         session = RecordingMcpSession(tools=("search",))
@@ -408,18 +409,19 @@ class TestUseCaseGrantsSeLimpianAlSalir:
         assert runtime._use_case_grants == {}
 
 
-class TestServidorToleradoInalcanzableNoDisparaElFiltro:
-    """H6: la guarda ``if catalogue is None: continue`` de ``_use_case_filter_issues``.
+class TestToleratedUnreachableServerDoesNotTriggerTheFilter:
+    """H6: the ``if catalogue is None: continue`` guard in ``_use_case_filter_issues``.
 
-    Bajo ``remote_clients: optional`` un servidor cuya conexión se toleró
-    nunca fue listado, así que su ``include`` no puede compararse contra
-    nada: la salida de este servidor la reporta la comprobación de conexión,
-    no el filtro. Sin esta guarda un ``include`` que en teoría no casaría
-    nada lanzaría ``TOOL_FILTER_MATCHES_NOTHING`` encima de un servidor ya
-    reportado inalcanzable, duplicando el fallo con un código erróneo.
+    Under ``remote_clients: optional`` a server whose connection was
+    tolerated was never listed, so its ``include`` has nothing to compare
+    against: this server's outage is reported by the connection check, not
+    by the filter. Without this guard, an ``include`` that would in theory
+    match nothing would raise ``TOOL_FILTER_MATCHES_NOTHING`` on top of a
+    server already reported unreachable, duplicating the failure with the
+    wrong code.
     """
 
-    async def test_arranca_tolerando_el_fallo_sin_lanzar_filtro_no_casa_nada(
+    async def test_starts_tolerating_the_failure_without_raising_filter_matches_nothing(
         self, lifecycle_log: list[str], deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         client = StubMcpClient(label="a", session=None, log=lifecycle_log, connect_error="refused")
@@ -435,10 +437,10 @@ class TestServidorToleradoInalcanzableNoDisparaElFiltro:
             assert runtime.use_case_mcp_grant(_SERVER_A) is None
 
 
-class TestDespliegueSoloDeAgentes:
-    """Un despliegue sin ``Mcp()`` no cambia de comportamiento (``use_case_mcp=()``)."""
+class TestAgentsOnlyDeployment:
+    """A deployment without ``Mcp()`` does not change behaviour (``use_case_mcp=()``)."""
 
-    async def test_el_arranque_no_cambia_cuando_no_hay_marcador(
+    async def test_startup_does_not_change_when_there_is_no_marker(
         self,
         lifecycle_log: list[str],
         deps: StubDepsFactory,

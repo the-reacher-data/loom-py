@@ -49,8 +49,8 @@ class LookUpRunbookUseCase(UseCase[object, RunbookLookup]):
         )
 
 
-class TestElEjemploDelMarcadorCorreSinRedNiServidorMcp:
-    async def test_el_resultado_refleja_la_respuesta_programada(self) -> None:
+class TestTheMarkerExampleRunsWithoutNetworkOrMcpServer:
+    async def test_the_result_reflects_the_scripted_response(self) -> None:
         double = McpHandleDouble(_SERVER).with_tools("search_incident")
         double.on_call_untyped("search_incident", {"title": "checkout rollback runbook"})
 
@@ -68,7 +68,7 @@ class TestElEjemploDelMarcadorCorreSinRedNiServidorMcp:
             runbook_title="checkout rollback runbook",
         )
 
-    async def test_el_doble_registra_la_llamada(self) -> None:
+    async def test_the_double_records_the_call(self) -> None:
         double = McpHandleDouble(_SERVER).with_tools("search_incident")
         double.on_call_untyped("search_incident", {"title": "checkout rollback runbook"})
 
@@ -84,8 +84,8 @@ class TestElEjemploDelMarcadorCorreSinRedNiServidorMcp:
         assert double.calls[0].arguments["incident_id"] == "INC-101"
 
 
-class TestSinDobleRegistradoElArranqueFallaCerrado:
-    async def test_declarar_el_marcador_sin_doble_falla_con_un_error_claro(self) -> None:
+class TestWithoutADoubleRegisteredStartupFailsClosed:
+    async def test_declaring_the_marker_without_a_double_fails_with_a_clear_error(self) -> None:
         # The docs promise the refusal names both, so pin both.
         with pytest.raises(RuntimeError) as refusal:
             await (

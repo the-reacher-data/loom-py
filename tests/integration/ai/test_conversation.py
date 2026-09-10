@@ -315,8 +315,8 @@ def conversation_deps() -> RecordingDepsFactory:
 # ---------------------------------------------------------------------------
 
 
-class TestEjecucionDelLoader:
-    async def test_ejecuta_el_loader_una_vez_con_el_contexto_cuando_el_run_lleva_conversation_id(
+class TestLoaderExecution:
+    async def test_runs_the_loader_once_with_the_context_when_the_run_carries_a_conversation_id(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -343,7 +343,7 @@ class TestEjecucionDelLoader:
         assert engine.conversations == [Conversation(conversation_id="c-42", history=_HISTORY)]
         assert conversation_deps.uow.log == ["begin", "commit"]
 
-    async def test_entrega_history_none_cuando_el_loader_devuelve_none(
+    async def test_delivers_a_none_history_when_the_loader_returns_none(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -360,7 +360,7 @@ class TestEjecucionDelLoader:
 
         assert engine.conversations == [Conversation(conversation_id="c-42", history=None)]
 
-    async def test_entrega_history_none_cuando_el_loader_devuelve_none_bajo_un_tope(
+    async def test_delivers_a_none_history_when_the_loader_returns_none_under_a_cap(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -378,7 +378,7 @@ class TestEjecucionDelLoader:
 
         assert engine.conversations == [Conversation(conversation_id="c-42", history=None)]
 
-    async def test_entrega_la_history_cuando_mide_exactamente_max_history_bytes(
+    async def test_delivers_the_history_when_it_measures_exactly_max_history_bytes(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -396,7 +396,7 @@ class TestEjecucionDelLoader:
 
         assert engine.conversations == [Conversation(conversation_id="c-42", history=b"x" * 2048)]
 
-    async def test_alimenta_un_command_estricto_cuando_solo_declara_conversation_id(
+    async def test_feeds_a_strict_command_when_it_declares_only_conversation_id(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -415,7 +415,7 @@ class TestEjecucionDelLoader:
         assert loader.calls[0].command == StrictLoadCommand(conversation_id="c-42")
         assert engine.conversations == [Conversation(conversation_id="c-42", history=_HISTORY)]
 
-    async def test_no_ejecuta_el_loader_cuando_no_hay_conversation_id(
+    async def test_does_not_run_the_loader_when_there_is_no_conversation_id(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -433,7 +433,7 @@ class TestEjecucionDelLoader:
         assert engine.conversations == [None]
         assert conversation_deps.uow.log == []
 
-    async def test_entrega_none_al_motor_cuando_el_plan_no_declara_conversation(
+    async def test_delivers_none_to_the_engine_when_the_plan_declares_no_conversation(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -457,8 +457,8 @@ class TestEjecucionDelLoader:
 # ---------------------------------------------------------------------------
 
 
-class TestFallosDelLoader:
-    async def test_falla_con_conversation_load_failed_sin_el_detalle_cuando_el_loader_lanza(
+class TestLoaderFailures:
+    async def test_fails_with_conversation_load_failed_without_the_detail_when_the_loader_raises(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -488,7 +488,7 @@ class TestFallosDelLoader:
         assert is_retriable(error.code) is False
         assert run_error_class(error.code) is AgentRunErrorClass.APPLICATION
 
-    async def test_mapea_forbidden_a_unauthorized_cuando_las_reglas_del_loader_rechazan(
+    async def test_maps_forbidden_to_unauthorized_when_the_loaders_rules_refuse(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -509,7 +509,7 @@ class TestFallosDelLoader:
         assert failure.value.interaction_id is not None
         assert engine.stream_count == 0
 
-    async def test_falla_con_conversation_load_timeout_cuando_el_loader_excede_tool_timeout_ms(
+    async def test_fails_with_conversation_load_timeout_when_the_loader_exceeds_tool_timeout_ms(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -539,7 +539,7 @@ class TestFallosDelLoader:
         assert is_retriable(failure.value.code) is True
         assert run_error_class(failure.value.code) is AgentRunErrorClass.INFRASTRUCTURE
 
-    async def test_falla_con_conversation_load_timeout_cuando_el_loader_lanza_timeout_error(
+    async def test_fails_with_conversation_load_timeout_when_the_loader_raises_timeout_error(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -561,7 +561,7 @@ class TestFallosDelLoader:
         assert engine.stream_count == 0
         assert conversation_deps.uow.log == ["begin", "rollback"]
 
-    async def test_falla_con_conversation_load_failed_cuando_el_loader_devuelve_un_str(
+    async def test_fails_with_conversation_load_failed_when_the_loader_returns_a_str(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -583,7 +583,7 @@ class TestFallosDelLoader:
         assert engine.stream_count == 0
         assert engine.conversations == []
 
-    async def test_falla_con_conversation_load_failed_cuando_la_history_supera_max_history_bytes(
+    async def test_fails_with_conversation_load_failed_when_the_history_exceeds_max_history_bytes(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -620,7 +620,7 @@ class TestFallosDelLoader:
         assert "2049" not in str(error)
         assert "2048" not in str(error)
 
-    async def test_lanza_en_la_entrada_cuando_el_loader_falla_en_stream(
+    async def test_raises_on_entry_when_the_loader_fails_in_stream(
         self,
         identity: Identity,
         loader: LoaderRecorder,
@@ -649,8 +649,8 @@ class TestFallosDelLoader:
 # ---------------------------------------------------------------------------
 
 
-class TestSinCache:
-    async def test_carga_dos_veces_como_cada_caller_cuando_dos_runs_comparten_conversation_id(
+class TestNoCache:
+    async def test_loads_twice_as_each_caller_when_two_runs_share_a_conversation_id(
         self,
         loader: LoaderRecorder,
         conversation_deps: RecordingDepsFactory,
@@ -693,8 +693,8 @@ class TestSinCache:
 # ---------------------------------------------------------------------------
 
 
-class TestMessagesEnElHook:
-    async def test_entrega_los_messages_al_hook_cuando_el_final_los_lleva(
+class TestMessagesInTheHook:
+    async def test_delivers_the_messages_to_the_hook_when_the_final_carries_them(
         self,
         identity: Identity,
         hooks: HookRecorder,
@@ -716,7 +716,7 @@ class TestMessagesEnElHook:
         assert result.messages == _NEW_MESSAGES
         assert result.hook_result == TurnRecorded(interaction_id=command.interaction_id)
 
-    async def test_entrega_messages_none_cuando_el_final_no_los_lleva(
+    async def test_delivers_none_messages_when_the_final_carries_none(
         self,
         identity: Identity,
         hooks: HookRecorder,
@@ -736,7 +736,7 @@ class TestMessagesEnElHook:
         assert command.messages is None
         assert result.messages is None
 
-    async def test_alimenta_un_command_estricto_cuando_no_declara_messages(
+    async def test_feeds_a_strict_command_when_it_declares_no_messages(
         self,
         identity: Identity,
         hooks: HookRecorder,
@@ -762,8 +762,8 @@ class TestMessagesEnElHook:
 # ---------------------------------------------------------------------------
 
 
-class TestSondaDeArranque:
-    async def test_rechaza_el_arranque_cuando_hay_loader_y_el_bundle_no_lleva_invoker(
+class TestStartupProbe:
+    async def test_refuses_startup_when_there_is_a_loader_and_the_bundle_carries_no_invoker(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -792,7 +792,7 @@ class TestSondaDeArranque:
         assert _AGENT in issues[0].message
         assert lifecycle_log == []
 
-    async def test_informa_ambos_codigos_cuando_el_plan_declara_hook_y_loader(
+    async def test_reports_both_codes_when_the_plan_declares_a_hook_and_a_loader(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """A plan declaring both surfaces both issues in one start-up failure."""
@@ -809,7 +809,7 @@ class TestSondaDeArranque:
         ]
         assert all(_AGENT in issue.message for issue in issues)
 
-    async def test_arranca_con_normalidad_cuando_el_bundle_lleva_un_invoker_ligado(
+    async def test_starts_normally_when_the_bundle_carries_a_bound_invoker(
         self,
         identity: Identity,
         loader: LoaderRecorder,

@@ -256,10 +256,10 @@ def _runtime(url: str, plan: AgentPlan, model: ScriptedToolModel) -> Any:
 # ---------------------------------------------------------------------------
 
 
-class TestFiltroContraServidorReal:
+class TestFilterAgainstARealServer:
     """FR-025: ``include`` is applied to the tools the server really advertises."""
 
-    async def test_solo_llega_la_tool_incluida_al_agente_cuando_el_grant_filtra(
+    async def test_only_the_included_tool_reaches_the_agent_when_the_grant_filters(
         self, server_url: str, caller: Identity
     ) -> None:
         """``include: [read_*]`` leaves ``write_orders`` unreachable by the model."""
@@ -271,7 +271,7 @@ class TestFiltroContraServidorReal:
 
         assert model.offered_tools == ("read_orders",)
 
-    async def test_el_agente_ve_ambas_tools_cuando_el_grant_no_filtra(
+    async def test_the_agent_sees_both_tools_when_the_grant_does_not_filter(
         self, server_url: str, caller: Identity
     ) -> None:
         """Without a filter the whole advertised surface reaches the model."""
@@ -283,7 +283,7 @@ class TestFiltroContraServidorReal:
 
         assert sorted(model.offered_tools) == ["read_orders", "write_orders"]
 
-    async def test_el_arranque_falla_con_filtro_vacio_cuando_el_include_no_casa_nada(
+    async def test_startup_fails_with_an_empty_filter_when_include_matches_nothing(
         self, server_url: str, caller: Identity
     ) -> None:
         """A filter selecting none of the *real* tools aborts start-up."""
@@ -300,7 +300,7 @@ class TestFiltroContraServidorReal:
         }
 
 
-class TestLlamadaDePuntaAPunta:
+class TestEndToEndCall:
     """A granted tool is invoked for real, and its result is summarised (FR-030b)."""
 
     @pytest.fixture
@@ -324,7 +324,7 @@ class TestLlamadaDePuntaAPunta:
         assert len(results) == 1, f"expected exactly one tool result, got {results}"
         return results[0]
 
-    async def test_la_tool_real_devuelve_el_payload_al_modelo_cuando_se_invoca(
+    async def test_the_real_tool_returns_the_payload_to_the_model_when_invoked(
         self, tool_events: tuple[ScriptedToolModel, tuple[AgentEvent, ...]]
     ) -> None:
         """The call reached the server: the model was shown the served payload."""
@@ -332,7 +332,7 @@ class TestLlamadaDePuntaAPunta:
 
         assert any(CANARY in shown for shown in model.tool_returns)
 
-    async def test_el_tool_result_lleva_el_summary_de_loom_cuando_la_tool_responde(
+    async def test_the_tool_result_carries_looms_summary_when_the_tool_responds(
         self, tool_events: tuple[ScriptedToolModel, tuple[AgentEvent, ...]]
     ) -> None:
         """A foreign toolset publishes no facts, so the summary degrades to ``ok``."""
@@ -340,7 +340,7 @@ class TestLlamadaDePuntaAPunta:
 
         assert self._result(events).summary == "ok"
 
-    async def test_el_tool_result_no_lleva_bytes_del_payload_cuando_la_tool_responde(
+    async def test_the_tool_result_carries_no_payload_bytes_when_the_tool_responds(
         self, tool_events: tuple[ScriptedToolModel, tuple[AgentEvent, ...]]
     ) -> None:
         """FR-030b: no byte of the tool payload travels in the stream event."""
@@ -358,7 +358,7 @@ LIVE_URL_VAR = "LOOM_LIVE_MCP_URL"
 
 
 @pytest.mark.live
-class TestServidorDesplegado:
+class TestDeployedServer:
     """The same path against a server this suite did not start.
 
     Opt-in and self-skipping, the pattern ``test_live_provider.py`` uses: point
@@ -380,7 +380,7 @@ class TestServidorDesplegado:
             pytest.skip(f"{LIVE_URL_VAR} is not set: no deployed MCP server to reach")
         return url
 
-    async def test_el_servidor_desplegado_publica_alguna_tool_cuando_esta_configurado(
+    async def test_the_deployed_server_publishes_some_tool_when_configured(
         self, live_url: str
     ) -> None:
         """The real client factory connects and the server advertises a surface."""
@@ -392,7 +392,7 @@ class TestServidorDesplegado:
 
         assert tools
 
-    async def test_el_runtime_arranca_cuando_el_servidor_desplegado_responde(
+    async def test_the_runtime_starts_when_the_deployed_server_responds(
         self, live_url: str
     ) -> None:
         """Start-up validates the grant against the deployment, not a stub."""

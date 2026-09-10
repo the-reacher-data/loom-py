@@ -1,4 +1,4 @@
-"""Every counter the engine reports reaches the caller (A1).
+"""Every counter the engine reports reaches the caller.
 
 The rule under test is propagation, not curation: loom does not decide which
 counters matter, so a counter :class:`~loom.ai.abc.AgentUsage` does not name

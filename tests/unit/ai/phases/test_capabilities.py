@@ -234,7 +234,7 @@ class TestMcp:
             capability.timeout_ms,
         ) == ("http", server.url, server.headers_ref, server.timeout_ms)
 
-    def test_lleva_transporte_comando_args_y_env_cuando_el_servidor_es_stdio(
+    def test_carries_transport_command_args_and_env_when_server_is_stdio(
         self,
         spec_factory: Callable[..., AgentSpecV1],
         plan_for: Callable[..., AgentPlan],

@@ -51,7 +51,7 @@ def run() -> RunContext:
 
 
 class TestLoaderCommand:
-    def test_ofrece_los_cinco_valores_del_contexto_cuando_el_input_los_acepta(
+    def test_offers_the_five_context_values_when_the_input_accepts_them(
         self, run: RunContext
     ) -> None:
         """Every offered name carries the run's, the identity's or the plan's value."""
@@ -65,7 +65,7 @@ class TestLoaderCommand:
             "agent": "incident-triage",
         }
 
-    def test_filtra_a_los_nombres_aceptados_cuando_el_input_declara_menos(
+    def test_filters_to_the_accepted_names_when_the_input_declares_fewer(
         self, run: RunContext
     ) -> None:
         """Names the Input does not declare never reach it."""
@@ -73,9 +73,7 @@ class TestLoaderCommand:
 
         assert command == {"conversation_id": "c-42", "agent": "incident-triage"}
 
-    def test_decodifica_un_command_estricto_cuando_se_filtra_a_sus_nombres(
-        self, run: RunContext
-    ) -> None:
+    def test_decodes_a_strict_command_when_filtered_to_its_names(self, run: RunContext) -> None:
         """A ``forbid_unknown_fields`` Command declaring only ``conversation_id`` decodes."""
         accepted = frozenset(info.name for info in msgspec.structs.fields(_StrictCommand))
 
@@ -84,9 +82,7 @@ class TestLoaderCommand:
         assert instance == _StrictCommand(conversation_id="c-42")
         assert seen == frozenset({"conversation_id"})
 
-    def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(
-        self, run: RunContext
-    ) -> None:
+    def test_offers_exactly_the_names_the_compiler_promises(self, run: RunContext) -> None:
         """The run-time command and the compile-time offer are one contract."""
         command = loader_command(run, _ALL_NAMES)
 
@@ -94,9 +90,7 @@ class TestLoaderCommand:
 
 
 class TestFailureError:
-    def test_conserva_codigo_y_mensaje_cuando_ya_es_un_agent_run_error(
-        self, run: RunContext
-    ) -> None:
+    def test_keeps_code_and_message_when_already_an_agent_run_error(self, run: RunContext) -> None:
         """An ``AgentRunError`` keeps both its code and its text and gains the run's id."""
         original = AgentRunError(AgentRunErrorCode.UNAUTHORIZED, "no invoker bound")
 
@@ -113,9 +107,7 @@ class TestFailureError:
         assert error.interaction_id == "int-1"
         assert error.usage is None
 
-    def test_mapea_una_denegacion_a_unauthorized_cuando_las_reglas_rechazan(
-        self, run: RunContext
-    ) -> None:
+    def test_maps_a_denial_to_unauthorized_when_the_rules_reject(self, run: RunContext) -> None:
         """A denial keeps its meaning and answers the fixed denial text."""
         error = failure_error(
             Forbidden("thread c-42 belongs to another subject"),
@@ -129,7 +121,7 @@ class TestFailureError:
         assert str(error) == _DENIED_MESSAGE
         assert error.interaction_id == "int-1"
 
-    def test_usa_el_codigo_y_texto_dados_cuando_la_excepcion_es_generica(
+    def test_uses_the_given_code_and_text_for_a_generic_exception(
         self, run: RunContext, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Anything else is logged server-side and answered with the given code and text."""
@@ -153,22 +145,22 @@ class TestFailureError:
 
 
 class TestAsHistory:
-    def test_devuelve_none_cuando_el_loader_no_devuelve_nada(self) -> None:
+    def test_returns_none_when_the_loader_returns_nothing(self) -> None:
         """``None`` is single-shot and is never measured."""
         assert _as_history(None, 1024) is None
 
-    def test_devuelve_el_mismo_objeto_cuando_los_bytes_igualan_el_limite(self) -> None:
+    def test_returns_the_same_object_when_the_bytes_equal_the_limit(self) -> None:
         """Bytes exactly at the bound pass through untouched."""
         history = b"x" * 1024
 
         assert _as_history(history, 1024) is history
 
-    def test_lanza_value_error_con_ambos_tamanos_cuando_los_bytes_superan_el_limite(self) -> None:
+    def test_raises_value_error_with_both_sizes_when_the_bytes_exceed_the_limit(self) -> None:
         """One byte over the bound is refused and the message names both sizes."""
         with pytest.raises(ValueError, match=r"1025(?s:.*)1024"):
             _as_history(b"x" * 1025, 1024)
 
-    def test_lanza_type_error_cuando_el_loader_devuelve_un_str(self) -> None:
+    def test_raises_type_error_when_the_loader_returns_a_str(self) -> None:
         """A ``str`` is never coerced to bytes."""
         with pytest.raises(TypeError):
             _as_history("not bytes", 1024)

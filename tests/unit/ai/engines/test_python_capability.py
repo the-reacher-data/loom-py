@@ -335,7 +335,7 @@ class _SlowFakeFastmcpClient:
 
 class _SlowFakeMcpToolset:
     """Stand-in for ``MCPToolset``: a real refcount behind a real lock, and an
-    ``__aexit__`` that actually awaits at refcount zero (O2) -- mirroring
+    ``__aexit__`` that actually awaits at refcount zero -- mirroring
     ``MCPToolset`` closely enough that a cancelled call leaving the refcount
     unbalanced would show up here, not just by construction."""
 
@@ -357,7 +357,7 @@ class _SlowFakeMcpToolset:
 
 
 class TestKindPythonRespectsToolTimeout:
-    """B1 (hotfix regression): a ``kind: python`` factory that calls
+    """A ``kind: python`` factory that calls
     ``context.remote(server).call_tool(...)`` must still be cut off by the
     plan's ``tool_timeout_ms``, exactly as a ``usecase`` or ``mcp`` tool is.
 
@@ -398,5 +398,5 @@ class TestKindPythonRespectsToolTimeout:
         # this is exactly what the shielded round trip broke.
         assert elapsed < remote_delay_s / 2
         # And the toolset's own refcount is not left unbalanced by the timeout
-        # cancelling the call mid ``async with`` (O2).
+        # cancelling the call mid ``async with``.
         assert toolset.running_count == 0

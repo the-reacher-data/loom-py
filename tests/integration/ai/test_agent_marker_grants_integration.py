@@ -202,10 +202,10 @@ def _wired(
     return executor, runtime
 
 
-class TestLosTresModosSobreUnMismoArtefacto:
-    """Standing requirement 3: la forma declarada, la sobrescrita y el texto abierto."""
+class TestTheThreeModesOverOneArtefact:
+    """Standing requirement 3: the declared shape, the overridden one, and open text."""
 
-    async def test_las_tres_corridas_llegan_al_motor_real(
+    async def test_all_three_runs_reach_the_real_engine(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         engine = ShapedRecordingEngine()
@@ -226,10 +226,10 @@ class TestLosTresModosSobreUnMismoArtefacto:
         assert len(engine.identities) == 3
 
 
-class TestUnaLlamadaFiltradaPorElPermiso:
-    """Standing requirement 4: el filtro del grant, y el rechazo antes de la red."""
+class TestACallFilteredByTheGrant:
+    """Standing requirement 4: the grant's filter, and the refusal before the network."""
 
-    async def test_una_tool_admitida_llega_al_servidor(
+    async def test_an_admitted_tool_reaches_the_server(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         session = RecordingMcpSession(
@@ -252,7 +252,7 @@ class TestUnaLlamadaFiltradaPorElPermiso:
         assert result == {"orders": [1, 2, 3]}
         assert session.calls == [("read_orders", {"customer": "acme"})]
 
-    async def test_una_tool_excluida_se_rechaza_sin_llamar_al_servidor(
+    async def test_an_excluded_tool_is_refused_without_calling_the_server(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         session = RecordingMcpSession(tools=("read_orders", "write_orders"))
@@ -274,10 +274,10 @@ class TestUnaLlamadaFiltradaPorElPermiso:
         assert session.calls == []
 
 
-class TestUnaConsultaConLosRolesDelLlamante:
-    """Standing requirement 5: la consulta corre con los roles del llamante verificado."""
+class TestAQueryWithTheCallersRoles:
+    """Standing requirement 5: the query runs with the verified caller's roles."""
 
-    async def test_la_consulta_corre_con_el_rol_del_llamante(
+    async def test_the_query_runs_with_the_callers_role(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         service = RecordingSqlQueryService(_sql_result())

@@ -288,8 +288,8 @@ def hook_deps() -> RecordingDepsFactory:
 # ---------------------------------------------------------------------------
 
 
-class TestEjecucionDelHook:
-    async def test_ejecuta_el_hook_una_vez_con_el_output_tipado_cuando_el_run_completa(
+class TestHookExecution:
+    async def test_runs_the_hook_once_with_the_typed_output_when_the_run_completes(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -318,7 +318,7 @@ class TestEjecucionDelHook:
         assert result.hook_result == TriageRecorded(triage_id=result.interaction_id)
         assert result.output == REPORT
 
-    async def test_entrega_el_output_como_dict_cuando_el_command_lo_declara_asi(
+    async def test_delivers_the_output_as_a_dict_when_the_command_declares_it_so(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -336,7 +336,7 @@ class TestEjecucionDelHook:
         assert isinstance(command, AnswerCommand)
         assert command.output == {"answer": "42"}
 
-    async def test_no_deja_que_un_campo_subject_del_output_suplante_al_contexto(
+    async def test_a_subject_field_on_the_output_does_not_override_the_context(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -355,7 +355,7 @@ class TestEjecucionDelHook:
         assert command.subject == identity.subject
         assert command.output["subject"] == "spoofed"
 
-    async def test_alimenta_un_command_estricto_cuando_solo_declara_output_e_interaction_id(
+    async def test_feeds_a_strict_command_when_it_declares_only_output_and_interaction_id(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -376,7 +376,7 @@ class TestEjecucionDelHook:
             output={"answer": "42"}, interaction_id=result.interaction_id
         )
 
-    async def test_ejecuta_el_hook_una_sola_vez_al_final_cuando_el_script_incluye_tool_events(
+    async def test_runs_the_hook_once_at_the_final_event_even_when_the_script_includes_tool_events(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -400,7 +400,7 @@ class TestEjecucionDelHook:
             "FinalEvent",
         ]
 
-    async def test_ejecuta_el_hook_como_el_caller_verificado_cuando_hay_identidad(
+    async def test_runs_the_hook_as_the_verified_caller_when_there_is_identity(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -416,7 +416,7 @@ class TestEjecucionDelHook:
 
         assert recorder.calls[0].caller == identity
 
-    async def test_ejecuta_el_hook_como_anonimo_cuando_el_caller_es_anonymous(
+    async def test_runs_the_hook_as_anonymous_when_the_caller_is_anonymous(
         self,
         recorder: Recorder,
         hook_deps: RecordingDepsFactory,
@@ -434,7 +434,7 @@ class TestEjecucionDelHook:
         assert isinstance(call.command, TriageCommand)
         assert call.command.subject == ""
 
-    async def test_marca_el_interaction_id_sin_hook_result_cuando_no_hay_hook(
+    async def test_names_the_interaction_id_with_no_hook_result_when_there_is_no_hook(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -459,8 +459,8 @@ class TestEjecucionDelHook:
 # ---------------------------------------------------------------------------
 
 
-class TestFallosDelHook:
-    async def test_falla_con_hook_failed_sin_el_detalle_cuando_el_hook_lanza(
+class TestHookFailures:
+    async def test_fails_with_hook_failed_without_the_detail_when_the_hook_raises(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -483,7 +483,7 @@ class TestFallosDelHook:
         assert hook_deps.uow.log == ["begin", "rollback"]
         assert engine.stream_count == 1
 
-    async def test_falla_con_hook_failed_cuando_el_hook_se_cancela_a_si_mismo(
+    async def test_fails_with_hook_failed_when_the_hook_cancels_itself(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -504,7 +504,7 @@ class TestFallosDelHook:
         assert str(failure.value) == HOOK_FAILED_MESSAGE
         assert len(recorder.calls) == 1
 
-    async def test_emite_un_solo_error_sin_final_cuando_el_hook_se_cancela_a_si_mismo_en_stream(
+    async def test_emits_a_single_error_with_no_final_when_the_hook_cancels_itself_in_stream(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -527,7 +527,7 @@ class TestFallosDelHook:
         assert error.interaction_id is not None
         assert error.message == HOOK_FAILED_MESSAGE
 
-    async def test_emite_un_solo_error_sin_final_cuando_el_hook_lanza_en_stream(
+    async def test_emits_a_single_error_with_no_final_when_the_hook_raises_in_stream(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -551,7 +551,7 @@ class TestFallosDelHook:
         assert "secret detail" not in error.message
         assert engine.stream_count == 1
 
-    async def test_mapea_forbidden_a_unauthorized_cuando_las_reglas_del_hook_rechazan(
+    async def test_maps_forbidden_to_unauthorized_when_the_hooks_rules_refuse(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -571,7 +571,7 @@ class TestFallosDelHook:
         assert str(failure.value) == _DENIED_MESSAGE
         assert failure.value.interaction_id is not None
 
-    async def test_falla_con_hook_failed_cuando_el_hook_excede_tool_timeout_ms(
+    async def test_fails_with_hook_failed_when_the_hook_exceeds_tool_timeout_ms(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -598,7 +598,7 @@ class TestFallosDelHook:
         # so the unit of work it had begun is closed.
         assert hook_deps.uow.log == ["begin", "rollback"]
 
-    async def test_confirma_la_transaccion_cuando_el_hook_termina(
+    async def test_commits_the_transaction_when_the_hook_finishes(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -621,8 +621,8 @@ class TestFallosDelHook:
 # ---------------------------------------------------------------------------
 
 
-class TestRunsNoCompletados:
-    async def test_no_ejecuta_el_hook_cuando_el_motor_termina_en_error(
+class TestIncompleteRuns:
+    async def test_does_not_run_the_hook_when_the_engine_ends_in_error(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -645,7 +645,7 @@ class TestRunsNoCompletados:
         assert failure.value.interaction_id is not None
         assert recorder.calls == []
 
-    async def test_no_ejecuta_el_hook_cuando_el_run_excede_su_presupuesto(
+    async def test_does_not_run_the_hook_when_the_run_exceeds_its_budget(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -666,7 +666,7 @@ class TestRunsNoCompletados:
         assert error.interaction_id is not None
         assert recorder.calls == []
 
-    async def test_no_ejecuta_el_hook_cuando_el_consumidor_abandona_el_stream(
+    async def test_does_not_run_the_hook_when_the_consumer_abandons_the_stream(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -685,7 +685,7 @@ class TestRunsNoCompletados:
         assert recorder.calls == []
         assert hook_deps.uow.log == []
 
-    async def test_cierra_con_provider_unavailable_cuando_el_motor_no_emite_evento_terminal(
+    async def test_closes_with_provider_unavailable_when_the_engine_emits_no_terminal_event(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -705,7 +705,7 @@ class TestRunsNoCompletados:
         assert _AGENT in str(failure.value)
         assert recorder.calls == []
 
-    async def test_emite_un_solo_error_cuando_el_motor_no_emite_evento_terminal_en_stream(
+    async def test_emits_a_single_error_when_the_engine_emits_no_terminal_event_in_stream(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -733,8 +733,8 @@ class TestRunsNoCompletados:
 # ---------------------------------------------------------------------------
 
 
-class TestCancelacionDuranteElHook:
-    async def test_completa_el_registro_una_vez_cuando_cancelan_al_consumidor(
+class TestCancellationDuringTheHook:
+    async def test_completes_the_record_once_when_the_consumer_is_cancelled(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -764,7 +764,7 @@ class TestCancelacionDuranteElHook:
         assert result.hook_result is not None
         assert len(recorder.calls) == 2
 
-    async def test_cancela_el_hook_cuando_cancelan_al_consumidor_por_segunda_vez(
+    async def test_cancels_the_hook_when_the_consumer_is_cancelled_a_second_time(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -795,8 +795,8 @@ class TestCancelacionDuranteElHook:
 # ---------------------------------------------------------------------------
 
 
-class TestOrdenEnStream:
-    async def test_ejecuta_el_hook_antes_de_entregar_el_final_cuando_se_hace_stream(
+class TestOrderInStream:
+    async def test_runs_the_hook_before_delivering_final_when_it_streams(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -825,7 +825,7 @@ class TestOrdenEnStream:
 
 
 class TestConversationId:
-    async def test_entrega_el_conversation_id_al_command_cuando_se_indica(
+    async def test_delivers_the_conversation_id_to_the_command_when_it_is_given(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -843,7 +843,7 @@ class TestConversationId:
         assert isinstance(command, AnswerCommand)
         assert command.conversation_id == "c-42"
 
-    async def test_entrega_none_cuando_no_se_indica_conversation_id(
+    async def test_delivers_none_when_no_conversation_id_is_given(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -862,7 +862,7 @@ class TestConversationId:
         assert command.conversation_id is None
         assert isinstance(events[-1], FinalEvent)
 
-    async def test_rechaza_con_value_error_cuando_conversation_id_excede_el_limite(
+    async def test_refuses_with_value_error_when_the_conversation_id_exceeds_the_limit(
         self,
         identity: Identity,
         recorder: Recorder,
@@ -892,8 +892,8 @@ class TestConversationId:
 # ---------------------------------------------------------------------------
 
 
-class TestSondaDeArranque:
-    async def test_rechaza_el_arranque_cuando_hay_hook_y_el_bundle_no_lleva_invoker(
+class TestStartupProbe:
+    async def test_refuses_startup_when_there_is_a_hook_and_the_bundle_carries_no_invoker(
         self,
         deps: StubDepsFactory,
         container: LoomContainer,
@@ -922,7 +922,7 @@ class TestSondaDeArranque:
         assert _AGENT in issues[0].message
         assert lifecycle_log == []
 
-    async def test_rechaza_el_arranque_cuando_el_invoker_del_bundle_no_esta_ligado_a_un_caller(
+    async def test_refuses_startup_when_the_bundles_invoker_is_not_bound_to_a_caller(
         self,
         hook_deps: RecordingDepsFactory,
         container: LoomContainer,
@@ -944,7 +944,7 @@ class TestSondaDeArranque:
         assert "not bound" in issues[0].message
         assert _AGENT in issues[0].message
 
-    async def test_arranca_con_normalidad_cuando_no_hay_hook(
+    async def test_starts_normally_when_there_is_no_hook(
         self,
         identity: Identity,
         deps: StubDepsFactory,

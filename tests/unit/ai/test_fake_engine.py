@@ -71,10 +71,10 @@ async def _execute(engine: FakeAgentEngine) -> bytes:
     return msgspec.json.encode({"result": result, "events": events})
 
 
-class TestReproducibilidadT039:
+class TestReproducibilityT039:
     """T039 — same script, same bytes; no clocks, no randomness."""
 
-    async def test_run_y_stream_producen_bytes_identicos_cuando_el_guion_es_el_mismo(
+    async def test_run_and_stream_produce_identical_bytes_for_the_same_script(
         self,
     ) -> None:
         first = await _execute(_build_scripted_engine())
@@ -82,7 +82,7 @@ class TestReproducibilidadT039:
 
         assert first == second
 
-    async def test_el_stream_reproduce_exactamente_el_guion_cuando_se_pasa_script(
+    async def test_the_stream_reproduces_the_script_exactly_when_a_script_is_given(
         self,
     ) -> None:
         engine = _build_scripted_engine()
@@ -94,7 +94,7 @@ class TestReproducibilidadT039:
 
         assert tuple(events) == _SCRIPT
 
-    async def test_dos_instancias_frescas_producen_bytes_identicos_cuando_no_hay_guion(
+    async def test_two_fresh_instances_produce_identical_bytes_with_no_script(
         self,
     ) -> None:
         first = await _execute(FakeAgentEngine(output=_OUTPUT))
@@ -102,7 +102,7 @@ class TestReproducibilidadT039:
 
         assert first == second
 
-    async def test_el_stream_por_defecto_termina_en_final_con_el_output_cuando_no_hay_guion(
+    async def test_the_default_stream_ends_in_final_with_the_output_when_there_is_no_script(
         self,
     ) -> None:
         engine = FakeAgentEngine(output=_OUTPUT)
@@ -115,7 +115,7 @@ class TestReproducibilidadT039:
         assert isinstance(events[-1], FinalEvent)
         assert events[-1].output == _OUTPUT
 
-    async def test_run_devuelve_el_output_del_guion_cuando_el_guion_termina_en_final(
+    async def test_run_returns_the_scripts_output_when_the_script_ends_in_final(
         self,
     ) -> None:
         engine = _build_scripted_engine()
@@ -125,10 +125,10 @@ class TestReproducibilidadT039:
         assert result == AgentResult(output=_OUTPUT, usage=_USAGE)
 
 
-class TestConversacionIgnoradaAC14:
+class TestConversationIgnoredAC14:
     """AC14 — the fake accepts ``conversation=`` and replays the same script."""
 
-    async def test_run_devuelve_el_mismo_resultado_cuando_se_pasa_conversation(
+    async def test_run_returns_the_same_result_when_conversation_is_passed(
         self,
     ) -> None:
         engine = _build_scripted_engine()
@@ -140,7 +140,7 @@ class TestConversacionIgnoradaAC14:
 
         assert with_conversation == without_conversation
 
-    async def test_run_stream_emite_los_mismos_eventos_cuando_se_pasa_conversation(
+    async def test_run_stream_emits_the_same_events_when_conversation_is_passed(
         self,
     ) -> None:
         engine = _build_scripted_engine()
@@ -159,10 +159,10 @@ class TestConversacionIgnoradaAC14:
         assert with_conversation == without_conversation
 
 
-class TestMensajesDelGuion:
+class TestScriptMessages:
     """``run`` and ``run_stream`` agree on the terminal event's ``messages``."""
 
-    async def test_run_devuelve_los_messages_del_final_cuando_el_guion_los_lleva(self) -> None:
+    async def test_run_returns_the_finals_messages_when_the_script_carries_them(self) -> None:
         script = (FinalEvent(output=_OUTPUT, usage=_USAGE, messages=b"[1]"),)
         engine = FakeAgentEngine(script=script)
 
@@ -175,7 +175,7 @@ class TestMensajesDelGuion:
         assert events[-1].messages == result.messages
 
 
-class TestSinRedNiCredencialesT040:
+class TestNoNetworkNoCredentialsT040:
     """T040 — the fake never opens sockets and needs no provider keys."""
 
     @pytest.fixture(autouse=True)
@@ -190,14 +190,14 @@ class TestSinRedNiCredencialesT040:
         for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(key, raising=False)
 
-    async def test_run_no_abre_sockets_cuando_la_red_esta_bloqueada(self) -> None:
+    async def test_run_opens_no_sockets_while_the_network_is_blocked(self) -> None:
         engine = _build_scripted_engine()
 
         result = await engine.run(_PROMPT, identity=_IDENTITY)
 
         assert result.usage == _USAGE
 
-    async def test_run_stream_completo_no_abre_sockets_cuando_la_red_esta_bloqueada(
+    async def test_the_full_run_stream_opens_no_sockets_while_the_network_is_blocked(
         self,
     ) -> None:
         engine = _build_scripted_engine()
@@ -209,14 +209,14 @@ class TestSinRedNiCredencialesT040:
 
         assert len(events) == len(_SCRIPT)
 
-    async def test_health_no_abre_sockets_cuando_la_red_esta_bloqueada(self) -> None:
+    async def test_health_opens_no_sockets_while_the_network_is_blocked(self) -> None:
         engine = _build_scripted_engine()
 
         status: HealthStatus = await engine.health()
 
         assert status.status == "ok"
 
-    async def test_el_guion_por_defecto_funciona_sin_credenciales_de_proveedor(
+    async def test_the_default_script_works_without_provider_credentials(
         self,
     ) -> None:
         engine = FakeAgentEngine(output=_OUTPUT)

@@ -87,10 +87,10 @@ def _isolated_sharing() -> Iterator[None]:
     remote_auth._STRATEGIES._by_endpoint.clear()
 
 
-class TestConfiguracionDelBloqueAuth:
+class TestAuthBlockConfiguration:
     """``ai.mcp_servers.<name>.auth`` is refused before anything connects."""
 
-    def test_falla_con_auth_strategy_unknown_cuando_la_estrategia_no_esta_registrada(
+    def test_fails_with_auth_strategy_unknown_when_the_strategy_is_not_registered(
         self,
     ) -> None:
         """A name nobody registers must fail at compile, not at the first message."""
@@ -101,7 +101,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert AgentErrorCode.MCP_AUTH_STRATEGY_UNKNOWN in _codes(excinfo.value)
 
-    def test_el_mensaje_nombra_la_estrategia_y_las_registradas_cuando_no_existe(self) -> None:
+    def test_the_message_names_the_strategy_and_the_registered_ones(self) -> None:
         """The operator must be able to act on the message without reading loom."""
         server = McpServerConfig(url=_URL, auth={"kind": "nobody-registers-this"})
 
@@ -113,7 +113,7 @@ class TestConfiguracionDelBloqueAuth:
         assert "oauth" in message
         assert "static" in message
 
-    def test_falla_con_auth_strategy_unknown_cuando_el_bloque_no_declara_kind(self) -> None:
+    def test_fails_with_auth_strategy_unknown_when_the_block_declares_no_kind(self) -> None:
         """A block without ``kind`` names no strategy at all."""
         server = McpServerConfig(url=_URL, auth={"session_url": "https://auth.example.com/token"})
 
@@ -122,7 +122,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert AgentErrorCode.MCP_AUTH_STRATEGY_UNKNOWN in _codes(excinfo.value)
 
-    def test_falla_con_credentials_inline_cuando_un_ajuste_lleva_un_secreto_literal(self) -> None:
+    def test_fails_with_credentials_inline_when_a_setting_carries_a_literal_secret(self) -> None:
         """The inline-credential rule covers the whole block, not just ``headers_ref``."""
         server = McpServerConfig(
             url=_URL, auth={"kind": "oauth", "bootstrap_ref": "sk-abc123def456ghi789"}
@@ -133,7 +133,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert AgentErrorCode.MCP_CREDENTIALS_INLINE in _codes(excinfo.value)
 
-    def test_el_mensaje_no_contiene_el_secreto_cuando_rechaza_un_ajuste(self) -> None:
+    def test_the_message_does_not_contain_the_secret_it_rejects(self) -> None:
         """The rejection must not leak the very secret it rejects."""
         literal = "sk-abc123def456ghi789"
         server = McpServerConfig(url=_URL, auth={"kind": "oauth", "bootstrap_ref": literal})
@@ -143,7 +143,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert literal not in str(excinfo.value)
 
-    def test_falla_con_auth_conflict_cuando_convive_con_headers_ref(self) -> None:
+    def test_fails_with_auth_conflict_alongside_headers_ref(self) -> None:
         """Two credentials on one connection is ambiguous, so it is refused."""
         server = McpServerConfig(url=_URL, headers_ref="X-API-Key=abc123", auth={"kind": "oauth"})
 
@@ -152,7 +152,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert AgentErrorCode.MCP_AUTH_CONFLICT in _codes(excinfo.value)
 
-    def test_acepta_un_token_con_forma_de_jwt_como_ajuste(self) -> None:
+    def test_accepts_a_jwt_shaped_token_as_a_setting(self) -> None:
         """A JWT is base64url with dots: the inline-credential test must let it through."""
         server = McpServerConfig(
             url=_URL,
@@ -163,7 +163,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert config.mcp_servers["knowledge"].auth is not None
 
-    def test_rechaza_un_ajuste_con_espacios_aunque_sea_un_bearer_compuesto(self) -> None:
+    def test_rejects_a_setting_with_spaces_even_a_composed_bearer_header(self) -> None:
         """The composed header is exactly what must not live in configuration."""
         server = McpServerConfig(
             url=_URL, auth={"kind": "bearer", "token_ref": "Bearer eyJhbGciOiJIUzI1NiJ9"}
@@ -174,7 +174,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert AgentErrorCode.MCP_CREDENTIALS_INLINE in _codes(excinfo.value)
 
-    def test_acepta_el_servidor_cuando_la_estrategia_esta_registrada(self) -> None:
+    def test_accepts_the_server_when_the_strategy_is_registered(self) -> None:
         """``oauth`` ships with loom, so it decodes without complaint."""
         server = McpServerConfig(url=_URL, auth={"kind": "oauth"})
 
@@ -182,7 +182,7 @@ class TestConfiguracionDelBloqueAuth:
 
         assert config.mcp_servers["knowledge"].auth == {"kind": "oauth"}
 
-    def test_acepta_una_estrategia_de_terceros_cuando_su_distribucion_esta_instalada(
+    def test_accepts_a_third_party_strategy_when_its_distribution_is_installed(
         self, tmp_path: Path
     ) -> None:
         """A deployment's own strategy is as valid as loom's own."""
@@ -201,26 +201,28 @@ class TestConfiguracionDelBloqueAuth:
         assert config.mcp_servers["knowledge"].auth is not None
 
 
-class TestCabecerasDeHeadersRef:
+class TestHeadersFromRef:
     """``headers_ref`` reaches loom already resolved; this reads its payload."""
 
-    def test_devuelve_la_cabecera_cuando_el_valor_es_un_par_nombre_valor(self) -> None:
+    def test_returns_the_header_when_the_value_is_a_name_value_pair(self) -> None:
         assert headers_from_ref("server 'kb'", "X-API-Key=abc123") == {"X-API-Key": "abc123"}
 
-    def test_devuelve_vacio_cuando_el_servidor_no_declara_credencial(self) -> None:
+    def test_returns_empty_when_the_server_declares_no_credential(self) -> None:
         assert headers_from_ref("server 'kb'", None) == {}
 
     @pytest.mark.parametrize(
         "payload", ["just-a-name", "=abc123", "X-API-Key="], ids=["no_pair", "no_name", "no_value"]
     )
-    def test_falla_con_headers_ref_invalid_cuando_el_valor_no_es_un_par(self, payload: str) -> None:
+    def test_fails_with_headers_ref_invalid_when_the_value_is_not_a_pair(
+        self, payload: str
+    ) -> None:
         """A payload loom cannot turn into a header would silently send nothing."""
         with pytest.raises(AgentCompilationError) as excinfo:
             headers_from_ref("server 'kb'", payload)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_HEADERS_REF_INVALID]
 
-    def test_el_mensaje_no_contiene_el_valor_cuando_lo_rechaza(self) -> None:
+    def test_the_message_does_not_contain_the_value_it_rejects(self) -> None:
         payload = "sk-abc123def456ghi789"
 
         with pytest.raises(AgentCompilationError) as excinfo:
@@ -229,13 +231,13 @@ class TestCabecerasDeHeadersRef:
         assert payload not in str(excinfo.value)
 
 
-class TestEstrategiasQueLoomRegistra:
+class TestStrategiesLoomRegisters:
     """Both are thin delegations: loom implements no login flow of its own."""
 
-    def test_oauth_devuelve_el_centinela_que_el_cliente_mcp_entiende(self) -> None:
+    def test_oauth_returns_the_sentinel_the_mcp_client_understands(self) -> None:
         assert standard_oauth() == "oauth"
 
-    def test_static_anade_la_cabecera_a_cada_peticion(self) -> None:
+    def test_static_adds_the_header_to_every_request(self) -> None:
         """The strategy is exercised as a client drives it, not by inspection."""
         httpx = pytest.importorskip("httpx")
         auth = static_headers(headers_ref="X-API-Key=abc123")
@@ -244,7 +246,7 @@ class TestEstrategiasQueLoomRegistra:
 
         assert request.headers["X-API-Key"] == "abc123"
 
-    def test_bearer_presenta_el_token_en_la_cabecera_authorization(self) -> None:
+    def test_bearer_presents_the_token_in_the_authorization_header(self) -> None:
         """The header the strategy composes is what configuration cannot carry."""
         httpx = pytest.importorskip("httpx")
         auth = bearer_token(token_ref="eyJhbGci.eyJzdWIi-abc_123")
@@ -261,7 +263,7 @@ class TestEstrategiasQueLoomRegistra:
         ],
         ids=["bearer", "static"],
     )
-    def test_la_estrategia_devuelve_la_peticion_que_recibe(self, build: Any) -> None:
+    def test_the_strategy_returns_the_request_it_receives(self, build: Any) -> None:
         """Both clients wrap the callable as ``yield self._func(request)``.
 
         A callable that mutated the request but returned ``None`` would send
@@ -272,7 +274,7 @@ class TestEstrategiasQueLoomRegistra:
 
         assert build()(request) is request
 
-    def test_ninguna_estrategia_importa_una_libreria_http(self) -> None:
+    def test_no_strategy_imports_an_http_library(self) -> None:
         """Checked in a fresh interpreter, which is the only place it means anything.
 
         ``loom.ai.config`` imports this module at load time, so an in-process
@@ -288,15 +290,15 @@ class TestEstrategiasQueLoomRegistra:
 
         assert probe.returncode == 0, probe.stderr
 
-    def test_loom_registra_oauth_bearer_y_static_y_nada_mas(self) -> None:
+    def test_loom_registers_oauth_bearer_and_static_and_nothing_else(self) -> None:
         """Loom hard-codes no vendor: the three names it ships are generic."""
         assert registered_strategy_names() == ["bearer", "oauth", "static"]
 
 
-class TestLoQueLoomAceptaDeUnaEstrategia:
+class TestWhatLoomAcceptsFromAStrategy:
     """``_checked`` accepts what both clients accept, and nothing else."""
 
-    def test_acepta_un_invocable(self) -> None:
+    def test_accepts_a_callable(self) -> None:
         """The shape both clients wrap in their own ``FunctionAuth``."""
 
         def auth(request: Any) -> Any:
@@ -304,7 +306,7 @@ class TestLoQueLoomAceptaDeUnaEstrategia:
 
         assert _checked("callable-strategy", auth) is auth
 
-    def test_acepta_un_objeto_con_auth_flow(self) -> None:
+    def test_accepts_an_object_with_auth_flow(self) -> None:
         """A class written against either flavour satisfies the same probe."""
 
         class _Flavoured:
@@ -315,10 +317,10 @@ class TestLoQueLoomAceptaDeUnaEstrategia:
 
         assert _checked("agent-session", built) is built
 
-    def test_acepta_el_centinela_del_cliente_mcp(self) -> None:
+    def test_accepts_the_mcp_clients_sentinel(self) -> None:
         assert _checked("oauth", "oauth") == "oauth"
 
-    def test_falla_con_auth_strategy_invalid_cuando_no_es_ninguna_de_las_tres_formas(self) -> None:
+    def test_fails_with_auth_strategy_invalid_when_it_is_none_of_the_three_shapes(self) -> None:
         """An object no client can use would otherwise connect unauthenticated."""
         with pytest.raises(AgentCompilationError) as excinfo:
             _checked("agent-session", object())
@@ -326,13 +328,13 @@ class TestLoQueLoomAceptaDeUnaEstrategia:
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
 
-class TestResolucionCompartidaPorServidor:
+class TestSharedResolutionPerServer:
     """One instance per server: the credential belongs to the deployment."""
 
-    def test_devuelve_none_cuando_el_servidor_no_declara_estrategia(self) -> None:
+    def test_returns_none_when_the_server_declares_no_strategy(self) -> None:
         assert shared_mcp_auth("knowledge", None) is None
 
-    def test_construye_la_estrategia_de_terceros_con_sus_ajustes(self, tmp_path: Path) -> None:
+    def test_builds_the_third_party_strategy_with_its_settings(self, tmp_path: Path) -> None:
         """Settings become keyword arguments of the registered object."""
         auth = CompiledRemoteAuth(
             kind="agent-session",
@@ -350,7 +352,7 @@ class TestResolucionCompartidaPorServidor:
             "/agents/prod/agent-sales",
         )
 
-    def test_comparte_una_sola_instancia_cuando_dos_llamadas_nombran_el_mismo_servidor(
+    def test_shares_a_single_instance_when_two_calls_name_the_same_server(
         self, tmp_path: Path
     ) -> None:
         """Identity, not equality: a renewing strategy holds the live token."""
@@ -368,7 +370,7 @@ class TestResolucionCompartidaPorServidor:
 
         assert first is second
 
-    def test_no_comparte_entre_servidores_distintos(self, tmp_path: Path) -> None:
+    def test_does_not_share_across_different_servers(self, tmp_path: Path) -> None:
         """Two servers are two credentials, however alike their settings look."""
         auth = CompiledRemoteAuth(
             kind="agent-session",
@@ -384,7 +386,7 @@ class TestResolucionCompartidaPorServidor:
 
         assert orders is not catalog
 
-    def test_falla_con_auth_strategy_invalid_cuando_la_estrategia_rechaza_sus_ajustes(
+    def test_fails_with_auth_strategy_invalid_when_the_strategy_rejects_its_settings(
         self, tmp_path: Path
     ) -> None:
         """A settings key the strategy does not take is a deployment fault, named as one."""
@@ -396,11 +398,11 @@ class TestResolucionCompartidaPorServidor:
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
-    def test_is_strategy_registered_es_falso_para_un_nombre_vacio(self) -> None:
+    def test_is_strategy_registered_is_false_for_an_empty_name(self) -> None:
         assert is_strategy_registered("") is False
 
 
-class TestFallosDeResolucionDeLaEstrategia:
+class TestStrategyResolutionFailures:
     """Every resolution failure reaches the deployment as a coded issue.
 
     The loader is faked here, unlike the rest of this module: two distributions
@@ -437,7 +439,7 @@ class TestFallosDeResolucionDeLaEstrategia:
 
         monkeypatch.setattr(entrypoints_module, "entry_points", _EntryPoints)
 
-    def test_falla_con_auth_strategy_invalid_cuando_dos_distribuciones_la_registran(
+    def test_fails_with_auth_strategy_invalid_when_two_distributions_register_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._install(monkeypatch, ("loom-auth-alpha", "loom-auth-beta"))
@@ -448,7 +450,7 @@ class TestFallosDeResolucionDeLaEstrategia:
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
-    def test_el_mensaje_nombra_ambas_distribuciones_cuando_hay_duplicado(
+    def test_the_message_names_both_distributions_on_a_duplicate(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._install(monkeypatch, ("loom-auth-alpha", "loom-auth-beta"))
@@ -461,7 +463,7 @@ class TestFallosDeResolucionDeLaEstrategia:
         assert "loom-auth-alpha" in message
         assert "loom-auth-beta" in message
 
-    def test_falla_con_auth_strategy_invalid_cuando_ya_no_esta_registrada(
+    def test_fails_with_auth_strategy_invalid_when_it_is_no_longer_registered(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A distribution uninstalled between decode and start-up is named, not crashed on."""
@@ -474,10 +476,10 @@ class TestFallosDeResolucionDeLaEstrategia:
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
 
-class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
+class TestAuthBlockConfigurationForARemoteAgent:
     """``ai.a2a_agents.<name>.auth`` is held to exactly the MCP rules."""
 
-    def test_falla_con_auth_strategy_unknown_cuando_la_estrategia_no_esta_registrada(self) -> None:
+    def test_fails_with_auth_strategy_unknown_when_the_strategy_is_not_registered(self) -> None:
         """Otherwise the agent would connect unauthenticated at the first delegation."""
         agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "nobody-registers-this"})
 
@@ -486,7 +488,7 @@ class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
 
         assert AgentErrorCode.MCP_AUTH_STRATEGY_UNKNOWN in _codes(excinfo.value)
 
-    def test_el_mensaje_nombra_la_estrategia_y_las_registradas_cuando_no_existe(self) -> None:
+    def test_the_message_names_the_strategy_and_the_registered_ones(self) -> None:
         agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "nobody-registers-this"})
 
         with pytest.raises(AgentCompilationError) as excinfo:
@@ -497,7 +499,7 @@ class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
         assert "bearer" in message
         assert "static" in message
 
-    def test_falla_con_credentials_inline_cuando_un_ajuste_lleva_un_secreto_literal(self) -> None:
+    def test_fails_with_credentials_inline_when_a_setting_carries_a_literal_secret(self) -> None:
         agent = A2AAgentConfig(
             url=_AGENT_URL, auth={"kind": "bearer", "token_ref": "sk-abc123def456ghi789"}
         )
@@ -507,7 +509,7 @@ class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
 
         assert AgentErrorCode.MCP_CREDENTIALS_INLINE in _codes(excinfo.value)
 
-    def test_el_mensaje_no_contiene_el_secreto_cuando_rechaza_un_ajuste(self) -> None:
+    def test_the_message_does_not_contain_the_secret_it_rejects(self) -> None:
         literal = "sk-abc123def456ghi789"
         agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "bearer", "token_ref": literal})
 
@@ -516,7 +518,7 @@ class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
 
         assert literal not in str(excinfo.value)
 
-    def test_falla_con_auth_conflict_cuando_convive_con_headers_ref(self) -> None:
+    def test_fails_with_auth_conflict_alongside_headers_ref(self) -> None:
         """Two credentials on one connection is as ambiguous here as it is for MCP."""
         agent = A2AAgentConfig(
             url=_AGENT_URL, headers_ref="X-API-Key=abc123", auth={"kind": "bearer"}
@@ -527,14 +529,14 @@ class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
 
         assert AgentErrorCode.MCP_AUTH_CONFLICT in _codes(excinfo.value)
 
-    def test_acepta_el_agente_cuando_la_estrategia_esta_registrada(self) -> None:
+    def test_accepts_the_agent_when_the_strategy_is_registered(self) -> None:
         agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "bearer", "token_ref": "a.b-c_1"})
 
         config = _config_with_agent(agent)
 
         assert config.a2a_agents["market"].auth == {"kind": "bearer", "token_ref": "a.b-c_1"}
 
-    def test_acepta_una_estrategia_de_terceros_cuando_su_distribucion_esta_instalada(
+    def test_accepts_a_third_party_strategy_when_its_distribution_is_installed(
         self, tmp_path: Path
     ) -> None:
         """One group: a strategy registered for MCP is offered to A2A unchanged."""
@@ -553,13 +555,13 @@ class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
         assert config.a2a_agents["market"].auth is not None
 
 
-class TestResolucionCompartidaPorAgenteRemoto:
+class TestSharedResolutionPerRemoteAgent:
     """One instance per configured agent, from the same registry MCP uses."""
 
-    def test_devuelve_none_cuando_el_agente_no_declara_estrategia(self) -> None:
+    def test_returns_none_when_the_agent_declares_no_strategy(self) -> None:
         assert shared_a2a_auth("market", None) is None
 
-    def test_construye_la_estrategia_de_terceros_con_sus_ajustes(self, tmp_path: Path) -> None:
+    def test_builds_the_third_party_strategy_with_its_settings(self, tmp_path: Path) -> None:
         auth = CompiledRemoteAuth(
             kind="agent-session",
             settings=(
@@ -576,7 +578,7 @@ class TestResolucionCompartidaPorAgenteRemoto:
             "/agents/prod/agent-sales",
         )
 
-    def test_comparte_una_sola_instancia_cuando_dos_agentes_nombran_el_mismo_remoto(
+    def test_shares_a_single_instance_when_two_agents_name_the_same_remote(
         self,
     ) -> None:
         """Identity, not equality: the credential belongs to the deployment."""
@@ -587,13 +589,13 @@ class TestResolucionCompartidaPorAgenteRemoto:
 
         assert first is second
 
-    def test_no_comparte_con_un_servidor_mcp_del_mismo_nombre(self) -> None:
+    def test_does_not_share_with_a_mcp_server_of_the_same_name(self) -> None:
         """A server and an agent registered alike are two endpoints, two credentials."""
         auth = CompiledRemoteAuth(kind="bearer", settings=(("token_ref", "a.b-c_1"),))
 
         assert shared_a2a_auth("orders", auth) is not shared_mcp_auth("orders", auth)
 
-    def test_falla_con_auth_strategy_invalid_cuando_la_estrategia_es_el_centinela_oauth(
+    def test_fails_with_auth_strategy_invalid_when_the_strategy_is_the_oauth_sentinel(
         self,
     ) -> None:
         """``oauth`` delegates to the MCP client's flow; A2A must refuse, not connect bare."""
@@ -604,7 +606,7 @@ class TestResolucionCompartidaPorAgenteRemoto:
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
-    def test_falla_con_auth_strategy_invalid_cuando_la_estrategia_rechaza_sus_ajustes(
+    def test_fails_with_auth_strategy_invalid_when_the_strategy_rejects_its_settings(
         self, tmp_path: Path
     ) -> None:
         auth = CompiledRemoteAuth(kind="agent-session", settings=(("unexpected", "value"),))

@@ -117,11 +117,11 @@ def _rpc(client: TestClient, method: str, params: dict[str, Any] | None = None) 
     return client.post(f"/a2a/{_AGENT}", json=payload).json()
 
 
-class TestSuperficieA2aMontada:
+class TestA2ASurfaceMounted:
     """``create_app`` serves the card and the JSON-RPC endpoint of every exposure."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_sirve_la_card_del_agente_publicado(self, tmp_path: Path) -> None:
+    def test_serves_the_published_agents_card(self, tmp_path: Path) -> None:
         """The card is reachable, anonymous, and advertises the configured base URL."""
         config_path = _write_project(tmp_path, ai_extra=_PUBLISHED)
 
@@ -132,7 +132,7 @@ class TestSuperficieA2aMontada:
         assert response.json()["url"] == f"{_BASE_URL}/a2a/{_AGENT}"
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_responde_una_tarea_completada_a_message_send(self, tmp_path: Path) -> None:
+    def test_responds_a_completed_task_to_message_send(self, tmp_path: Path) -> None:
         """One ``message/send`` runs the agent and answers its terminal task."""
         config_path = _write_project(tmp_path, ai_extra=_PUBLISHED)
 
@@ -146,7 +146,7 @@ class TestSuperficieA2aMontada:
         assert task["artifacts"][0]["parts"][0]["data"] == dict(DEFAULT_OUTPUT)
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_responde_error_json_rpc_a_un_metodo_no_soportado(self, tmp_path: Path) -> None:
+    def test_responds_a_json_rpc_error_to_an_unsupported_method(self, tmp_path: Path) -> None:
         """An advertised-absent method answers ``-32004``, never an HTTP 500."""
         config_path = _write_project(tmp_path, ai_extra=_PUBLISHED)
 
@@ -156,11 +156,11 @@ class TestSuperficieA2aMontada:
         assert body["error"]["code"] == -32004
 
 
-class TestSinSeccionA2a:
+class TestNoA2ASection:
     """No ``ai.a2a`` section publishes nothing at all (FR-041)."""
 
     @pytest.mark.usefixtures("fake_engine")
-    def test_no_sirve_la_card_cuando_no_hay_seccion_a2a(self, tmp_path: Path) -> None:
+    def test_serves_no_card_when_there_is_no_a2a_section(self, tmp_path: Path) -> None:
         """The agent still has its HTTP surface; the A2A one is simply absent."""
         config_path = _write_project(
             tmp_path,

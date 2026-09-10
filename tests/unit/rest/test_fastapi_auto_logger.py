@@ -89,7 +89,7 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
             compiler=SimpleNamespace(get_plan=lambda use_case_type: None),
             registry=SimpleNamespace(key_for=lambda use_case_type: None),
             factory=SimpleNamespace(verify=lambda: None),
-            # create_app always registers SqlQueryService (M5), so the stub
+            # create_app always registers SqlQueryService, so the stub
             # container must accept register() calls.
             container=SimpleNamespace(register=lambda *args, **kwargs: None),
         )

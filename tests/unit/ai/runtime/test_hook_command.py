@@ -59,21 +59,21 @@ def run() -> RunContext:
     )
 
 
-def test_anida_el_output_cuando_es_un_dict(run: RunContext) -> None:
+def test_nests_the_output_when_it_is_a_dict(run: RunContext) -> None:
     """A dict output is nested verbatim under ``output``."""
     command = hook_command({"answer": "42"}, run, _ALL_NAMES)
 
     assert command["output"] == {"answer": "42"}
 
 
-def test_convierte_el_output_a_builtins_cuando_es_un_struct(run: RunContext) -> None:
+def test_converts_the_output_to_builtins_when_it_is_a_struct(run: RunContext) -> None:
     """A struct output is offered as builtins so any Input type can convert it back."""
     command = hook_command(_Report(severity="high", confidence=0.7), run, _ALL_NAMES)
 
     assert command["output"] == {"severity": "high", "confidence": 0.7}
 
 
-def test_ofrece_el_contexto_del_run_cuando_el_input_lo_acepta(run: RunContext) -> None:
+def test_offers_the_runs_context_when_the_input_accepts_it(run: RunContext) -> None:
     """Every context name carries the run's, the identity's or the plan's value."""
     command = hook_command({}, run, _ALL_NAMES)
 
@@ -90,14 +90,14 @@ def test_ofrece_el_contexto_del_run_cuando_el_input_lo_acepta(run: RunContext) -
     }
 
 
-def test_filtra_a_los_nombres_aceptados_cuando_el_input_declara_menos(run: RunContext) -> None:
+def test_filters_to_the_accepted_names_when_the_input_declares_fewer(run: RunContext) -> None:
     """Names the Input does not declare never reach it."""
     command = hook_command({"answer": "42"}, run, frozenset({"output", "agent"}))
 
     assert command == {"output": {"answer": "42"}, "agent": "incident-triage"}
 
 
-def test_no_deja_que_el_output_suplante_al_contexto_cuando_comparte_nombres(
+def test_does_not_let_the_output_shadow_the_context_when_names_collide(
     run: RunContext,
 ) -> None:
     """An output field named ``subject`` stays nested; the context wins."""
@@ -107,7 +107,7 @@ def test_no_deja_que_el_output_suplante_al_contexto_cuando_comparte_nombres(
     assert command["output"] == {"subject": "spoofed"}
 
 
-def test_decodifica_un_command_estricto_cuando_se_filtra_a_sus_nombres(run: RunContext) -> None:
+def test_decodes_a_strict_command_when_filtered_to_its_names(run: RunContext) -> None:
     """A ``forbid_unknown_fields`` Command accepts the filtered dict."""
     accepted = frozenset(info.name for info in msgspec.structs.fields(_StrictCommand))
 
@@ -117,28 +117,28 @@ def test_decodifica_un_command_estricto_cuando_se_filtra_a_sus_nombres(run: RunC
     assert seen == frozenset({"output", "interaction_id"})
 
 
-def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(run: RunContext) -> None:
+def test_offers_exactly_the_names_the_compiler_promises(run: RunContext) -> None:
     """The run-time command and the compile-time offer are one contract, not two lists."""
     command = hook_command({}, run, _ALL_NAMES)
 
     assert set(command) == {HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS}
 
 
-def test_ofrece_los_messages_cuando_el_run_los_lleva(run: RunContext) -> None:
+def test_offers_the_messages_when_the_run_carries_them(run: RunContext) -> None:
     """The run's serialised new messages are offered verbatim under ``messages``."""
     command = hook_command({}, run, _ALL_NAMES, messages=b"[]")
 
     assert command[HOOK_MESSAGES_FIELD] == b"[]"
 
 
-def test_filtra_los_messages_cuando_el_input_no_los_declara(run: RunContext) -> None:
+def test_filters_out_the_messages_when_the_input_does_not_declare_them(run: RunContext) -> None:
     """A Command not declaring ``messages`` never receives them."""
     command = hook_command({}, run, frozenset({"output"}), messages=b"[]")
 
     assert command == {"output": {}}
 
 
-def test_ofrece_messages_none_cuando_no_se_indican(run: RunContext) -> None:
+def test_offers_messages_none_when_not_given(run: RunContext) -> None:
     """A single-shot run offers ``None``, so an optional field keeps its default."""
     command = hook_command({}, run, _ALL_NAMES)
 

@@ -57,7 +57,7 @@ def _hooked(spec_factory: Callable[..., AgentSpecV1], key: str, **overrides: Any
     return spec_factory(on_output=OutputHookSpec(usecase=key), **overrides)
 
 
-def test_reporta_usecase_unknown_cuando_la_clave_del_hook_no_esta_registrada(
+def test_reports_usecase_unknown_when_the_hooks_key_is_not_registered(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     triage_registry: UseCaseRegistry,
@@ -75,7 +75,7 @@ def test_reporta_usecase_unknown_cuando_la_clave_del_hook_no_esta_registrada(
     [TypeRefOutput(ref=TRIAGE_REF), JsonSchemaOutput(schema=ANSWER_SCHEMA)],
     ids=["type_ref", "json_schema"],
 )
-def test_compila_el_hook_cuando_el_input_solo_pide_output_y_contexto(
+def test_compiles_the_hook_when_the_input_only_asks_for_output_and_context(
     spec_factory: Callable[..., AgentSpecV1],
     plan_for: Callable[..., Any],
     triage: ModuleType,
@@ -90,7 +90,7 @@ def test_compila_el_hook_cuando_el_input_solo_pide_output_y_contexto(
     assert plan.on_output.accepted == ACCEPTED_NAMES
 
 
-def test_deja_on_output_a_none_cuando_el_artefacto_no_declara_hook(
+def test_leaves_on_output_as_none_when_the_artifact_declares_no_hook(
     spec_factory: Callable[..., AgentSpecV1],
     plan_for: Callable[..., Any],
     triage_registry: UseCaseRegistry,
@@ -113,7 +113,7 @@ def test_deja_on_output_a_none_cuando_el_artefacto_no_declara_hook(
     ],
     ids=["required_name_not_offered", "primitive_parameter", "no_input"],
 )
-def test_reporta_input_unsatisfied_cuando_el_run_no_puede_alimentar_el_input(
+def test_reports_input_unsatisfied_when_the_run_cannot_feed_the_input(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     triage_registry: UseCaseRegistry,
@@ -130,7 +130,7 @@ def test_reporta_input_unsatisfied_cuando_el_run_no_puede_alimentar_el_input(
     assert reason_fragment in issue.message
 
 
-def test_reporta_input_unsatisfied_cuando_el_use_case_no_esta_compilado(
+def test_reports_input_unsatisfied_when_the_use_case_is_not_compiled(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     triage: ModuleType,
@@ -146,7 +146,7 @@ def test_reporta_input_unsatisfied_cuando_el_use_case_no_esta_compilado(
     assert "not compiled" in issue.message
 
 
-def test_reporta_also_granted_cuando_el_hook_tambien_es_capability(
+def test_reports_also_granted_when_the_hook_is_also_a_capability(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     triage_registry: UseCaseRegistry,
@@ -163,7 +163,7 @@ def test_reporta_also_granted_cuando_el_hook_tambien_es_capability(
     )
 
 
-def test_reporta_also_granted_cuando_el_grant_falla_por_otra_clave(
+def test_reports_also_granted_when_the_grant_fails_for_another_key(
     spec_factory: Callable[..., AgentSpecV1],
     issues_for: Callable[..., tuple[AgentCompilationIssue, ...]],
     triage_registry: UseCaseRegistry,
@@ -178,7 +178,7 @@ def test_reporta_also_granted_cuando_el_grant_falla_por_otra_clave(
     assert AgentErrorCode.USECASE_KEY_UNKNOWN in codes
 
 
-def test_no_toca_capabilities_cuando_declara_hook(
+def test_does_not_touch_capabilities_when_declaring_a_hook(
     spec_factory: Callable[..., AgentSpecV1],
     plan_for: Callable[..., Any],
     triage: ModuleType,
@@ -194,7 +194,7 @@ def test_no_toca_capabilities_cuando_declara_hook(
     assert hooked.capabilities[0].use_cases == (triage.CountTriages,)
 
 
-def test_compila_el_hook_cuando_el_input_tambien_pide_messages(
+def test_compiles_the_hook_when_the_input_also_asks_for_messages(
     spec_factory: Callable[..., AgentSpecV1],
     plan_for: Callable[..., Any],
     triage: ModuleType,

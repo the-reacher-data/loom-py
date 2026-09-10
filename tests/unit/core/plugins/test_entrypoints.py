@@ -85,7 +85,7 @@ def _duplicates() -> tuple[_FakeEntryPoint, ...]:
 
 
 class TestDuplicatePolicyError:
-    def test_raises_duplicate_error_cuando_dos_distribuciones_comparten_nombre(
+    def test_raises_duplicate_error_when_two_distributions_share_the_name(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -94,7 +94,7 @@ class TestDuplicatePolicyError:
         with pytest.raises(DuplicateEntryPointError):
             select_entry_point(_GROUP, _NAME, on_duplicate="error")
 
-    def test_error_message_nombra_todas_las_distribuciones_cuando_hay_conflicto(
+    def test_error_message_names_all_distributions_on_conflict(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -108,7 +108,7 @@ class TestDuplicatePolicyError:
             token in message for token in ("loom-engine-alpha", "loom-engine-beta", _GROUP, _NAME)
         )
 
-    def test_raises_duplicate_error_cuando_una_distribucion_es_desconocida(
+    def test_raises_duplicate_error_when_one_distribution_is_unknown(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -121,7 +121,7 @@ class TestDuplicatePolicyError:
         with pytest.raises(DuplicateEntryPointError):
             select_entry_point(_GROUP, _NAME, on_duplicate="error")
 
-    def test_load_entry_point_propaga_duplicate_error_cuando_la_politica_es_error(
+    def test_load_entry_point_propagates_duplicate_error_when_the_policy_is_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -132,7 +132,7 @@ class TestDuplicatePolicyError:
 
 
 class TestDuplicatePolicyWarnFirst:
-    def test_devuelve_el_primer_entry_point_cuando_la_politica_es_warn_first(
+    def test_returns_the_first_entry_point_when_the_policy_is_warn_first(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -143,7 +143,7 @@ class TestDuplicatePolicyWarnFirst:
 
         assert selected is entries[0]
 
-    def test_emite_warning_cuando_hay_duplicados_y_la_politica_es_warn_first(
+    def test_emits_a_warning_when_duplicates_exist_under_warn_first(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
@@ -155,7 +155,7 @@ class TestDuplicatePolicyWarnFirst:
 
         assert [record.levelno for record in caplog.records] == [logging.WARNING]
 
-    def test_warning_nombra_todas_las_distribuciones_y_la_elegida_cuando_hay_duplicados(
+    def test_warning_names_all_distributions_and_the_chosen_one(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
@@ -170,7 +170,7 @@ class TestDuplicatePolicyWarnFirst:
             token in message for token in ("loom-engine-alpha", "loom-engine-beta", _GROUP, _NAME)
         )
 
-    def test_load_entry_point_devuelve_el_objeto_del_primero_cuando_hay_duplicados(
+    def test_load_entry_point_returns_the_first_objects_value_when_duplicates_exist(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -183,7 +183,7 @@ class TestDuplicatePolicyWarnFirst:
 
 
 class TestWithoutDuplicates:
-    def test_devuelve_el_unico_entry_point_cuando_la_politica_es_error(
+    def test_returns_the_sole_entry_point_when_the_policy_is_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -192,7 +192,7 @@ class TestWithoutDuplicates:
 
         assert select_entry_point(_GROUP, _NAME, on_duplicate="error") is entry
 
-    def test_devuelve_el_unico_entry_point_cuando_la_politica_es_warn_first(
+    def test_returns_the_sole_entry_point_when_the_policy_is_warn_first(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -201,7 +201,7 @@ class TestWithoutDuplicates:
 
         assert select_entry_point(_GROUP, _NAME, on_duplicate="warn_first") is entry
 
-    def test_no_emite_warning_cuando_no_hay_duplicados(
+    def test_emits_no_warning_when_there_are_no_duplicates(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
@@ -213,7 +213,7 @@ class TestWithoutDuplicates:
 
         assert caplog.records == []
 
-    def test_ignora_entry_points_de_otro_nombre_cuando_selecciona(
+    def test_selecting_ignores_entry_points_with_a_different_name(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -225,7 +225,7 @@ class TestWithoutDuplicates:
 
 
 class TestMissingEntryPoint:
-    def test_select_devuelve_none_cuando_ningun_entry_point_coincide(
+    def test_select_returns_none_when_no_entry_point_matches(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -233,7 +233,7 @@ class TestMissingEntryPoint:
 
         assert select_entry_point(_GROUP, _NAME, on_duplicate="error") is None
 
-    def test_select_devuelve_none_cuando_el_grupo_esta_vacio(
+    def test_select_returns_none_when_the_group_is_empty(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -241,7 +241,7 @@ class TestMissingEntryPoint:
 
         assert select_entry_point(_GROUP, _NAME, on_duplicate="warn_first") is None
 
-    def test_load_lanza_not_found_cuando_ningun_entry_point_coincide(
+    def test_load_raises_not_found_when_no_entry_point_matches(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -250,7 +250,7 @@ class TestMissingEntryPoint:
         with pytest.raises(EntryPointNotFoundError):
             load_entry_point(_GROUP, _NAME, on_duplicate="error")
 
-    def test_not_found_message_nombra_grupo_y_nombre_cuando_no_hay_entry_point(
+    def test_not_found_message_names_the_group_and_name(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -273,7 +273,7 @@ class TestApiVersionHandshake:
     def _install_target(self, monkeypatch: pytest.MonkeyPatch, target: object) -> None:
         _install(monkeypatch, (_FakeEntryPoint(_NAME, "loom-engine-alpha", target),))
 
-    def test_devuelve_el_objeto_cargado_cuando_la_version_esta_soportada(
+    def test_returns_the_loaded_object_when_the_version_is_supported(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -290,7 +290,7 @@ class TestApiVersionHandshake:
 
         assert loaded is engine
 
-    def test_lanza_mismatch_cuando_falta_el_atributo_de_version(
+    def test_raises_mismatch_when_the_version_attribute_is_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -305,7 +305,7 @@ class TestApiVersionHandshake:
                 api_version=requirement,
             )
 
-    def test_mismatch_message_nombra_atributo_y_soportadas_cuando_falta_el_atributo(
+    def test_mismatch_message_names_the_attribute_and_supported_versions_when_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -324,7 +324,7 @@ class TestApiVersionHandshake:
         assert self.ATTRIBUTE in message
         assert "1" in message
 
-    def test_lanza_mismatch_cuando_la_version_no_esta_soportada(
+    def test_raises_mismatch_when_the_version_is_unsupported(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -341,7 +341,7 @@ class TestApiVersionHandshake:
                 api_version=requirement,
             )
 
-    def test_mismatch_message_nombra_el_valor_visto_cuando_la_version_no_esta_soportada(
+    def test_mismatch_message_names_the_seen_value_when_the_version_is_unsupported(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -360,7 +360,7 @@ class TestApiVersionHandshake:
         message = str(excinfo.value)
         assert all(token in message for token in (self.ATTRIBUTE, "99", "1"))
 
-    def test_lanza_mismatch_cuando_la_version_declarada_es_un_bool(
+    def test_raises_mismatch_when_the_declared_version_is_a_bool(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -377,7 +377,7 @@ class TestApiVersionHandshake:
                 api_version=requirement,
             )
 
-    def test_no_valida_version_cuando_no_se_pide_handshake(
+    def test_skips_version_validation_when_no_handshake_is_requested(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -388,7 +388,7 @@ class TestApiVersionHandshake:
 
 
 class TestErrorHierarchy:
-    def test_todos_los_errores_derivan_de_entry_point_error(self) -> None:
+    def test_all_errors_derive_from_entry_point_error(self) -> None:
         assert all(
             issubclass(error, EntryPointError)
             for error in (
@@ -398,7 +398,7 @@ class TestErrorHierarchy:
             )
         )
 
-    def test_api_version_requirement_es_inmutable(self) -> None:
+    def test_api_version_requirement_is_immutable(self) -> None:
         requirement = ApiVersionRequirement(
             attribute="LOOM_AI_ENGINE_API",
             supported=frozenset({1}),
