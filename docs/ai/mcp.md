@@ -496,8 +496,8 @@ handle's own `handle.mcp(server)`.
 
 The model's own tool calls do **not** take it. They run over the raw
 `MCPToolset`, which reference-counts instead of serialising, so concurrent
-runs keep issuing calls in parallel — see [One connection per server per
-worker](#one-connection-per-server-per-worker).
+runs keep issuing calls in parallel, as the operational notes below
+describe.
 
 The wait counts against this call's own deadline — the server's
 `timeout_ms`, not any plan's `tool_timeout_ms` — and surfaces as
