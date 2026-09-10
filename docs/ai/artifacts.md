@@ -864,6 +864,12 @@ For tools loom itself should call, use `mcp` or `python` instead.
 | `max_iterations` | `12` | `1` | `100` |
 | `run_timeout_ms` | `120000` | `1000` | `1800000` |
 | `max_history_bytes` | `1048576` | `1024` | `67108864` |
+| `max_usd` | *(none)* | `0.01` | `100000` |
+| `max_total_tokens` | *(none)* | `1` | `50000000` |
+| `max_input_tokens_per_request` | *(none)* | `1` | `10000000` |
+| `max_tool_calls` | *(none)* | `1` | `10000` |
+| `max_requests` | `50` | `1` | `1000` |
+| `on_unpriced_spend` | `serve` | — | — |
 
 `run_timeout_ms` bounds the **whole run**, not one capability call.
 `tool_timeout_ms` bounds a single call. `max_history_bytes` caps the serialised
@@ -871,6 +877,202 @@ history a `conversation` loader may return; it is a limit, not trimming — loom
 never edits the history. An out-of-range value is reported as a
 coded issue (`POLICY_OUT_OF_RANGE`) rather than a decoding failure, so it
 accumulates with the other problems in the file instead of hiding them.
+
+### Spend caps
+
+```yaml
+policies:
+  max_usd: 2.00
+  max_total_tokens: 50000
+  max_input_tokens_per_request: 12000
+  max_tool_calls: 30
+  max_requests: 50
+  on_unpriced_spend: serve  # serve (default) | refuse
+```
+
+Each of the five projects onto the engine's own `UsageLimits`
+(`cost_limit`, `total_tokens_limit`, `per_request_input_tokens_limit`,
+`tool_calls_limit`, `request_limit`). A cap left undeclared is `None`, which
+the engine treats as "disable that limit" — an artifact declaring no
+`policies` behaves exactly as it does today.
+
+`UsageLimits` also carries `input_tokens_limit` and `output_tokens_limit`,
+which loom deliberately does not project: `max_total_tokens` and
+`max_input_tokens_per_request` already give an operator the two angles —
+cumulative and per-request — that bound cost, and this artifact does not
+take a position on generation length.
+
+**`max_requests` has always been in force, at `50`.** loom passes no explicit
+usage limits to the engine, and the engine substitutes its own default
+whenever none is given — a `request_limit` of `50`. Every run this pillar has
+ever served has therefore carried this bound; declaring `max_requests` does
+not introduce a new cap, it publishes the number that was already deciding
+outcomes. The default stays `50` so declaring no `policies` block changes
+nothing.
+
+**`max_usd` is elastic, not a hard failsafe: `on_unpriced_spend` decides what
+a run does when its cost cannot be fully computed.** The cost `max_usd`
+measures is computed by `genai-prices`, not reported by the provider, and is
+unavailable for some model/provider combinations, permanently for some and
+only for one request's reported identifiers (a gateway prefix, a Bedrock
+inference profile, an Azure deployment name) for others. Failing a *completed*
+run over that gap destroys work the provider already billed for: the model
+answered, the charge stands either way, and refusing to hand back the answer
+only costs the caller twice. So the default, `on_unpriced_spend: serve`,
+answers anyway and records the gap — in the run's own returned usage
+(`details.unpriced_requests`) and in the engine's health, `degraded`, once
+observed — rather than in a log line nobody watching the caller would ever
+read. `on_unpriced_spend: refuse` is there for an operator who would rather
+lose the answer than risk an unenforced cap; it fails the run coded
+`COST_NOT_MEASURABLE`, distinct from `USAGE_LIMIT_EXCEEDED` — the cap was
+never *evaluated*, not exceeded. `on_unpriced_spend` is inert without
+`max_usd`: there is no cap for it to change the behaviour of.
+
+A YAML artifact parses `max_usd` through a binary double before loom converts
+it to the `Decimal` it enforces, so a literal with more than about 15
+significant digits loses precision; a JSON artifact decodes the same literal
+straight to a `Decimal`, with no such rounding — the same literal can
+therefore mean a different value depending on which format the artifact is
+written in.
+
+**Why a model's cost can be permanently unpriceable.** The cost `max_usd`
+measures is computed by `genai-prices`, not reported by the provider, and is
+`None` when the model or provider cannot be priced. pydantic-ai's own
+response to that is a warning that does not enforce anything
+(`CostNotFoundWarning`), so a run with `max_usd` declared could spend without
+ever being told it was unbounded if nothing watched for it — which is what
+`policies.on_unpriced_spend` and the engine's start-up notice
+(`warn_if_model_not_priceable`) are for. A missing catalogue entry is the
+typical cause, and it is permanent until the catalogue changes; but
+`genai-prices`' own best-effort pricing can also degrade on one response's
+inconsistent cache-token counts, a property of that response, not of the
+model, that a later response from the same model need not repeat. Neither
+the start-up probe nor the per-run guard distinguishes the two causes —
+both are treated the same way.
+
+**`-W error` (or pytest's `filterwarnings = error`) turns `on_unpriced_spend:
+serve` into `refuse`, for every deployment that sets it.** Both
+`CostNotFoundWarning` and `CostCalculationFailedWarning` subclass `Warning`
+directly, not `UserWarning` — unlike pydantic-ai's own deprecation warnings,
+which choose `UserWarning` specifically to stay visible under Python's
+*default* filter. A bare `Warning` is exactly what `-W error` elevates to an
+exception, so under that flag pydantic-ai raises instead of warning, the
+provider call that already returned an answer fails, and
+`loom.ai.engines.pydantic_ai._errors.classify` maps it to
+`COST_NOT_MEASURABLE` (`_errors.py:_EXCEPTION_CODES`) — the same code
+`on_unpriced_spend: refuse` produces on purpose. A strict deployment is
+therefore fail-closed on an unpriced response no matter what
+`on_unpriced_spend` declares: `serve`'s whole point — answer anyway, since the
+provider already billed for it — is silently unavailable, and the caller gets
+a discarded answer and a `500` instead. This is not a bug in `classify`, which
+must recognise the exception once it is raised (see the totality test in
+`tests/unit/ai/engines/test_pydantic_ai_errors.py`, which fails the day
+pydantic-ai adds a third bare `Warning` it does not cover); it is a property
+of running under `-W error` at all. An operator who wants `on_unpriced_spend:
+serve` to mean what it says under a strict interpreter must exempt both
+classes explicitly, narrower than blanket `-W error`, for example
+`-W error -W default::pydantic_ai.exceptions.CostNotFoundWarning -W
+default::pydantic_ai.exceptions.CostCalculationFailedWarning`.
+
+The start-up probe is fed the identifiers the *built* pydantic-ai model
+reports — its `model_name` and its provider's `name` — never loom's own
+`InferenceTarget.provider`, because billing itself prices on the built
+model's reported name; those two diverge for `gateway` and `bedrock`
+bindings. The probe only prices the built model's own identifiers once, at
+start-up, while every run's bill prices whatever the provider's response
+reports for that one request — so the probe is a notice, never a boot
+refusal, and a start-up pass finding nothing does not guarantee every run
+will price cleanly.
+
+**The `degraded` health this sets never clears itself; only restarting the
+worker does.** `PydanticAIEngine._unpriced_spend_observed` is set the first
+time any response in any run prices incompletely and is never reset by a
+later clean run — deliberately, because the gap is usually permanent for the
+bound model (a missing catalogue entry), not a property of one run. It is not
+always the model, though: `genai-prices` can also raise on a single
+response's own inconsistent cache-token counts, which a later response from
+the same model would not repeat — `health()`'s `degraded` detail therefore
+does not name the model as the cause, only that a response was seen unpriced.
+`details.unpriced_requests`, on a *served* run's own returned usage, says how
+many of that run's responses priced incompletely; it does not say which of
+the two causes produced that count, and a *refused* run carries no
+`details.unpriced_requests` at all — neither cause is distinguishable at
+this layer, for either kind of run.
+
+**A spend cap bounds one run, not a conversation, and the whole retried run,
+not one attempt.** Every run builds a fresh accounting object, so a
+multi-turn thread has no cap on what it spends across its turns — only on
+what any one of them does. Within one run, loom's provider-retry loop hands
+the same accumulating usage object to every retried attempt, so a cumulative
+cap such as `max_usd` or `max_total_tokens` is checked against everything the
+run has spent so far, across every attempt — which is what an operator
+writing `max_usd` means.
+
+**`RunUsage.cost` staying set does not mean every response priced.** It only
+*accumulates* the responses that did; a run of twelve requests where eleven
+price and one does not still reports a cost. `on_unpriced_spend` and
+`details.unpriced_requests` read the run's own responses, not that
+accumulator, to catch exactly that case — and "the run's own" is literal: a
+multi-turn conversation's injected history is excluded, so a prior turn's
+already-billed, already-evaluated response never counts a second time against
+this run's `max_usd`.
+
+`details.unpriced_requests` is counted from the *winning* attempt's messages
+alone. Because loom's provider-retry loop starts every retried attempt from
+the same conversation, an unpriced response made by an attempt that later
+failed and was retried never reaches the winning attempt's history and is
+not counted — a known gap, because loom does not wrap each attempt in
+pydantic-ai's own `capture_run_messages`, which is built for exactly this
+case and captures even a failed or interrupted attempt's partial messages;
+this is a loom choice, not a pydantic-ai limitation.
+
+**`max_input_tokens_per_request` is enforced after the fact, not
+preemptively.** The engine checks it against the provider's reported input
+token count once the response has already been sent and billed — the request
+that first exceeds it still runs and still costs, and the run fails right
+there, at that same request, rather than reaching a next one. The engine has
+a preemptive mode
+(`count_tokens_before_request`) that counts tokens ahead of the request, but
+it is a per-model opt-in most providers this release binds do not implement
+(notably `OpenAIChatModel`, which serves both `openai` and `gateway`), so
+loom does not enable it: doing so unconditionally would raise on the very
+first request for every model that does not support it.
+
+**`max_usd` and `max_total_tokens` are enforced after the fact too, not
+preemptively.** The engine checks `cost_limit` and `total_tokens_limit`
+against what the run has already spent or already used *before* sending
+each request, and again against the updated total once the response
+arrives — in both cases, the request that first pushes the run over the cap
+has already been sent and billed, and the run fails right there, at that
+same request, rather than reaching a next one. The overspend either cap allows
+is therefore bounded by the cost
+or token count of one request, not by zero. `max_tool_calls` does not share
+this mechanic: the engine checks its projected count against the tool calls
+a step is about to run *before* running any of them, so it is genuinely
+preemptive — none of that step's tool calls execute if the batch would
+cross the cap.
+
+### `max_iterations` versus `max_tool_calls`
+
+The two count different things, and an operator who only knows about one of
+them will eventually trip on the other:
+
+- **`max_iterations`** (default `12`) is counted by loom's own supervisor,
+  over the event stream — it increments once per `ToolCallEvent` the
+  supervisor observes, never once per model response. A step that answers
+  without calling a tool does not increment it at all, and a step whose
+  model calls several tools in parallel increments it once per call, all
+  within that one model request.
+- **`max_tool_calls`** is counted by the engine, over *successful* tool
+  calls (`UsageLimits.tool_calls_limit`), checked before a step's tool
+  calls run — the two caps overlap in what they watch but are not the same
+  count, and a breach of either surfaces as a different error code:
+  `MAX_ITERATIONS_EXCEEDED` for `max_iterations`, `USAGE_LIMIT_EXCEEDED`
+  for `max_tool_calls`.
+
+Reach for `max_iterations` to bound how many tool calls loom's own
+supervisor lets a run make before giving up; reach for `max_tool_calls` (or
+the other spend caps above) to bound what a run may cost the provider.
 
 ## Validating offline
 

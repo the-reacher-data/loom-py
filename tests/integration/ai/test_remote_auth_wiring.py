@@ -83,7 +83,7 @@ def _header_on_the_wire(flavour: str, auth: Any, name: str) -> str | None:
 
 def _transport(capability: CompiledMcpCapability) -> Any:
     """Build the toolset and return the transport its client will speak through."""
-    return build_mcp_toolset(capability).client.transport
+    return build_mcp_toolset(capability, init_timeout=10.0).client.transport
 
 
 @pytest.fixture(autouse=True)

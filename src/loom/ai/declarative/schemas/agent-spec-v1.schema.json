@@ -371,6 +371,46 @@
           "minimum": 1024,
           "maximum": 67108864,
           "default": 1048576
+        },
+        "max_usd": {
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 100000.0,
+          "description": "Cumulative spend ceiling in US dollars for the whole run, including every retried attempt. Absent disables the cap. See 'Spend caps' in docs/ai/artifacts.md for enforcement timing and the YAML/JSON precision difference."
+        },
+        "max_total_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50000000,
+          "description": "Cumulative input-plus-output token ceiling for the whole run. Absent disables the cap. Enforced after the fact, the same way as max_usd; see 'Spend caps' in docs/ai/artifacts.md."
+        },
+        "max_input_tokens_per_request": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000,
+          "description": "Ceiling on the input tokens of any one request in the run. Absent disables the cap. Enforced after the fact, the same way as max_usd; see 'Spend caps' in docs/ai/artifacts.md."
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Cumulative successful tool-call ceiling for the whole run. Absent disables the cap. Preemptive, unlike the caps above; see 'Spend caps' in docs/ai/artifacts.md."
+        },
+        "max_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 50,
+          "description": "Cumulative model-request ceiling for the whole run, counted by the engine. Defaults to 50, the engine's own default substituted whenever no limits are passed; see 'Spend caps' in docs/ai/artifacts.md."
+        },
+        "on_unpriced_spend": {
+          "type": "string",
+          "enum": [
+            "serve",
+            "refuse"
+          ],
+          "default": "serve",
+          "description": "What a run does when max_usd is declared and at least one of its model responses could not be priced. Inert when max_usd is absent; see 'Spend caps' in docs/ai/artifacts.md."
         }
       }
     }

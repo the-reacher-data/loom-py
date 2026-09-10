@@ -16,6 +16,7 @@ minimum and maximum from them so the schema cannot drift from the structs.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Annotated, Any, Final, Literal, get_args
 
 import msgspec
@@ -60,6 +61,34 @@ RUN_TIMEOUT_MS_MAX: Final[int] = 1800000
 MAX_HISTORY_BYTES_DEFAULT: Final[int] = 1_048_576
 MAX_HISTORY_BYTES_MIN: Final[int] = 1_024
 MAX_HISTORY_BYTES_MAX: Final[int] = 67_108_864
+
+MAX_USD_MIN: Final[Decimal] = Decimal("0.01")
+MAX_USD_MAX: Final[Decimal] = Decimal("100000")
+
+MAX_TOTAL_TOKENS_MIN: Final[int] = 1
+MAX_TOTAL_TOKENS_MAX: Final[int] = 50_000_000
+
+MAX_INPUT_TOKENS_PER_REQUEST_MIN: Final[int] = 1
+MAX_INPUT_TOKENS_PER_REQUEST_MAX: Final[int] = 10_000_000
+
+MAX_TOOL_CALLS_MIN: Final[int] = 1
+MAX_TOOL_CALLS_MAX: Final[int] = 10_000
+
+MAX_REQUESTS_DEFAULT: Final[int] = 50
+"""``UsageLimits.request_limit``'s own default, substituted by
+:meth:`~pydantic_ai.Agent.iter` whenever loom passes no ``usage_limits``.
+Every run has always carried this bound; this constant publishes the number
+that was already in force."""
+MAX_REQUESTS_MIN: Final[int] = 1
+MAX_REQUESTS_MAX: Final[int] = 1_000
+
+UnpricedSpendPolicy = Literal["serve", "refuse"]
+"""What a run does when ``max_usd`` is declared but its cost could not be
+fully computed. ``serve`` answers with the gap recorded; ``refuse`` fails
+the run instead."""
+
+ON_UNPRICED_SPEND_POLICIES: Final[tuple[UnpricedSpendPolicy, ...]] = get_args(UnpricedSpendPolicy)
+ON_UNPRICED_SPEND_DEFAULT: Final[UnpricedSpendPolicy] = "serve"
 
 NativeToolName = Literal["web_search", "web_fetch", "code_execution"]
 """Tool the model provider runs in its own infrastructure, by its stable v1 name.
@@ -341,15 +370,46 @@ class PolicySpec(
 
     Ranges are published as module constants and enforced by a later
     compilation phase, so an out-of-range value is reported as a coded issue
-    rather than as a decoding failure.
+    rather than as a decoding failure. See "Spend caps" and "``max_iterations``
+    versus ``max_tool_calls``" in ``docs/ai/artifacts.md`` for the rationale
+    behind the fields below.
 
     Args:
         retries:         Attempts the engine makes before a failure is final.
         tool_timeout_ms: Deadline of a single tool call.
-        max_iterations:  Maximum reason/act iterations in one run.
+        max_iterations:  Maximum ``ToolCallEvent``\\ s loom's own supervisor
+            observes over the event stream in one run; see "``max_iterations``
+            versus ``max_tool_calls``" in ``docs/ai/artifacts.md`` for how it
+            differs from ``max_tool_calls``.
         run_timeout_ms:  Deadline of a whole run.
         max_history_bytes: Ceiling, in bytes, of the history a ``conversation``
             loader may return; a longer one fails the run.
+        max_usd:         Cumulative spend ceiling in US dollars for one run,
+            including every retried attempt — not for a ``conversation``.
+            ``None`` disables the cap. Projects onto
+            ``UsageLimits.cost_limit``; see "Spend caps" in
+            ``docs/ai/artifacts.md`` for enforcement timing and the
+            YAML/JSON precision difference.
+        max_total_tokens: Cumulative input-plus-output token ceiling for the
+            whole run. ``None`` disables the cap. Projects onto
+            ``UsageLimits.total_tokens_limit``; see "Spend caps" in
+            ``docs/ai/artifacts.md``.
+        max_input_tokens_per_request: Ceiling on the input tokens of any one
+            request in the run. ``None`` disables the cap. Projects onto
+            ``UsageLimits.per_request_input_tokens_limit``; see "Spend caps"
+            in ``docs/ai/artifacts.md``.
+        max_tool_calls:  Cumulative successful tool-call ceiling for the whole
+            run. ``None`` disables the cap. Projects onto
+            ``UsageLimits.tool_calls_limit``; see "Spend caps" in
+            ``docs/ai/artifacts.md``.
+        max_requests:    Cumulative model-request ceiling for the whole run,
+            counted by the engine. Defaults to ``MAX_REQUESTS_DEFAULT``.
+            Projects onto ``UsageLimits.request_limit``; see "Spend caps" in
+            ``docs/ai/artifacts.md``.
+        on_unpriced_spend: What a run does when ``max_usd`` is declared and
+            at least one of its model responses could not be priced. Inert
+            when ``max_usd`` is absent; see "Spend caps" in
+            ``docs/ai/artifacts.md``.
     """
 
     retries: int = RETRIES_DEFAULT
@@ -357,6 +417,12 @@ class PolicySpec(
     max_iterations: int = MAX_ITERATIONS_DEFAULT
     run_timeout_ms: int = RUN_TIMEOUT_MS_DEFAULT
     max_history_bytes: int = MAX_HISTORY_BYTES_DEFAULT
+    max_usd: Decimal | None = None
+    max_total_tokens: int | None = None
+    max_input_tokens_per_request: int | None = None
+    max_tool_calls: int | None = None
+    max_requests: int = MAX_REQUESTS_DEFAULT
+    on_unpriced_spend: UnpricedSpendPolicy = ON_UNPRICED_SPEND_DEFAULT
 
 
 class AgentSpecV1(

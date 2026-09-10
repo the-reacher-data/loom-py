@@ -117,6 +117,48 @@ def test_las_politicas_emitidas_declaran_max_history_bytes_cuando_se_construye_e
     }
 
 
+def test_max_requests_publishes_fifty_as_its_default_when_emitted() -> None:
+    """``max_requests`` publishes the engine's own always-in-force default (FR-041)."""
+    assert _policy_properties(_emitted())["max_requests"]["default"] == 50
+    assert _policy_properties(_emitted())["max_requests"]["minimum"] == 1
+
+
+def test_emitted_policies_declare_the_five_spend_caps() -> None:
+    """Every spend cap of FR-040 is part of the published policy vocabulary."""
+    properties = _policy_properties(_emitted())
+    assert {
+        "max_usd",
+        "max_total_tokens",
+        "max_input_tokens_per_request",
+        "max_tool_calls",
+        "max_requests",
+    } <= set(properties)
+    assert properties["max_usd"]["type"] == "number"
+    assert "default" not in properties["max_usd"]
+
+
+def test_the_published_schema_accepts_the_five_spend_caps_when_declared() -> None:
+    """An artifact declaring every spend cap validates against the published schema."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["policies"] = {
+        "max_usd": 2.0,
+        "max_total_tokens": 50000,
+        "max_input_tokens_per_request": 12000,
+        "max_tool_calls": 30,
+        "max_requests": 50,
+    }
+
+    assert _schema_errors(payload) == []
+
+
+def test_the_published_schema_rejects_a_spend_cap_out_of_range() -> None:
+    """A cap outside its published range is rejected offline, before compilation."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["policies"] = {"max_requests": 0}
+
+    assert _schema_errors(payload) != []
+
+
 def test_la_capacidad_sql_emitida_exige_las_cotas_de_resultado_cuando_se_construye() -> None:
     """An unbounded query is not representable: both bounds are required (FR-046b)."""
     assert _sql_variant(_emitted())["required"] == [

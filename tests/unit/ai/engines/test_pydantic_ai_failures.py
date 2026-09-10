@@ -14,13 +14,22 @@ import pytest
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import AgentStreamEvent
 
+from loom.ai.abc import AgentEngine
+from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.engines.pydantic_ai._errors import classify
 from loom.ai.engines.pydantic_ai._events import IGNORED_EVENT_KINDS, MAPPED_EVENT_KINDS
 from loom.ai.errors import AgentRunErrorClass, AgentRunErrorCode, is_retriable, run_error_class
 from loom.ai.runtime import AgentRunError
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
-from tests.helpers.pydantic_ai_engine import NullDeps, failing_model, make_plan
+from tests.helpers.pydantic_ai_engine import (
+    NullDeps,
+    answering_model,
+    build_engine,
+    encode,
+    failing_model,
+    make_plan,
+)
 
 _IDENTITY = Identity(subject="caller")
 
@@ -120,6 +129,31 @@ class TestEventCoverage:
         assert phantom == {"agent_run_result"}, "only the terminal event lives outside the union"
 
 
+class TestTheUnreachableGuardStaysUnclassified:
+    """``_events`` checks its own contract with pydantic-ai — every attempt
+    appends exactly one result before its stream ends — outside the
+    ``try``/``except`` that classifies provider and policy failures. A
+    violation must surface as ``AssertionError``, never be folded into
+    ``PROVIDER_UNAVAILABLE`` and reported as a retriable outage."""
+
+    async def test_a_violated_contract_raises_assertion_error_not_provider_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _attempt_that_never_reports_its_outcome(
+            *args: object, **kwargs: object
+        ) -> typing.AsyncIterator[object]:
+            return
+            yield  # pragma: no cover - unreachable, makes this an async generator
+
+        monkeypatch.setattr(PydanticAIEngine, "_one_run", _attempt_that_never_reports_its_outcome)
+        engine = build_engine(make_plan(), answering_model(encode({"answer": "42"})))
+
+        with pytest.raises(AssertionError, match="unreachable"):
+            async with engine.run_stream("hi", identity=_IDENTITY) as stream:
+                async for _ in stream:
+                    pass
+
+
 class _AttemptCounter:
     """Callable raising the same failure and counting how often it was asked."""
 
@@ -136,7 +170,7 @@ def _attempt_counter(error: Exception) -> _AttemptCounter:
     return _AttemptCounter(error)
 
 
-def _engine(*, retries: int, failure: _AttemptCounter) -> object:
+def _engine(*, retries: int, failure: _AttemptCounter) -> AgentEngine:
     from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
 
     provider = PydanticAIEngineProvider(model_resolver=lambda target: failing_model(failure))

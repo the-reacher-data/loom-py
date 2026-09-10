@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from loom.ai.abc import ConcurrentMcpSession, McpToolCallResult, McpToolInfo
 from loom.ai.compiler import CompiledMcpCapability, mcp_connection
@@ -48,6 +48,15 @@ from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
 if TYPE_CHECKING:
     from fastmcp.client.transports import ClientTransport
     from pydantic_ai.mcp import MCPToolset
+
+DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS: Final[float] = 10.0
+"""Fallback handshake deadline, seconds, matching
+:attr:`~loom.ai.config.AiConfig.startup_timeout_ms`'s own default. Production
+never relies on this: the composition root always hands
+:class:`SharedMcpToolsets` the deployment's real ``ai.startup_timeout_ms``.
+Used only by a direct construction — a test, a diagnostic — so it still
+carries a deadline rather than falling through to
+:class:`~pydantic_ai.mcp.MCPToolset`'s own ``5``-second default."""
 
 
 class _ToolsetSession(ConcurrentMcpSession):
@@ -121,7 +130,7 @@ class _ToolsetSession(ConcurrentMcpSession):
         return McpToolCallResult(ok=not result.is_error, structured=result.structured_content)
 
 
-def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
+def build_mcp_toolset(capability: CompiledMcpCapability, *, init_timeout: float) -> MCPToolset[Any]:
     """Build the unfiltered toolset of one grant, applying its connection rules.
 
     The credential is applied exactly as the deployment declared it: fixed
@@ -130,9 +139,18 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     declares neither is connected exactly as before, which is what lets one
     artifact move between environments unchanged.
 
+    ``read_timeout``, derived from ``capability.timeout_ms``, governs one
+    call's deadline for the HTTP-streamable transport; under the SSE
+    transport, whenever this call builds the transport explicitly (the
+    server declares ``headers_ref`` or ``auth``), the same value also
+    becomes the server's idle-event-stream deadline. See "The handshake
+    deadline vs. the call deadline" in ``docs/ai/mcp.md``.
+
     Args:
         capability: Compiled grant carrying the validated address of its
             transport and the credential resolved for it.
+        init_timeout: Seconds to wait for the connection and the
+            ``initialize`` handshake, derived from ``ai.startup_timeout_ms``.
 
     Returns:
         The unfiltered, not yet connected toolset; the caller applies the
@@ -146,7 +164,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
 
     Example::
 
-        toolset = build_mcp_toolset(capability)
+        toolset = build_mcp_toolset(capability, init_timeout=10.0)
     """
     try:
         from pydantic_ai.mcp import MCPToolset
@@ -156,12 +174,19 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     client = _mcp_client(component, capability)
     headers = headers_from_ref(component, capability.headers_ref) or None
     auth = shared_mcp_auth(capability.server, capability.auth)
+    read_timeout = capability.timeout_ms / 1000
     # ``MCPToolset`` annotates auth as ``httpx.Auth | Literal['oauth'] | str | None``,
     # which admits no callable, while what really consumes it is fastmcp's HTTP
     # transport: its ``_set_auth`` special-cases only ``"oauth"``, ``OAuth``, the
     # OAuth providers and ``str``, and hands anything else to its ``httpx2`` client
     # untouched — including the callable loom's own strategies return.
-    toolset: MCPToolset[Any] = MCPToolset(client, headers=headers, auth=cast("Any", auth))
+    toolset: MCPToolset[Any] = MCPToolset(
+        client,
+        headers=headers,
+        auth=cast("Any", auth),
+        init_timeout=init_timeout,
+        read_timeout=read_timeout,
+    )
     return toolset
 
 
@@ -249,16 +274,40 @@ class SharedMcpToolsets:
     never evicted, and an ``MCPToolset`` re-entered from a second event loop
     would reuse a lock bound to the first.
 
+    This per-server deadline never fires first in production — see "The
+    per-server handshake deadline never fires first" in ``docs/ai/mcp.md``.
+
+    Every toolset built by an instance waits
+    :data:`DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS` for its connection and
+    ``initialize`` handshake unless :meth:`set_connect_timeout` replaces that
+    deadline; production is handed the deployment's real
+    ``ai.startup_timeout_ms`` that way.
+
     Example::
 
         shared = SharedMcpToolsets()
+        shared.set_connect_timeout(10.0)
         async with shared.open(capability) as session:
             names = await session.list_tools()
     """
 
     def __init__(self) -> None:
+        self._init_timeout = DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS
         self._toolsets: dict[CompiledMcpCapability, MCPToolset[Any]] = {}
         self._opened: set[CompiledMcpCapability] = set()
+
+    def set_connect_timeout(self, seconds: float) -> None:
+        """Replace the handshake deadline every toolset built after this call waits for.
+
+        Has no effect on a connection whose toolset :meth:`_toolset` already
+        built: the deadline is read once, at build, not on every connect.
+        Callers that need the deployment's real ``ai.startup_timeout_ms``
+        must call this before the runtime opens any client.
+
+        Args:
+            seconds: New handshake deadline, in seconds.
+        """
+        self._init_timeout = seconds
 
     def for_build(self, capability: CompiledMcpCapability, agent: str) -> MCPToolset[Any]:
         """Return the shared toolset an agent's ``mcp`` grant must run over.
@@ -291,7 +340,7 @@ class SharedMcpToolsets:
         existing = self._toolsets.get(connection)
         if existing is not None:
             return existing
-        built = build_mcp_toolset(connection)
+        built = build_mcp_toolset(connection, init_timeout=self._init_timeout)
         self._toolsets[connection] = built
         return built
 
@@ -325,7 +374,9 @@ class SharedMcpToolsets:
 
 
 @asynccontextmanager
-async def create_mcp_client(capability: CompiledMcpCapability) -> AsyncIterator[_ToolsetSession]:
+async def create_mcp_client(
+    capability: CompiledMcpCapability,
+) -> AsyncIterator[_ToolsetSession]:
     """Open one throw-away session against an MCP server, outside any sharing.
 
     Kept for a caller that needs a session of its own — a diagnostic, a probe,
@@ -350,6 +401,6 @@ async def create_mcp_client(capability: CompiledMcpCapability) -> AsyncIterator[
         async with create_mcp_client(capability) as session:
             names = await session.list_tools()
     """
-    toolset = build_mcp_toolset(capability)
+    toolset = build_mcp_toolset(capability, init_timeout=DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS)
     async with toolset:
         yield _ToolsetSession(toolset)

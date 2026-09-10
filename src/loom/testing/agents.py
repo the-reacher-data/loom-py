@@ -305,6 +305,17 @@ async def _check_usage_only_on_final(
         )
 
 
+_NEVER_RETRIED_DESPITE_INFRASTRUCTURE: frozenset[AgentRunErrorCode] = frozenset(
+    {AgentRunErrorCode.COST_NOT_MEASURABLE}
+)
+"""Codes FR-028's own class-implies-retriable rule does not hold for.
+
+Kept as a closed, documented list rather than only inferred from
+:func:`~loom.ai.errors.is_retriable`'s behaviour, so a future code added to
+that function's private carve-out without updating this contract fails the
+assertion below."""
+
+
 async def _check_error_code_taxonomy(
     factory: Callable[[ContractScenario], AgentEngine],
 ) -> None:
@@ -313,9 +324,13 @@ async def _check_error_code_taxonomy(
         terminal = events[-1]
         assert isinstance(terminal, ErrorEvent), f"the stream for {code} must end in an ErrorEvent"
         assert terminal.code is code, f"ErrorEvent.code must be {code}, got {terminal.code}"
-        retriable = run_error_class(code) is AgentRunErrorClass.INFRASTRUCTURE
+        retriable = (
+            run_error_class(code) is AgentRunErrorClass.INFRASTRUCTURE
+            and code not in _NEVER_RETRIED_DESPITE_INFRASTRUCTURE
+        )
         assert is_retriable(code) == retriable, (
-            f"is_retriable({code}) must be True iff its class is INFRASTRUCTURE (FR-028)"
+            f"is_retriable({code}) must be True iff its class is INFRASTRUCTURE (FR-028), "
+            f"except the documented codes in _NEVER_RETRIED_DESPITE_INFRASTRUCTURE"
         )
 
 

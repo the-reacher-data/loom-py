@@ -10,8 +10,18 @@ from loom.ai.declarative import PolicySpec
 from loom.ai.declarative._v1 import (
     MAX_HISTORY_BYTES_MAX,
     MAX_HISTORY_BYTES_MIN,
+    MAX_INPUT_TOKENS_PER_REQUEST_MAX,
+    MAX_INPUT_TOKENS_PER_REQUEST_MIN,
     MAX_ITERATIONS_MAX,
     MAX_ITERATIONS_MIN,
+    MAX_REQUESTS_MAX,
+    MAX_REQUESTS_MIN,
+    MAX_TOOL_CALLS_MAX,
+    MAX_TOOL_CALLS_MIN,
+    MAX_TOTAL_TOKENS_MAX,
+    MAX_TOTAL_TOKENS_MIN,
+    MAX_USD_MAX,
+    MAX_USD_MIN,
     RETRIES_MAX,
     RETRIES_MIN,
     RUN_TIMEOUT_MS_MAX,
@@ -21,6 +31,9 @@ from loom.ai.declarative._v1 import (
 )
 from loom.ai.errors import AgentCompilationIssue, policy_out_of_range
 
+# Every policy field whose value is an ``int``. ``max_usd`` is deliberately
+# absent: it is a ``Decimal`` on ``PolicySpec`` and gets its own check below
+# instead of widening this table's value type for one entry out of nine.
 _POLICY_RANGES: Final[Mapping[str, tuple[int, int]]] = MappingProxyType(
     {
         "retries": (RETRIES_MIN, RETRIES_MAX),
@@ -28,12 +41,23 @@ _POLICY_RANGES: Final[Mapping[str, tuple[int, int]]] = MappingProxyType(
         "max_iterations": (MAX_ITERATIONS_MIN, MAX_ITERATIONS_MAX),
         "run_timeout_ms": (RUN_TIMEOUT_MS_MIN, RUN_TIMEOUT_MS_MAX),
         "max_history_bytes": (MAX_HISTORY_BYTES_MIN, MAX_HISTORY_BYTES_MAX),
+        "max_total_tokens": (MAX_TOTAL_TOKENS_MIN, MAX_TOTAL_TOKENS_MAX),
+        "max_input_tokens_per_request": (
+            MAX_INPUT_TOKENS_PER_REQUEST_MIN,
+            MAX_INPUT_TOKENS_PER_REQUEST_MAX,
+        ),
+        "max_tool_calls": (MAX_TOOL_CALLS_MIN, MAX_TOOL_CALLS_MAX),
+        "max_requests": (MAX_REQUESTS_MIN, MAX_REQUESTS_MAX),
     }
 )
 
 
 def validate_policies(policies: PolicySpec, component: str) -> list[AgentCompilationIssue]:
     """Check every policy value against its published inclusive range.
+
+    An absent optional cap (``None``) is never out of range: FR-042 documents
+    ``None`` as "disable that limit", so the guard clause below skips it
+    rather than reporting a fault.
 
     Args:
         policies: Declared execution limits.
@@ -44,7 +68,13 @@ def validate_policies(policies: PolicySpec, component: str) -> list[AgentCompila
     """
     issues: list[AgentCompilationIssue] = []
     for name, (minimum, maximum) in _POLICY_RANGES.items():
-        value: int = getattr(policies, name)
+        value: int | None = getattr(policies, name)
+        if value is None:
+            continue
         if value < minimum or value > maximum:
             issues.append(policy_out_of_range(component, name, value, minimum, maximum))
+    if policies.max_usd is not None and not MAX_USD_MIN <= policies.max_usd <= MAX_USD_MAX:
+        issues.append(
+            policy_out_of_range(component, "max_usd", policies.max_usd, MAX_USD_MIN, MAX_USD_MAX)
+        )
     return issues

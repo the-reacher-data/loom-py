@@ -33,11 +33,24 @@ from ._v1 import (
     MAX_HISTORY_BYTES_DEFAULT,
     MAX_HISTORY_BYTES_MAX,
     MAX_HISTORY_BYTES_MIN,
+    MAX_INPUT_TOKENS_PER_REQUEST_MAX,
+    MAX_INPUT_TOKENS_PER_REQUEST_MIN,
     MAX_ITERATIONS_DEFAULT,
     MAX_ITERATIONS_MAX,
     MAX_ITERATIONS_MIN,
+    MAX_REQUESTS_DEFAULT,
+    MAX_REQUESTS_MAX,
+    MAX_REQUESTS_MIN,
+    MAX_TOOL_CALLS_MAX,
+    MAX_TOOL_CALLS_MIN,
+    MAX_TOTAL_TOKENS_MAX,
+    MAX_TOTAL_TOKENS_MIN,
+    MAX_USD_MAX,
+    MAX_USD_MIN,
     MODEL_ROLE_PATTERN,
     NATIVE_TOOLS,
+    ON_UNPRICED_SPEND_DEFAULT,
+    ON_UNPRICED_SPEND_POLICIES,
     RETRIES_DEFAULT,
     RETRIES_MAX,
     RETRIES_MIN,
@@ -355,6 +368,104 @@ def _v1_conversation_def() -> dict[str, Any]:
     }
 
 
+def _policy_properties() -> dict[str, Any]:
+    return {
+        "retries": {
+            "type": "integer",
+            "minimum": RETRIES_MIN,
+            "maximum": RETRIES_MAX,
+            "default": RETRIES_DEFAULT,
+        },
+        "tool_timeout_ms": {
+            "type": "integer",
+            "minimum": TOOL_TIMEOUT_MS_MIN,
+            "maximum": TOOL_TIMEOUT_MS_MAX,
+            "default": TOOL_TIMEOUT_MS_DEFAULT,
+        },
+        "max_iterations": {
+            "type": "integer",
+            "minimum": MAX_ITERATIONS_MIN,
+            "maximum": MAX_ITERATIONS_MAX,
+            "default": MAX_ITERATIONS_DEFAULT,
+        },
+        "run_timeout_ms": {
+            "type": "integer",
+            "minimum": RUN_TIMEOUT_MS_MIN,
+            "maximum": RUN_TIMEOUT_MS_MAX,
+            "default": RUN_TIMEOUT_MS_DEFAULT,
+        },
+        "max_history_bytes": {
+            "type": "integer",
+            "minimum": MAX_HISTORY_BYTES_MIN,
+            "maximum": MAX_HISTORY_BYTES_MAX,
+            "default": MAX_HISTORY_BYTES_DEFAULT,
+        },
+        "max_usd": {
+            "type": "number",
+            "minimum": float(MAX_USD_MIN),
+            "maximum": float(MAX_USD_MAX),
+            "description": (
+                "Cumulative spend ceiling in US dollars for the whole run, "
+                "including every retried attempt. Absent disables the cap. "
+                "See 'Spend caps' in docs/ai/artifacts.md for enforcement "
+                "timing and the YAML/JSON precision difference."
+            ),
+        },
+        "max_total_tokens": {
+            "type": "integer",
+            "minimum": MAX_TOTAL_TOKENS_MIN,
+            "maximum": MAX_TOTAL_TOKENS_MAX,
+            "description": (
+                "Cumulative input-plus-output token ceiling for the whole "
+                "run. Absent disables the cap. Enforced after the fact, the "
+                "same way as max_usd; see 'Spend caps' in docs/ai/artifacts.md."
+            ),
+        },
+        "max_input_tokens_per_request": {
+            "type": "integer",
+            "minimum": MAX_INPUT_TOKENS_PER_REQUEST_MIN,
+            "maximum": MAX_INPUT_TOKENS_PER_REQUEST_MAX,
+            "description": (
+                "Ceiling on the input tokens of any one request in the run. "
+                "Absent disables the cap. Enforced after the fact, the same "
+                "way as max_usd; see 'Spend caps' in docs/ai/artifacts.md."
+            ),
+        },
+        "max_tool_calls": {
+            "type": "integer",
+            "minimum": MAX_TOOL_CALLS_MIN,
+            "maximum": MAX_TOOL_CALLS_MAX,
+            "description": (
+                "Cumulative successful tool-call ceiling for the whole run. "
+                "Absent disables the cap. Preemptive, unlike the caps above; "
+                "see 'Spend caps' in docs/ai/artifacts.md."
+            ),
+        },
+        "max_requests": {
+            "type": "integer",
+            "minimum": MAX_REQUESTS_MIN,
+            "maximum": MAX_REQUESTS_MAX,
+            "default": MAX_REQUESTS_DEFAULT,
+            "description": (
+                "Cumulative model-request ceiling for the whole run, counted "
+                "by the engine. Defaults to 50, the engine's own default "
+                "substituted whenever no limits are passed; see 'Spend "
+                "caps' in docs/ai/artifacts.md."
+            ),
+        },
+        "on_unpriced_spend": {
+            "type": "string",
+            "enum": list(ON_UNPRICED_SPEND_POLICIES),
+            "default": ON_UNPRICED_SPEND_DEFAULT,
+            "description": (
+                "What a run does when max_usd is declared and at least one "
+                "of its model responses could not be priced. Inert when "
+                "max_usd is absent; see 'Spend caps' in docs/ai/artifacts.md."
+            ),
+        },
+    }
+
+
 def _v1_defs() -> dict[str, Any]:
     return {
         "output": _v1_output_def(),
@@ -374,38 +485,7 @@ def _v1_defs() -> dict[str, Any]:
         "policies": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {
-                "retries": {
-                    "type": "integer",
-                    "minimum": RETRIES_MIN,
-                    "maximum": RETRIES_MAX,
-                    "default": RETRIES_DEFAULT,
-                },
-                "tool_timeout_ms": {
-                    "type": "integer",
-                    "minimum": TOOL_TIMEOUT_MS_MIN,
-                    "maximum": TOOL_TIMEOUT_MS_MAX,
-                    "default": TOOL_TIMEOUT_MS_DEFAULT,
-                },
-                "max_iterations": {
-                    "type": "integer",
-                    "minimum": MAX_ITERATIONS_MIN,
-                    "maximum": MAX_ITERATIONS_MAX,
-                    "default": MAX_ITERATIONS_DEFAULT,
-                },
-                "run_timeout_ms": {
-                    "type": "integer",
-                    "minimum": RUN_TIMEOUT_MS_MIN,
-                    "maximum": RUN_TIMEOUT_MS_MAX,
-                    "default": RUN_TIMEOUT_MS_DEFAULT,
-                },
-                "max_history_bytes": {
-                    "type": "integer",
-                    "minimum": MAX_HISTORY_BYTES_MIN,
-                    "maximum": MAX_HISTORY_BYTES_MAX,
-                    "default": MAX_HISTORY_BYTES_DEFAULT,
-                },
-            },
+            "properties": _policy_properties(),
         },
     }
 

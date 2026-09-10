@@ -16,6 +16,7 @@ import pytest
 
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.registry import (
+    configure_engine_mcp_connect_timeout,
     require_provider_sdk,
     require_provider_setting,
     resolve_engine_provider,
@@ -238,3 +239,41 @@ class TestProviderHelpers:
             require_provider_setting("bedrock", "region", None)
 
         assert "region" in str(excinfo.value)
+
+
+class TestConfigureEngineMcpConnectTimeout:
+    """FR-051: the deployment's handshake budget reaches the engine (structurally)."""
+
+    def test_calls_the_providers_method_when_it_exists(self) -> None:
+        """Read with ``getattr``, exactly as documented: called when present."""
+        calls: list[float] = []
+
+        class _Provider:
+            def configure_mcp_connect_timeout(self, seconds: float) -> None:
+                calls.append(seconds)
+
+        configure_engine_mcp_connect_timeout(_Provider(), 7.0)
+
+        assert calls == [7.0]
+
+    def test_does_nothing_when_the_provider_declares_no_such_method(self) -> None:
+        """A third-party engine without this seam is left at its own default."""
+
+        class _ProviderWithoutTheSeam:
+            pass
+
+        configure_engine_mcp_connect_timeout(_ProviderWithoutTheSeam(), 7.0)
+
+    def test_reaches_the_real_pydantic_ai_provider_and_its_shared_toolsets(self) -> None:
+        """The real, installed engine: its own ``SharedMcpToolsets`` reads the value back."""
+        from loom.ai.compiler import CompiledMcpCapability
+        from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
+
+        provider = resolve_engine_provider(_ENGINE_NAME)
+        assert isinstance(provider, PydanticAIEngineProvider)
+
+        configure_engine_mcp_connect_timeout(provider, 7.0)
+
+        capability = CompiledMcpCapability(server="orders", url="https://orders.example.com/mcp")
+        toolset = provider._mcp._toolset(capability)  # noqa: SLF001 - the seam under test
+        assert toolset.client._init_timeout == 7.0

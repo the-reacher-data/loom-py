@@ -218,3 +218,22 @@ def engine_client_factories(
     mcp = cast("McpClientFactory | None", getattr(provider, "mcp_client_factory", None))
     a2a = cast("A2AClientFactory | None", getattr(provider, "a2a_client_factory", None))
     return mcp, a2a
+
+
+def configure_engine_mcp_connect_timeout(provider: object, seconds: float) -> None:
+    """Hand the deployment's published MCP handshake budget to the resolved engine.
+
+    Read structurally with ``getattr``, the same optional shape as
+    ``engine_client_factories``: an engine that declares no
+    ``configure_mcp_connect_timeout`` method is silently left at its own
+    default. :func:`resolve_engine_provider` constructs every provider with
+    no arguments, so ``ai.startup_timeout_ms`` can only reach the engine
+    after resolution, through this call (FR-051).
+
+    Args:
+        provider: Engine provider resolved from the entry point group.
+        seconds: ``ai.startup_timeout_ms`` converted to seconds.
+    """
+    configure = getattr(provider, "configure_mcp_connect_timeout", None)
+    if configure is not None:
+        configure(seconds)

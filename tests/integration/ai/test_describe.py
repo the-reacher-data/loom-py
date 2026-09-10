@@ -178,12 +178,18 @@ _AGENT_SPECS: Mapping[str, dict[str, Any]] = {
     },
 }
 
-_PLAIN_POLICIES: Mapping[str, int] = {
+_PLAIN_POLICIES: Mapping[str, int | str | None] = {
     "retries": 2,
     "tool_timeout_ms": 1500,
     "max_iterations": 5,
     "run_timeout_ms": 9000,
     "max_history_bytes": 1048576,
+    "max_usd": None,
+    "max_total_tokens": None,
+    "max_input_tokens_per_request": None,
+    "max_tool_calls": None,
+    "max_requests": 50,
+    "on_unpriced_spend": "serve",
 }
 
 

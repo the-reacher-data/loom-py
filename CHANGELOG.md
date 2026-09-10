@@ -1,3 +1,80 @@
+# Unreleased
+
+## ⚠ Behaviour changes
+
+### ai
+
+- **ai:** the MCP handshake deadline is now `ai.startup_timeout_ms` instead of
+  the engine's own undocumented five seconds. Two consequences ship silently
+  unless you read this: a server whose `initialize` takes between five
+  seconds and `ai.startup_timeout_ms` now **succeeds** where it used to fail
+  `MCP_SERVER_UNREACHABLE`; and the use-case path's MCP calls now obey the
+  server's documented `timeout_ms` instead of the engine's 300-second
+  default, which is a **tightening** for any such call that used to take
+  between `timeout_ms` and 300 seconds. An agent's own MCP tool calls were
+  never bound by that 300-second default: `policies.tool_timeout_ms` (default
+  `20000` ms) already bounded them before this change, and still does,
+  racing the server's `timeout_ms` on every call — see
+  `docs/ai/mcp.md#the-handshake-deadline-vs-the-call-deadline` for which
+  deadline wins and what each outcome does to the run. Neither
+  `ai.startup_timeout_ms` nor the server's `timeout_ms` was ever configurable
+  before this change. Under the SSE transport, a server declaring
+  `headers_ref` or `auth` also has its `timeout_ms` reach
+  `SSETransport.sse_read_timeout` — the deadline of its *idle event stream*,
+  not of one call — so a stream that today survives 300 seconds of silence
+  between events can be cut off at the shorter `timeout_ms` a deployment
+  names for "one call"; raise `timeout_ms` for an SSE server whose stream
+  legitimately idles longer than that.
+- **ai:** `policies.max_requests` is a new field with a default of `50`,
+  but this is not a new bound: the engine has always substituted
+  `request_limit=50` whenever loom passed no usage limits, so every run has
+  always carried this cap. The field only makes the number visible and
+  authorable — see `docs/ai/artifacts.md#policies--execution-limits`.
+- **ai:** a run that hits the engine's own `request_limit` (every deployment
+  has run with `request_limit=50` since this pillar shipped) now fails coded
+  `USAGE_LIMIT_EXCEEDED` instead of `MAX_ITERATIONS_EXCEEDED`. The HTTP
+  status is unchanged (`422`), so this does not show up as a status-code
+  regression — only as a changed `code` field for a consumer that branches on
+  it. `MAX_ITERATIONS_EXCEEDED` is now exclusively loom's own
+  reason/act-iteration supervisor; the engine's request-count and every
+  declared spend cap (`policies.max_usd` and friends) report
+  `USAGE_LIMIT_EXCEEDED`.
+- **ai:** `policies.max_usd` is a new, elastic cap: a run whose cost cannot be
+  fully computed does not fail by default. `policies.on_unpriced_spend`
+  (default `serve`) answers with the gap recorded in the run's own usage and
+  in the engine's health instead of discarding an answer the provider already
+  billed for. Declare `on_unpriced_spend: refuse` for fail-closed behaviour
+  instead, coded `COST_NOT_MEASURABLE` rather than `USAGE_LIMIT_EXCEEDED` —
+  the cap was never evaluated, not exceeded. A deployment with `max_usd`
+  declared against an unpriceable model boots regardless of either setting;
+  the start-up probe only logs a warning, because a per-run gap is what
+  `on_unpriced_spend` governs. The `/run` and `/stream` endpoints report
+  `COST_NOT_MEASURABLE` as HTTP `500` (not `503`: `503` is what meshes and
+  gateways retry by default, and the provider call it reports on has
+  already returned and already been billed, so loom never spends again on
+  its own to retry it). See `docs/ai/artifacts.md#spend-caps`.
+- **ai:** `CostCalculationFailedWarning` (raised by `genai-prices` pricing an
+  unexpected failure, distinct from its sibling `CostNotFoundWarning`) now
+  classifies `COST_NOT_MEASURABLE`, same as its sibling — previously it fell
+  through to the unclassified default, `PROVIDER_UNAVAILABLE`, which is
+  retriable and would bill an already-priced-or-not response up to
+  `policies.retries + 1` times. Both siblings subclass `Warning` directly, not
+  `UserWarning`, so a deployment run under `-W error` (or pytest's
+  `filterwarnings = error`) turns either one into an exception and, as a
+  consequence, turns `policies.on_unpriced_spend: serve` into `refuse` no
+  matter what the artifact declares — see "Spend caps" in
+  `docs/ai/artifacts.md` for the mechanism and the remedy.
+- **ai:** `AgentDescription.policies` is now typed
+  `Mapping[str, int | float | str | None]`, widened from `Mapping[str, int]`
+  to carry `max_usd` (as a JSON number, matching the published schema's
+  `policies.max_usd` (`type: number`); this `float` projection is a
+  wire-friendly approximation for display, not a lossless one — the engine
+  always enforces the exact `Decimal` carried on `PolicySpec.max_usd`, never
+  this projection) and
+  `on_unpriced_spend` (a string) alongside the existing integer caps. A
+  consumer typed against the old, narrower annotation will not type-check
+  against the new one.
+
 # 🚀 Release 1.10.0
 
 Changes since v1.9.3:
