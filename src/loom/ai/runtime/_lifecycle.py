@@ -140,11 +140,12 @@ class UseCaseMcpGrant:
     grant a server's live session and full catalogue are read from is a
     separate, server-keyed :class:`~loom.ai.runtime._grants.McpGrant` built by
     :meth:`_build_use_case_grants`, whose own capability carries no ``include``
-    at all. ``usecase`` names the declaring use case and is also read as
-    :class:`FilterTarget.agent` for the server this binding lists on its own
-    (:meth:`_use_case_filter_targets`). ``parameter`` is read in one place
-    only: to name the offending signature when the marker's own ``include``
-    matches no tool the server publishes.
+    at all. ``usecase`` names the declaring use case, and is also carried
+    into :class:`FilterTarget.agent` for the server this binding lists on its
+    own (:meth:`_use_case_filter_targets`) — carried, not read: nothing on
+    that path reads the field back. ``parameter`` is read in one place only:
+    to name the offending signature when the marker's own ``include`` matches
+    no tool the server publishes.
     """
 
     capability: CompiledMcpCapability
@@ -194,12 +195,13 @@ class AgentRuntime:
             :class:`UseCaseMcpGrant`. Each one's server joins the set of
             clients this runtime opens, even when no agent plan names it. A
             server named only this way stays outside the background health
-            probe (FR-14, not extended here): this runtime never reports it as
-            an ``/health`` check entry — see ``_probe_forever``, which iterates
-            the per-plan slots. What a caller observes when such a server is
-            down is decided by the resolver, which does not exist yet; this
-            version opens the server, lists it and validates the declared
-            filters, and nothing more.
+            probe: this runtime never reports it as an ``/health`` check
+            entry — see :meth:`_probe_forever`, which iterates the per-plan
+            slots. What a caller observes when such a server is down is
+            decided by
+            :func:`~loom.ai.runtime._handle.mcp_marker_resolver`: a
+            tolerated-unreachable server resolves to a handle whose every
+            call raises ``TOOL_UNAVAILABLE``, never a bind-time failure.
 
     Runs emit no span of their own: the transport owns observability, because
     only it knows the route, the method and the status code a run is attributed

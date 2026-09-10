@@ -427,13 +427,13 @@ def mcp_marker_resolver(
         never crosses the declaring use case's own name over that boundary,
         so that key could only have carried the server under a name that
         denies it. Attributing a tool span to the use case that asked for it
-        would take the executor passing that name through, which is a change
-        to S7's signature and is not made here.
+        would take the executor passing that name through, a change to the
+        resolver's signature that this does not make.
 
-        Either way this path's spans are distinguishable from the agent
-        path's (``{"agent": ...}``), which is what the release note about
-        ``Scope.TOOL`` spans no longer carrying ``agent`` unconditionally
-        is for.
+        Either way this path's spans stay distinguishable from the agent
+        path's, which carry ``{"agent": ...}``. A ``Scope.TOOL`` span of an
+        MCP call therefore carries one key or the other, never both — see
+        "What the spans carry" in ``docs/ai/observability.md``.
     """
 
     def _resolve(server: str, include: tuple[str, ...], identity: Identity) -> McpHandle:

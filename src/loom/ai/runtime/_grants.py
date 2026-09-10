@@ -120,7 +120,7 @@ class AgentGrants:
 
 
 class McpGrantView:
-    """The concrete :class:`~loom.ai.abc.McpHandle` an ``AgentHandle.mcp()`` returns.
+    """The concrete :class:`~loom.ai.abc.McpHandle` both paths return.
 
     ``include``/``exclude`` are taken as explicit arguments rather than read
     off ``capability`` — even though ``capability`` carries its own

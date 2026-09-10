@@ -879,11 +879,13 @@ def _bind_agent_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
 def _bind_mcp_resolver(result: KernelRuntime, ai: _AiWiring) -> None:
     """Wire the executor's ``Mcp()`` marker resolver, once the AI runtime exists.
 
-    Mirrors :func:`_bind_agent_resolver`, on the executor's second resolver
-    (S7): a no-op when no ``ai:`` section is present, so a use case
-    declaring ``Mcp()`` in that deployment still compiles and fails
-    informatively — naming ``bind_mcp_resolver`` — at its first execution
-    instead of here.
+    Mirrors :func:`_bind_agent_resolver`, on the executor's second resolver.
+    A no-op only for a deployment where no use case declares ``Mcp()``: one
+    that does never reaches this function, because ``_verify_mcp_markers``
+    already aborted start-up with ``MCP_MARKER_UNKNOWN`` against an empty
+    server mapping. The executor's own "no resolver bound" refusal is
+    therefore unreachable through this composition root, and stays as the
+    guard for a host that wires its own.
     """
     if ai.runtime is None:
         return
