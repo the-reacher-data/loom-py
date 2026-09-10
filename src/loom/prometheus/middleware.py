@@ -13,7 +13,7 @@ Usage::
 
     app = create_fastapi_app(
         result,
-        interfaces=[OrderInterface],
+        RouteSources(python=[OrderInterface]),
         middleware=[TraceIdMiddleware, PrometheusMiddleware],
     )
     # Expose the /metrics scrape endpoint separately as an exact route.
@@ -83,7 +83,7 @@ class PrometheusMiddleware:
 
         app = create_fastapi_app(
             result,
-            interfaces=[OrderInterface],
+            RouteSources(python=[OrderInterface]),
             middleware=[PrometheusMiddleware],
         )
     """

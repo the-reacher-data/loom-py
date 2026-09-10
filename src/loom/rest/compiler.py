@@ -21,12 +21,162 @@ from __future__ import annotations
 
 import inspect
 import typing
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from enum import Enum
+from typing import Any, NamedTuple
 
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.metrics import MetricsAdapter
 from loom.rest.model import PaginationMode, RestApiDefaults, RestInterface, RestRoute
+
+
+class _RouteOrigin(Enum):
+    """Which pillar declared a route — the label a collision error names.
+
+    Python-declared interfaces are compiled first, so they always win this
+    label, never precedence over which route is kept — there is none.
+    """
+
+    PYTHON = "a Python interface"
+    CONFIG = "an app.rest.interfaces entry"
+
+
+class _SeenRoute(NamedTuple):
+    """A previously compiled route, tracked for collision detection.
+
+    Args:
+        origin: Origin that declared this route — used to pick the right
+            advice when a later route collides with this one.
+        label: Human-readable ``"{origin} ({interface})"`` used in the error.
+    """
+
+    origin: _RouteOrigin
+    label: str
+
+
+def _collision_message(
+    key: tuple[str, str],
+    existing: _SeenRoute,
+    new_origin: _RouteOrigin,
+    new_label: str,
+) -> str:
+    """Build a collision error, advising to disable-and-redeclare only when it applies.
+
+    Disabling a Python route and redeclaring it in ``app.rest.interfaces``
+    only resolves a collision that involves a Python-declared route on one
+    side. A same-origin collision (two Python interfaces, or two YAML
+    entries) needs the duplicate removed instead — there is no second
+    origin to redeclare into.
+    """
+    header = f"route ({key[0]}, {key[1]!r}) is declared twice: {existing.label} and {new_label}."
+    if existing.origin == new_origin:
+        advice = " A route may be declared by only one origin; remove the duplicate declaration."
+    else:
+        advice = (
+            " A route may be declared by only one origin; disable the "
+            "Python route and redeclare it in app.rest.interfaces to "
+            "change it per environment instead."
+        )
+    return header + advice
+
+
+_MAX_LISTED_CANDIDATES = 20
+
+
+def _format_candidates(routes: Sequence[CompiledRoute]) -> str:
+    """Render the ``(method, full_path)`` of every *routes* entry, capped.
+
+    *routes* are the Python-declared routes actually eligible for
+    disablement — what an operator fixing a typo needs to see, since the
+    entry that failed to match named none of them.
+    """
+    candidates = sorted({(r.route.method.upper(), r.full_path) for r in routes})
+    if not candidates:
+        return "no Python-declared route is eligible for disablement."
+    shown = candidates[:_MAX_LISTED_CANDIDATES]
+    rendered = ", ".join(f"({method}, {path!r})" for method, path in shown)
+    omitted = len(candidates) - len(shown)
+    suffix = f", and {omitted} more" if omitted else ""
+    return f"eligible routes are: {rendered}{suffix}."
+
+
+def _apply_disablement(
+    routes: list[CompiledRoute], disabled: Sequence[tuple[str, str]]
+) -> list[CompiledRoute]:
+    """Drop every Python-declared route named by *disabled*.
+
+    Only Python-declared routes are eligible: a route declared in
+    ``app.rest.interfaces`` is removed by deleting it from the config
+    instead, so there is nothing for this mechanism to do there.
+
+    Raises:
+        InterfaceCompilationError: If an entry matches no Python-declared
+            route.
+    """
+    if not disabled:
+        return routes
+    targets = {(method.upper(), path) for method, path in disabled}
+    matched: set[tuple[str, str]] = set()
+    kept: list[CompiledRoute] = []
+    for route in routes:
+        key = (route.route.method.upper(), route.full_path)
+        if key in targets:
+            matched.add(key)
+            continue
+        kept.append(route)
+    unmatched = targets - matched
+    if unmatched:
+        rendered = ", ".join(f"({method}, {path!r})" for method, path in sorted(unmatched))
+        raise InterfaceCompilationError(
+            f"app.rest.disable_routes names {rendered}, which "
+            "matches no route declared by a Python interface. This only "
+            "covers routes declared in code (Python RestInterface "
+            "subclasses) — a config-declared route is removed by deleting "
+            "it from app.rest.interfaces, and a route mounted outside "
+            "compile_sources (e.g. the health check) is never a target. "
+            "Name the full path, prefix included, of a Python-declared "
+            "route that would otherwise be published — check for a typo "
+            "or a route already removed. "
+            f"{_format_candidates(routes)}"
+        )
+    return kept
+
+
+@dataclass(frozen=True)
+class RouteSources:
+    """Everything that decides which routes mount, and from which origin.
+
+    Groups the three inputs :meth:`RestInterfaceCompiler.compile_sources` and
+    :func:`~loom.rest.fastapi.app.create_fastapi_app` need — the Python
+    interfaces, the config-declared ones, and the routes disabled between
+    them — into the one value both call sites pass along together.
+
+    Args:
+        python: ``RestInterface`` subclasses declared in code. Compiled
+            first, deterministically.
+        config: ``RestInterface`` subclasses built from
+            ``app.rest.interfaces`` (see :mod:`loom.rest.config`). Compiled
+            after *python*.
+        disabled: ``(method, full_path)`` pairs to drop from the routes
+            declared by *python* — see
+            :meth:`RestInterfaceCompiler.compile_sources` for why this never
+            targets *config*.
+    """
+
+    python: Sequence[type[RestInterface[Any]]] = ()
+    config: Sequence[type[RestInterface[Any]]] = ()
+    disabled: Sequence[tuple[str, str]] = ()
+
+    def __post_init__(self) -> None:
+        # A frozen dataclass only stops rebinding the field itself; a caller
+        # passing a plain list still owns that list and can mutate it after
+        # construction, silently changing what this "frozen" value compiles.
+        # object.__setattr__ is the documented way to write to a frozen
+        # instance's own __init__/__post_init__.
+        object.__setattr__(self, "python", tuple(self.python))
+        object.__setattr__(self, "config", tuple(self.config))
+        object.__setattr__(self, "disabled", tuple(self.disabled))
 
 
 class InterfaceCompilationError(Exception):
@@ -141,6 +291,74 @@ class RestInterfaceCompiler:
         result = self._compile_fresh(interface)
         self._cache[interface] = result
         return result
+
+    def compile_sources(self, sources: RouteSources) -> list[CompiledRoute]:
+        """Compile interfaces from both origins into one deterministic route set.
+
+        Python-declared interfaces compile first. ``sources.disabled`` is
+        then applied to that Python-only set — see :func:`_apply_disablement`
+        for why it never targets config-declared routes. Only after
+        disablement do ``app.rest.interfaces`` entries compile and join the
+        result. A ``(method, path)`` collision between what remains aborts
+        naming both origins involved — order only decides which origin the
+        message names first, it grants neither side precedence.
+
+        This sequencing is what makes overriding a route per environment
+        possible: disabling a Python route removes it, and only then does the
+        collision check run, so the config redeclaration mounts cleanly
+        instead of colliding with a route that would otherwise still be
+        considered occupied.
+
+        Args:
+            sources: Interfaces to compile, grouped by origin, plus the
+                Python routes to drop before the merge.
+
+        Returns:
+            Compiled routes, Python-declared ones first (minus any disabled),
+            followed by the config-declared ones.
+
+        Raises:
+            InterfaceCompilationError: On a same- or cross-origin collision,
+                or a ``disabled`` entry matching no Python-declared route.
+        """
+        seen: dict[tuple[str, str], _SeenRoute] = {}
+
+        python_routes = _apply_disablement(self._compile_many(sources.python), sources.disabled)
+        self._track_routes(python_routes, _RouteOrigin.PYTHON, seen)
+
+        config_routes = self._compile_many(sources.config)
+        self._track_routes(config_routes, _RouteOrigin.CONFIG, seen)
+
+        return [*python_routes, *config_routes]
+
+    def _compile_many(self, interfaces: Sequence[type[RestInterface[Any]]]) -> list[CompiledRoute]:
+        """Compile every interface in declaration order, without collision tracking."""
+        compiled: list[CompiledRoute] = []
+        for interface in interfaces:
+            compiled.extend(self.compile(interface))
+        return compiled
+
+    def _track_routes(
+        self,
+        routes: Sequence[CompiledRoute],
+        origin: _RouteOrigin,
+        seen: dict[tuple[str, str], _SeenRoute],
+    ) -> None:
+        """Record each route's key against *seen*, raising on a collision.
+
+        *seen* is mutated in place. Runs against the routes that actually
+        survive to the merged result, so a disabled-then-dropped Python route
+        is never registered — a later config redeclaration of the same key
+        finds nothing occupying it.
+        """
+        for route in routes:
+            key = (route.route.method.upper(), route.full_path)
+            new_label = f"{origin.value} ({route.interface_name})"
+            if key in seen:
+                raise InterfaceCompilationError(
+                    _collision_message(key, seen[key], origin, new_label)
+                )
+            seen[key] = _SeenRoute(origin, new_label)
 
     # ------------------------------------------------------------------
     # Internal

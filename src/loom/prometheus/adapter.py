@@ -18,7 +18,7 @@ Usage::
         modules=[register_repositories],
         metrics=adapter,
     )
-    app = create_fastapi_app(result, interfaces=[OrderInterface])
+    app = create_fastapi_app(result, RouteSources(python=[OrderInterface]))
 """
 
 from __future__ import annotations

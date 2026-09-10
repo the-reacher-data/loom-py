@@ -33,7 +33,6 @@ from loom.ai.compiler._plan import (
     CompiledSqlCapability,
     CompiledUsecaseCapability,
 )
-from loom.ai.compiler._symbols import import_symbol
 from loom.ai.config import A2AAgentConfig, AiConfig, McpServerConfig
 from loom.ai.declarative import (
     A2ACapability,
@@ -73,6 +72,7 @@ from loom.ai.errors import (
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
 from loom.core.sql.config import SqlConfig, roles_need_identity_binding
+from loom.core.symbols import import_symbol
 from loom.core.use_case.registry import UseCaseRegistry
 
 # Kinds that read application data or call application/remote code.  An agent

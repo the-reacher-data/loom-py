@@ -109,14 +109,16 @@ class TestBackendSelection:
         self, agents_only_discovery: None, persistence: dict[str, object] | None
     ) -> None:
         ctx = _ctx() if persistence is None else _ctx(persistence=persistence)
-        _runtime, wiring, _discovered = _build_bootstrap(_AppConfig(name="demo"), ctx)
+        _runtime, wiring, _discovered, _python_interfaces = _build_bootstrap(
+            _AppConfig(name="demo"), ctx
+        )
 
         assert isinstance(wiring.uow_factory, SQLAlchemyUnitOfWorkFactory)
 
     def test_selects_dynamodb_backend(
         self, agents_only_discovery: None, aws_test_credentials: None
     ) -> None:
-        _runtime, wiring, _discovered = _build_bootstrap(
+        _runtime, wiring, _discovered, _python_interfaces = _build_bootstrap(
             _AppConfig(name="demo"), _ctx(persistence=_DYNAMODB_PERSISTENCE)
         )
 
@@ -125,14 +127,14 @@ class TestBackendSelection:
     def test_selects_mongo_backend(
         self, agents_only_discovery: None, fake_mongo_client: FakeMongoClient
     ) -> None:
-        _runtime, wiring, _discovered = _build_bootstrap(
+        _runtime, wiring, _discovered, _python_interfaces = _build_bootstrap(
             _AppConfig(name="demo"), _ctx(persistence=_MONGO_PERSISTENCE)
         )
 
         assert isinstance(wiring.uow_factory, MongoUnitOfWorkFactory)
 
     def test_none_has_no_unit_of_work(self, agents_only_discovery: None) -> None:
-        _runtime, wiring, _discovered = _build_bootstrap(
+        _runtime, wiring, _discovered, _python_interfaces = _build_bootstrap(
             _AppConfig(name="demo"), _ctx(persistence={"backend": "none"})
         )
 
@@ -281,7 +283,7 @@ def test_build_bootstrap_sqlalchemy_without_models_warns_and_starts(
     ctx = _ctx()
 
     with caplog.at_level(logging.WARNING, logger=sqlalchemy_backend_module.__name__):
-        runtime, wiring, discovered = _build_bootstrap(app_cfg, ctx)
+        runtime, wiring, discovered, _python_interfaces = _build_bootstrap(app_cfg, ctx)
 
     assert discovered.models == ()
     assert runtime is not None
@@ -348,7 +350,9 @@ def test_build_bootstrap_accepts_auto_true_with_hand_declared_routes(
         ),
     )
 
-    runtime, _wiring, discovered = _build_bootstrap(_AppConfig(name="demo"), _ctx())
+    runtime, _wiring, discovered, _python_interfaces = _build_bootstrap(
+        _AppConfig(name="demo"), _ctx()
+    )
 
     assert runtime is not None
     assert discovered.models == ()

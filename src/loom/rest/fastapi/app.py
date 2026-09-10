@@ -18,7 +18,7 @@ Usage::
     )
     app = create_fastapi_app(
         result,
-        interfaces=[OrderRestInterface],
+        RouteSources(python=[OrderRestInterface]),
         observability_runtime=ObservabilityRuntime.noop(),
         title="Orders API",
         version="1.0.0",
@@ -27,6 +27,7 @@ Usage::
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -35,7 +36,7 @@ from fastapi import FastAPI
 from loom.core.bootstrap.bootstrap import BootstrapResult
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.rest.compiler import RestInterfaceCompiler
+from loom.rest.compiler import RestInterfaceCompiler, RouteSources
 from loom.rest.fastapi._errors import register_error_handlers
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface
@@ -54,10 +55,53 @@ def _resolve_executor(result: BootstrapResult) -> RuntimeExecutor:
     return cast(RuntimeExecutor, result.container.resolve(RuntimeExecutor))
 
 
+def _resolve_route_sources(
+    routes: RouteSources | None,
+    interfaces: Sequence[type[RestInterface[Any]]] | None,
+) -> RouteSources:
+    """Resolve the deprecated *interfaces* alias into *routes*.
+
+    Exactly one of the two must be given: neither leaves nothing to compile,
+    and both leave two conflicting answers with no rule to prefer one over
+    the other. Warns when *interfaces* is used, since ``RouteSources`` is the
+    replacement.
+
+    A caller who passed the old second positional argument reaches this with a
+    sequence where *routes* is expected, so that case is named here too: left
+    alone it would surface much later as an attribute error on the sequence,
+    which says nothing about how to fix the call.
+
+    Raises:
+        TypeError: If neither or both are given, or if *routes* is not a
+            ``RouteSources`` instance (e.g. a bare sequence of interfaces).
+    """
+    if routes is not None and not isinstance(routes, RouteSources):
+        raise TypeError(
+            "create_fastapi_app()'s 'routes' parameter no longer accepts a bare sequence "
+            "of interfaces. Pass RouteSources(python=[...]) instead."
+        )
+    if routes is not None and interfaces is not None:
+        raise TypeError(
+            "create_fastapi_app() accepts either 'routes' or the deprecated 'interfaces', not both."
+        )
+    if routes is not None:
+        return routes
+    if interfaces is not None:
+        warnings.warn(
+            "create_fastapi_app(interfaces=...) is deprecated and will be removed in 2.0. "
+            "Use create_fastapi_app(routes=RouteSources(python=interfaces)) instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return RouteSources(python=interfaces)
+    raise TypeError("create_fastapi_app() requires 'routes' (RouteSources).")
+
+
 def create_fastapi_app(
     result: BootstrapResult,
-    interfaces: Sequence[type[RestInterface[Any]]],
+    routes: RouteSources | None = None,
     *,
+    interfaces: Sequence[type[RestInterface[Any]]] | None = None,
     observability_runtime: ObservabilityRuntime | None = None,
     middleware: Sequence[_MiddlewareClass] = (),
     defaults: RestApiDefaults | None = None,
@@ -77,8 +121,23 @@ def create_fastapi_app(
     Args:
         result: Fully initialised :class:`~loom.core.bootstrap.bootstrap.BootstrapResult`
             from :func:`~loom.core.bootstrap.bootstrap.bootstrap_app`.
-        interfaces: ``RestInterface`` subclasses declaring which endpoints to
-            expose.  Compiled in declaration order.
+        routes: Which interfaces to mount and from which origin — see
+            :class:`~loom.rest.compiler.RouteSources`. ``routes.config``
+            compiles after ``routes.python``, deterministically; a
+            ``(method, path)`` collision between the two aborts naming both
+            — neither side takes precedence. ``routes.disabled`` is applied
+            to ``routes.python`` before the merge, so a disabled Python
+            route can be redeclared in ``routes.config`` without colliding
+            with itself; an entry matching no Python-declared route aborts
+            startup instead of doing nothing. Required unless *interfaces*
+            is given instead.
+        interfaces: Deprecated keyword-only alias for
+            ``routes=RouteSources(python=interfaces)``. Kept only so code
+            written before ``RouteSources`` existed keeps working when it
+            called ``create_fastapi_app(result, interfaces=[...])`` —
+            every published example did; emits a ``DeprecationWarning``
+            naming *routes* as the replacement. Mutually exclusive with
+            *routes*.
         observability_runtime: Shared runtime used to emit lifecycle events
             around each request.
         middleware: ASGI middleware classes to register on the application.
@@ -91,7 +150,7 @@ def create_fastapi_app(
 
                 app = create_fastapi_app(
                     result,
-                    interfaces=[...],
+                    RouteSources(python=[...]),
                     observability_runtime=ObservabilityRuntime.noop(),
                     middleware=[TraceIdMiddleware, PrometheusMiddleware],
                 )
@@ -107,18 +166,20 @@ def create_fastapi_app(
 
     Raises:
         InterfaceCompilationError: If any interface fails structural validation.
+        TypeError: If neither *routes* nor *interfaces* is given, or both are.
 
     Example::
 
         app = create_fastapi_app(
             result,
-            interfaces=[UserRestInterface, OrderRestInterface],
+            RouteSources(python=[UserRestInterface, OrderRestInterface]),
             defaults=RestApiDefaults(pagination_mode=PaginationMode.CURSOR),
             observability_runtime=ObservabilityRuntime.noop(),
             title="My API",
             version="2.0.0",
         )
     """
+    resolved_routes = _resolve_route_sources(routes, interfaces)
     runtime = observability_runtime or ObservabilityRuntime.noop()
     app = FastAPI(**fastapi_kwargs)
     register_error_handlers(app)
@@ -132,9 +193,7 @@ def create_fastapi_app(
     )
     executor = _resolve_executor(result)
 
-    all_routes = []
-    for iface in interfaces:
-        all_routes.extend(interface_compiler.compile(iface))
+    all_routes = interface_compiler.compile_sources(resolved_routes)
 
     component_registry = bind_interfaces(
         app,

@@ -561,6 +561,137 @@ See [Auto-CRUD guide](autocrud.md) for the full options reference.
 
 ---
 
+## Declaring routes in configuration (`app.rest.interfaces`)
+
+Every key above has a YAML twin under `app.rest.interfaces.<name>`, named and
+defaulted identically — the same vocabulary, so nothing here is new to learn.
+Three keys are required per route: `use_case`, `method`, `path`. Everything
+else inherits the same default the Python route does.
+
+```yaml
+app:
+  rest:
+    interfaces:
+      products:
+        prefix: /products
+        tags: [Products]
+        routes:
+          - use_case: myapp.application.products:CreateProductUseCase
+            method: POST
+            path: /
+            status_code: 201
+          - use_case: myapp.application.products:GetProductUseCase
+            method: GET
+            path: /{product_id}
+```
+
+`use_case` is a `module:Symbol` reference, resolved with the same offline
+reader the AI artifact format already uses in its own references — a bad
+reference fails the same way, at startup, naming the interface.
+
+### Auto-CRUD from configuration
+
+`auto: true` works exactly like the Python `auto = True` attribute, with one
+addition: YAML cannot express `RestInterface[Model]`'s generic parameter, so
+a `model` reference stands in for it. `model` is required only when `auto`
+is set and the interface declares no explicit `routes`:
+
+```yaml
+app:
+  rest:
+    interfaces:
+      gadgets:
+        prefix: /gadgets
+        auto: true
+        model: myapp.domain.gadget:Gadget
+```
+
+The generated routes come from the same auto-CRUD generator a Python
+`auto = True` interface calls — same routes, same status codes, same
+defaults.
+
+### Coexistence with Python interfaces
+
+A YAML interface is converted into the same `RestRoute` and `RestInterface`
+objects a Python subclass produces, and handed to the same compiler — there
+is no second compilation path. Python interfaces compile first, YAML ones
+after, deterministically; the order decides nothing about behaviour, only
+which origin an error names first.
+
+A `(method, path)` declared twice aborts startup, naming both declarations.
+This is not a new rule: the compiler already refuses a route duplicated
+within one Python interface; a same- or cross-origin collision is that same
+refusal, extended. Nothing takes precedence — to change a Python-declared
+route per environment, disable it (below) and redeclare it in YAML. Two
+`app.rest.interfaces` entries sharing a route have no such override: remove
+the duplicate declaration instead.
+
+> **Behaviour change:** before `app.rest.interfaces` existed, two Python
+> `RestInterface` subclasses declaring the same `(method, path)` mounted two
+> handlers, and FastAPI silently served only the first one — the duplicate
+> was never rejected. An application that relied on that (almost certainly
+> by accident) will now fail to start, naming both interfaces, until the
+> duplicate is removed. This applies whether or not any YAML interface is in
+> use.
+
+> **Breaking change:** `create_fastapi_app`'s second parameter used to be
+> `interfaces: Sequence[type[RestInterface]]`; it is now
+> `routes: RouteSources`. Code that called it as documented —
+> `create_fastapi_app(result, interfaces=[...])`, keyword form, every
+> published example — still works: a deprecated `interfaces=` keyword wraps
+> the list in `RouteSources(python=interfaces)` and emits a
+> `DeprecationWarning` naming `routes` as the replacement (the keyword will
+> be removed in 2.0). A call that passed the list *positionally* now binds
+> it to `routes`, which requires a `RouteSources` instance:
+> `create_fastapi_app` raises `TypeError` immediately, naming
+> `RouteSources(python=[...])` as the replacement — it does not wait for
+> compilation to fail on a missing attribute. Passing both `routes` and
+> `interfaces`, or neither, also raises `TypeError`. Migrate by replacing
+> `interfaces=[...]` with `routes=RouteSources(python=[...])`.
+
+### Disabling a route per environment (`app.rest.disable_routes`)
+
+`app.rest.disable_routes` is a subtractive-only list, and it only targets
+routes declared by a **Python** `RestInterface` — it can remove one, never
+add one, and it has no effect on a YAML-declared route or on a route mounted
+outside interface compilation (such as the health check). A route declared
+in `app.rest.interfaces` needs no such mechanism: remove it from the YAML
+instead.
+
+```yaml
+app:
+  rest:
+    disable_routes:
+      - method: DELETE
+        path: /products/{product_id}
+```
+
+Each entry names the route exactly as it is published — the full path,
+prefix included. Disablement is applied to the Python-declared routes
+**before** they are merged with `app.rest.interfaces` entries and checked
+for collisions. That ordering is what makes the override flow work: disable
+the Python route, declare the same `(method, path)` in YAML, and there is no
+collision because the Python route is no longer in the set by the time the
+check runs.
+
+An entry matching no Python-declared route aborts startup instead of doing
+nothing: a silent no-op would leave an operator believing a route is gone
+when it is still being served.
+
+> **Security note:** the disable-and-redeclare override flow lets a
+> `app.rest.interfaces` entry drop a `requires_roles` the Python route
+> declared, since the redeclaration is a fresh route with its own policy,
+> not a patch of the old one. That is consistent with treating configuration
+> as trusted — the same trust an operator already has to remove or rewrite
+> any other route — but it means "per environment" includes the route's
+> authorization, not just its shape.
+
+A runnable version of every example above lives in
+[`tests/integration/rest/test_yaml_interfaces.py`](https://github.com/the-reacher-data/loom-py/blob/master/tests/integration/rest/test_yaml_interfaces.py),
+exercised end to end against a real FastAPI app on every test run.
+
+---
+
 ## Cross-use-case calls with ApplicationInvoker
 
 Use `ApplicationInvoker` to call another use case by type without tight coupling.

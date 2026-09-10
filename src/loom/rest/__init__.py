@@ -9,7 +9,13 @@ factory) see :mod:`loom.rest.fastapi`.
 """
 
 from loom.rest.adapter import PydanticAdapter
-from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
+from loom.rest.compiler import (
+    CompiledRoute,
+    InterfaceCompilationError,
+    RestInterfaceCompiler,
+    RouteSources,
+)
+from loom.rest.config import RestInterfaceConfigError
 from loom.rest.errors import HttpErrorMapper
 from loom.rest.middleware import TraceIdMiddleware
 from loom.rest.model import (
@@ -30,6 +36,8 @@ __all__ = [
     "RestApiDefaults",
     "RestInterface",
     "RestInterfaceCompiler",
+    "RestInterfaceConfigError",
     "RestRoute",
+    "RouteSources",
     "TraceIdMiddleware",
 ]

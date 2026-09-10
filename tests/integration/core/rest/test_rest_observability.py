@@ -24,6 +24,7 @@ from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.errors import NotFound
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.rest.compiler import RouteSources
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.middleware import TraceIdMiddleware
 from loom.testing import HttpTestHarness, InMemoryRepository
@@ -75,7 +76,7 @@ def _build_full_stack_client(
     runtime = ObservabilityRuntime([observer]) if observer else ObservabilityRuntime.noop()
     app = create_fastapi_app(
         result,
-        interfaces=[ProductRestInterface],
+        RouteSources(python=[ProductRestInterface]),
         observability_runtime=runtime,
         middleware=[TraceIdMiddleware],
     )
@@ -227,7 +228,7 @@ class TestSpanEventsFromRESTLayer:
         runtime = ObservabilityRuntime([_BrokenObserver()])
         app = create_fastapi_app(
             result,
-            interfaces=[ProductRestInterface],
+            RouteSources(python=[ProductRestInterface]),
             observability_runtime=runtime,
             middleware=[TraceIdMiddleware],
         )

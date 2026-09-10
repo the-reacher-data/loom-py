@@ -206,7 +206,7 @@ class TestDefaultInclude:
             models=(CapabilityRecord, OtherRecord),
         )
 
-        runtime, _wiring, discovered = _build_bootstrap(
+        runtime, _wiring, discovered, _python_interfaces = _build_bootstrap(
             _AppConfig(name="demo"), _ctx(persistence=_DYNAMODB_PERSISTENCE)
         )
 

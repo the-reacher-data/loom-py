@@ -27,7 +27,7 @@ Example::
     )
     app = create_fastapi_app(
         result,
-        interfaces=[OrderRestInterface],
+        RouteSources(python=[OrderRestInterface]),
         middleware=[TraceIdMiddleware, PrometheusMiddleware],
     )
     # Expose /metrics as an exact route in the FastAPI app.

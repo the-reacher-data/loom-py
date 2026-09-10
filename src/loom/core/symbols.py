@@ -1,4 +1,9 @@
-"""Offline ``module:symbol`` reference resolution shared by the phases."""
+"""Resolve a ``module:symbol`` reference, offline.
+
+Neutral on purpose: the reference form is the convention every declarative
+surface of the framework uses to name application code, so the reader belongs
+where any pillar can reach it without depending on another one.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +14,7 @@ def import_symbol(ref: str) -> object:
     """Import the symbol a ``module:symbol`` reference points at.
 
     Args:
-        ref: Reference in ``module:symbol`` form, as constrained by the
-            artifact pattern.
+        ref: Reference in ``module:symbol`` form.
 
     Returns:
         The imported symbol.

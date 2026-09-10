@@ -114,7 +114,7 @@ def bootstrap_app(
             use_cases=[CreateOrderUseCase, CancelOrderUseCase],
             modules=[register_repositories],
         )
-        app = create_fastapi_app(result, interfaces=[OrderRestInterface])
+        app = create_fastapi_app(result, RouteSources(python=[OrderRestInterface]))
     """
     _logger = logger or get_logger("loom.bootstrap")
 
