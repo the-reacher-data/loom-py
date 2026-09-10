@@ -2,9 +2,8 @@
 
 ``instructions`` accepts either the string form it has always accepted, or a
 non-empty sequence of :class:`InstructionBlock`. These tests pin the artifact
-half only: decoding, ordering and the two rejected ``name`` values the engine
-also rejects (FR-020 … FR-022). Nothing here compiles a block or renders a
-template — that is a later phase (T201, T402).
+half: decoding, ordering and the two rejected ``name`` values the engine also
+rejects (FR-020 … FR-022).
 """
 
 from __future__ import annotations

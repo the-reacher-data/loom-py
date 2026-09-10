@@ -2,11 +2,11 @@
 
 ``deps_type`` and ``deps_schema`` are the artifact's three spellings of one
 mechanism (FR-003): absent (no state), ``dict`` (open, unvalidated), a
-``module:Symbol`` reference (sugar over a JSON Schema resolved later), or a
-JSON Schema object declared directly. These tests pin the artifact half only:
-decoding and the pattern ``deps_type`` accepts. Resolving a symbol, deriving
-its schema and rejecting the case where both fields are declared are
-compilation concerns for a later phase (T201).
+``module:Symbol`` reference (sugar over a JSON Schema the compiler resolves), or a
+JSON Schema object declared directly. These tests pin the artifact half:
+decoding, and the pattern ``deps_type`` accepts. Resolving a symbol, deriving
+its schema and refusing an artifact that declares both fields are compilation
+concerns, pinned by the compiler's own tests.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def test_deps_type_rejects_a_filesystem_path() -> None:
 
 
 def test_declaring_both_fields_decodes_successfully() -> None:
-    """The conflict is not a decode-time failure: it is caught later, in compilation (T201)."""
+    """The conflict is not a decode-time failure: compilation reports it."""
     spec = _decode(deps_type="dict", deps_schema={"type": "object"})
 
     assert spec.deps_type == "dict"

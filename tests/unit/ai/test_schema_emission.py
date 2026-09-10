@@ -377,7 +377,7 @@ def test_the_published_schema_rejects_an_unknown_instruction_block_key() -> None
 
 
 def test_the_published_schema_accepts_deps_type_and_deps_schema_together() -> None:
-    """T102 leaves the conflict for compilation (T201): the offline schema must not pre-empt it."""
+    """The offline schema must not pre-empt the conflict compilation reports."""
     payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
     payload["deps_type"] = "dict"
     payload["deps_schema"] = {"type": "object"}

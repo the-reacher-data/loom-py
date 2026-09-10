@@ -47,7 +47,9 @@ RESERVED_INSTRUCTION_NAME: Final[str] = "agent"
 """Instruction block name the engine reserves for itself
 (``pydantic_ai._instructions.validate_instruction_name``)."""
 
-INSTRUCTION_NAME_PATTERN: Final[str] = r"^[^:]+$"
+_INSTRUCTION_NAME_BODY: Final[str] = r"[^:]+"
+
+INSTRUCTION_NAME_PATTERN: Final[str] = rf"^{_INSTRUCTION_NAME_BODY}$"
 """Pattern an instruction block's ``name`` must satisfy: non-empty and no
 ``:``. This is the pattern the published JSON Schema emits; rejecting
 :data:`RESERVED_INSTRUCTION_NAME` is expressed there through ``not``/``const``
@@ -57,7 +59,9 @@ RE2-family validators (Go, some editor plugins) that consume the published
 schema, which would make the whole document unusable rather than just this
 constraint."""
 
-_INSTRUCTION_NAME_DECODE_PATTERN: Final[str] = rf"^(?!{RESERVED_INSTRUCTION_NAME}$)[^:]+$"
+_INSTRUCTION_NAME_DECODE_PATTERN: Final[str] = (
+    rf"^(?!{RESERVED_INSTRUCTION_NAME}$){_INSTRUCTION_NAME_BODY}$"
+)
 """Decode-time pattern: :data:`INSTRUCTION_NAME_PATTERN` plus rejecting
 :data:`RESERVED_INSTRUCTION_NAME` via look-ahead. msgspec compiles this with
 Python's ``re``, which supports look-around, so a reserved name fails by its

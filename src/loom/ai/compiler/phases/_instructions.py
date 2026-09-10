@@ -1,11 +1,11 @@
-"""Instructions phase: the string form compiles; the block form does not yet.
+"""Projection of an artifact's declared ``instructions`` onto its plan.
 
-``AgentSpecV1.instructions`` accepts a literal string or a non-empty sequence
-of :class:`~loom.ai.declarative.InstructionBlock` (spec 016, T101), but
-:class:`~loom.ai.compiler._plan.AgentPlan.instructions` is still ``str``:
-compiling a block sequence into a plan is T202. Until then, this phase fails
-closed on the block form instead of letting the compiler forward the tuple
-where the plan expects a string.
+:attr:`~loom.ai.declarative.AgentSpecV1.instructions` accepts a literal string
+or a non-empty sequence of :class:`~loom.ai.declarative.InstructionBlock`,
+while :attr:`~loom.ai.compiler._plan.AgentPlan.instructions` is ``str``. The
+block form is therefore refused with a coded issue rather than forwarded, so
+an artifact declaring it fails at boot naming the field instead of running
+against instructions nothing reads.
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ def compile_instructions(
     Returns:
         The literal string unchanged and no issues; or ``None`` and one
         ``INSTRUCTION_BLOCK_INVALID`` issue when the artifact declares the
-        block form, which no phase compiles yet.
+        block form.
     """
     if isinstance(instructions, str):
         return instructions, []
-    reason = "the block form is not compiled yet; author a literal string instead"
+    reason = "a block sequence is not compiled; author instructions as a literal string"
     return None, [instruction_block_invalid(component, reason)]
