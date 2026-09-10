@@ -23,6 +23,7 @@ from loom.ai.compiler._plan import (
 from loom.ai.compiler.phases._capabilities import compile_capabilities
 from loom.ai.compiler.phases._conversation import compile_conversation
 from loom.ai.compiler.phases._hook import compile_output_hook
+from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._limits import validate_policies
 from loom.ai.compiler.phases._model_role import resolve_model_role
 from loom.ai.compiler.phases._output import compile_output
@@ -135,6 +136,8 @@ class AgentCompiler:
         issues: list[AgentCompilationIssue] = []
         output, output_issues = compile_output(spec.output, component)
         issues.extend(output_issues)
+        instructions, instructions_issues = compile_instructions(spec.instructions, component)
+        issues.extend(instructions_issues)
         on_output, hook_issues = compile_output_hook(
             spec, component=component, registry=self._registry
         )
@@ -158,16 +161,24 @@ class AgentCompiler:
             source_path=source_path,
         )
         issues.extend(capability_issues)
-        if issues or output is None or inference is None:
+        if issues or output is None or inference is None or instructions is None:
             return None, issues
         plan = self._build_plan(
-            spec, inference, output, capabilities, on_output, conversation, source_path
+            spec,
+            instructions,
+            inference,
+            output,
+            capabilities,
+            on_output,
+            conversation,
+            source_path,
         )
         return plan, []
 
     @staticmethod
     def _build_plan(
         spec: AgentSpecV1,
+        instructions: str,
         inference: InferenceTarget,
         output: CompiledOutput,
         capabilities: tuple[CompiledCapability, ...],
@@ -178,7 +189,7 @@ class AgentCompiler:
         return AgentPlan(
             name=spec.name,
             description=spec.description,
-            instructions=spec.instructions,
+            instructions=instructions,
             spec_version=spec.spec_version,
             inference=inference,
             output=output,

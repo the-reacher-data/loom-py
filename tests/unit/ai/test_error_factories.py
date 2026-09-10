@@ -25,6 +25,7 @@ from loom.ai.errors import (
     conversation_invoker_missing,
     conversation_usecase_also_granted,
     conversation_usecase_unknown,
+    instruction_block_invalid,
     mcp_marker_unknown,
     mcp_server_unreachable,
     mcp_transport_invalid,
@@ -32,7 +33,15 @@ from loom.ai.errors import (
     on_output_invoker_missing,
     on_output_usecase_also_granted,
     on_output_usecase_unknown,
+    output_schema_invalid,
     provider_unknown,
+    state_declaration_conflict,
+    state_schema_invalid,
+    state_surface_unsupported,
+    state_type_ref_unresolvable,
+    state_type_ref_unsupported,
+    template_compilation_failed,
+    template_extra_missing,
     use_case_tool_filter_matches_nothing,
 )
 
@@ -283,3 +292,138 @@ def test_agent_marker_output_mismatch_carries_expected_and_declared_types() -> N
     assert "SeverityAssessment" in issue.message
     assert "TriageVerdict" in issue.message
     assert "incident-triage" in issue.message
+
+
+def test_state_declaration_conflict_points_at_deps_type() -> None:
+    """Declaring both ``deps_type`` and ``deps_schema`` names the artifact."""
+    issue = state_declaration_conflict("appraisal-bot")
+
+    assert issue.code is AgentErrorCode.STATE_DECLARATION_CONFLICT
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "deps_type"
+    assert "deps_type" in issue.message
+    assert "deps_schema" in issue.message
+    assert "appraisal-bot" in issue.message
+
+
+def test_state_type_ref_unresolvable_names_the_reference() -> None:
+    """A ``deps_type`` symbol that cannot be imported names the reference."""
+    issue = state_type_ref_unresolvable("appraisal-bot", "myapp.agents:AppraisalDeps")
+
+    assert issue.code is AgentErrorCode.STATE_TYPE_REF_UNRESOLVABLE
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "deps_type"
+    assert "myapp.agents:AppraisalDeps" in issue.message
+
+
+def test_state_type_ref_unsupported_carries_the_reason() -> None:
+    """A resolved symbol msgspec refuses reports the checker's own reason."""
+    issue = state_type_ref_unsupported(
+        "appraisal-bot", "myapp.agents:AppraisalDeps", "not a msgspec Struct"
+    )
+
+    assert issue.code is AgentErrorCode.STATE_TYPE_REF_UNSUPPORTED
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "deps_type"
+    assert "myapp.agents:AppraisalDeps" in issue.message
+    assert "not a msgspec Struct" in issue.message
+
+
+def test_state_type_ref_unresolvable_and_unsupported_are_distinct_codes() -> None:
+    """A missing symbol and an unschematisable one are not collapsed."""
+    unresolvable = state_type_ref_unresolvable("appraisal-bot", "myapp.agents:Missing")
+    unsupported = state_type_ref_unsupported("appraisal-bot", "myapp.agents:Present", "reason")
+
+    assert unresolvable.code is not unsupported.code
+
+
+def test_state_schema_invalid_names_the_reason() -> None:
+    """An invalid ``deps_schema`` object reports why it is not a JSON Schema."""
+    issue = state_schema_invalid("appraisal-bot", "'type' is not a recognised keyword")
+
+    assert issue.code is AgentErrorCode.STATE_SCHEMA_INVALID
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "deps_schema"
+    assert "'type' is not a recognised keyword" in issue.message
+
+
+def test_state_schema_invalid_does_not_reuse_output_schema_invalid() -> None:
+    """A state-schema fault and an output-schema fault must be filterable apart."""
+    state_issue = state_schema_invalid("appraisal-bot", "reason")
+    output_issue = output_schema_invalid("appraisal-bot", "reason")
+
+    assert state_issue.code is not output_issue.code
+    assert state_issue.field != output_issue.field
+
+
+def test_state_surface_unsupported_names_the_artifact_and_the_surface() -> None:
+    """Both halves of the conflict — declared state and the surface — are named."""
+    issue = state_surface_unsupported("appraisal-bot", "a2a")
+
+    assert issue.code is AgentErrorCode.STATE_SURFACE_UNSUPPORTED
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "deps_type"
+    assert "appraisal-bot" in issue.message
+    assert "a2a" in issue.message
+
+
+def test_instruction_block_invalid_names_the_reason() -> None:
+    """A compile-time instruction rule violation carries its own reason."""
+    issue = instruction_block_invalid(
+        "appraisal-bot", "duplicate block name 'base' at positions 0 and 2"
+    )
+
+    assert issue.code is AgentErrorCode.INSTRUCTION_BLOCK_INVALID
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "instructions"
+    assert "duplicate block name 'base' at positions 0 and 2" in issue.message
+
+
+def test_template_compilation_failed_names_the_block_and_the_checkers_reason() -> None:
+    """The block is named by identity, and the checker's own message is preserved."""
+    issue = template_compilation_failed(
+        "appraisal-bot", "context", "unknown marker 'motor.ccc' at $.motor"
+    )
+
+    assert issue.code is AgentErrorCode.TEMPLATE_COMPILATION_FAILED
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "instructions"
+    assert "context" in issue.message
+    assert "unknown marker 'motor.ccc' at $.motor" in issue.message
+
+
+def test_template_extra_missing_names_the_block_and_the_extra() -> None:
+    """The message names both the block that declares ``template:`` and the extra."""
+    issue = template_extra_missing("appraisal-bot", "context", "handlebars")
+
+    assert issue.code is AgentErrorCode.TEMPLATE_EXTRA_MISSING
+    assert issue.component == "appraisal-bot"
+    assert issue.field == "instructions"
+    assert "context" in issue.message
+    assert "handlebars" in issue.message
+
+
+def test_state_and_instruction_messages_never_embed_a_url() -> None:
+    """None of the eight new factories embeds a URL.
+
+    ``state_type_ref_unsupported``, ``state_schema_invalid``,
+    ``instruction_block_invalid`` and ``template_compilation_failed``
+    interpolate a caller-supplied ``reason`` verbatim, and
+    ``template_compilation_failed``'s ``reason`` is documented as the template
+    checker's own message, which can carry a fragment of the source template.
+    Redacting that is the caller's responsibility, not this test's.
+    """
+    issues = [
+        state_declaration_conflict("appraisal-bot"),
+        state_type_ref_unresolvable("appraisal-bot", "myapp.agents:AppraisalDeps"),
+        state_type_ref_unsupported("appraisal-bot", "myapp.agents:AppraisalDeps", "reason"),
+        state_schema_invalid("appraisal-bot", "reason"),
+        state_surface_unsupported("appraisal-bot", "a2a"),
+        instruction_block_invalid("appraisal-bot", "reason"),
+        template_compilation_failed("appraisal-bot", "context", "reason"),
+        template_extra_missing("appraisal-bot", "context", "handlebars"),
+    ]
+
+    for issue in issues:
+        assert "http://" not in issue.message
+        assert "https://" not in issue.message

@@ -30,11 +30,14 @@ from ._envelope import (
 )
 from ._schema import SCHEMA_FILENAMES, agent_spec_json_schema, agent_spec_schema_path
 from ._v1 import (
+    DEPS_TYPE_PATTERN,
+    INSTRUCTION_NAME_PATTERN,
     NATIVE_TOOLS,
     A2ACapability,
     AgentSpecV1,
     CapabilitySpec,
     ConversationSpec,
+    InstructionBlock,
     JsonSchemaOutput,
     McpCapability,
     NativeCapability,
@@ -50,6 +53,8 @@ from ._v1 import (
 )
 
 __all__ = [
+    "DEPS_TYPE_PATTERN",
+    "INSTRUCTION_NAME_PATTERN",
     "NATIVE_TOOLS",
     "SCHEMA_FILENAMES",
     "SUPPORTED_SPEC_VERSIONS",
@@ -60,6 +65,7 @@ __all__ = [
     "CapabilitySpec",
     "ConversationSpec",
     "DecodedSpec",
+    "InstructionBlock",
     "JsonSchemaOutput",
     "McpCapability",
     "NativeCapability",
