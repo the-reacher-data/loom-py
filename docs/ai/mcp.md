@@ -161,7 +161,10 @@ Under `optional`, the WARNING carries the error code and the registered name
 only: the transport's own reason is an arbitrary library's exception text and
 can name a URL, so it goes to DEBUG, where an operator asks for it deliberately,
 rather than into routine logs on every boot. The health probe reports the
-dependency `unavailable` once its first pass has run.
+dependency `unavailable` once its first pass has run — for every server **an
+agent declares**. A server named only by a use case's `Mcp()` marker is not
+covered; see [The health probe does not cover a server reached only this
+way](#the-health-probe-does-not-cover-a-server-reached-only-this-way).
 
 `optional` tolerates a network that is not there. It tolerates nothing else, and
 three carve-outs are deliberate:
@@ -192,9 +195,15 @@ fails the run as a whole with a provider error — not as a per-tool refusal the
 model could work around. And once the network returns, each run opens the
 connection and closes it again when it ends, because nothing outside the run
 holds it: that is one connection, and on a server that registers clients
-dynamically one registration, **per run** rather than per worker. `optional` is
-for a laptop, a CI job or a side-car that has not come up yet; it is not a
-production posture.
+dynamically one registration, **per run** rather than per worker.
+
+That recovery belongs to the agent path alone. A server reached through an
+`Mcp()` marker does not recover: its grant is resolved once, when the runtime
+is entered, so a tolerated outage keeps every marker call failing
+`TOOL_UNAVAILABLE` until the worker restarts.
+
+`optional` is for a laptop, a CI job or a side-car that has not come up yet;
+it is not a production posture.
 
 ## Authentication
 
@@ -446,6 +455,55 @@ build-time only, the reach is bounded to that agent's grants, and calls through
 the session bypass the grant's `include`/`exclude`. Details and failure codes in
 [the `python` capability](#python-application-owned-toolsets).
 
+## Reach a server directly, with no agent in the middle
+
+A use case can declare `Mcp(server, include=[...])` in its own `execute`
+signature and reach a configured server directly — no agent, no `kind: mcp`
+capability, nothing compiled for a model to call. The deployment still
+declares `ai.engine` and installs its extra — the MCP client factory comes
+from that provider — so what this sheds is the filler agent artifact, not the
+engine. The client is the same one
+the worker already opened for `ai.mcp_servers`, so this costs no second
+connection: it is a second, independently declared filter over the same
+shared session, checked at start-up against the server's real tool list, the
+same way an agent's own `mcp` capability is checked. See [the `Mcp()`
+marker](../rest/use-case-dsl.md#mcp-marker--reaching-an-mcp-server-directly)
+for the complete example, anchored by
+[`tests/integration/ai/test_use_case_mcp_marker_test_double.py`](https://github.com/the-reacher-data/loom-py/blob/master/tests/integration/ai/test_use_case_mcp_marker_test_double.py).
+
+The rule below — your own tools are a `usecase` grant, not an MCP one — is
+unchanged by this: `Mcp()` is for reaching *someone else's* server directly
+from application code, the same ownership boundary the rule already draws.
+
+### The health probe does not cover a server reached only this way
+
+Under `ai.remote_clients: optional` (above), the health probe reports a
+server `unavailable` only for a server **an agent declared** — it walks
+compiled agent plans, and a server named solely by a use case's `Mcp()`
+marker is outside its reach. Concretely: a deployment whose only MCP server
+is reached through `Mcp()`, never through an agent, **boots successfully and
+reports `ok`** even when that server never connected, and the failure
+surfaces only on the first business request that reaches it, as
+`TOOL_UNAVAILABLE`. Extending the probe to a use-case-only server is future
+work, not something this version does.
+
+### A use case's call queues behind other grant views
+
+A use case's tool call takes the server's single session lock
+(`SharedMcpSession`, `loom/ai/runtime/_mcp.py`), shared with every other
+view built over that session: another use case's `Mcp()`, and an agent
+handle's own `handle.mcp(server)`.
+
+The model's own tool calls do **not** take it. They run over the raw
+`MCPToolset`, which reference-counts instead of serialising, so concurrent
+runs keep issuing calls in parallel, as the operational notes below
+describe.
+
+The wait counts against this call's own deadline — the server's
+`timeout_ms`, not any plan's `tool_timeout_ms` — and surfaces as
+`TOOL_TIMEOUT`, attributed to that deadline rather than to the queue that
+produced it.
+
 ## The rule: your own tools are a `usecase` grant
 
 Here is the decision that actually comes up, and the one this page exists for.
@@ -512,7 +570,10 @@ worker: start-up and every agent granted the server work over one `MCPToolset`,
 whose entries are reference-counted, so ten agents naming one server are one
 session and not eleven. That matters beyond sockets — a server that registers
 clients dynamically sees one registration and one credential resolution per
-worker, not one per agent.
+worker, not one per agent. A server a use case names with `Mcp()` joins that
+same one — it is folded into the set the worker opens under the very same key,
+so a deployment where an agent and a use case both name a server still opens
+it once.
 
 Sharing the toolset is deliberate and is *not* the same as sharing a serialised
 session: concurrent runs keep issuing their calls in parallel, so one agent's

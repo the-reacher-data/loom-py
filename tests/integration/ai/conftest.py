@@ -279,6 +279,32 @@ def mcp_client_factory(
     return _factory
 
 
+@dataclass
+class CountingMcpClientFactory:
+    """``McpClientFactory`` recording each call it serves, by server name.
+
+    A shared open/close log (``lifecycle_log``) proves a client opened once;
+    it does not prove the *factory callable* itself was invoked only once,
+    which is the number the plan's "to be measured, not assumed" note (S6)
+    and T501/AC2 call for: a real call counter on the factory, not a reading
+    of the log an unrelated refactor could leave stale.
+
+    Args:
+        clients: Stub client per registered server name.
+
+    Attributes:
+        calls: Server name of every invocation, in order.
+    """
+
+    clients: Mapping[str, StubMcpClient]
+    calls: list[str] = field(default_factory=list)
+
+    def __call__(self, capability: CompiledMcpCapability) -> StubMcpClient:
+        """Record the call and return the stub client registered for it."""
+        self.calls.append(capability.server)
+        return self.clients[capability.server]
+
+
 # ---------------------------------------------------------------------------
 # Engine stubs
 # ---------------------------------------------------------------------------

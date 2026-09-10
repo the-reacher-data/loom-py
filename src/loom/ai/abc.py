@@ -161,23 +161,34 @@ class AgentAnswer(LoomFrozenStruct, Generic[AnswerT], frozen=True, kw_only=True)
 
 
 class McpHandle(Protocol):
-    """One artefact's own filtered view of one of its ``mcp`` grants.
+    """A caller-bound, filtered view of one MCP server's tools.
 
-    Not a second, independently configured filter: this is the very same
-    composed view — over the same shared session, built by the same
-    include/exclude predicate — that the model's own toolset runs over.
-    There is no wider filter this handle could reach, because no second
-    filter exists to diverge towards. Authentication, timeout, span and
-    expiry are the same guard with the same numbers the model's own calls
-    use, because they come from the same plan.
+    Two paths hand one out, and they differ in where the filter comes from.
+    ``AgentHandle.mcp()`` returns the artefact's own grant: the very same
+    composed view, over the same shared session and the same include/exclude
+    predicate, that the model's own toolset runs over — nothing there is
+    re-declared, so it cannot diverge. An ``Mcp()`` marker returns a view
+    whose filter is the *signature's* own ``include``, which may be wider
+    than any agent's. That is a second, independently declared filter, and
+    the guarantee it carries is not that no wider view exists: it is that
+    the widening is written down in the signature and verified against the
+    server's real tool list at start-up.
+
+    Both are views over one shared session, never a second connection, and
+    both run under the same guard — authentication, timeout, span, expiry.
+    Only the deadline's source differs: the agent path uses its plan's
+    numbers, and the marker path, which belongs to no plan, uses the
+    server's own ``timeout_ms``.
     """
 
     def tools(self) -> tuple[str, ...]:
         """Return the tool names visible through this grant's own filter.
 
         Returns:
-            Tool names already narrowed by the artefact's declared
-            include/exclude filter for this server.
+            Tool names already narrowed by this view's own filter — the
+            artefact's declared include/exclude when the handle came from
+            an agent, the signature's own ``include`` when it came from an
+            ``Mcp()`` marker.
         """
         ...
 
@@ -219,8 +230,10 @@ class McpHandle(Protocol):
                 decoded ``expect`` — the tool is outside this grant's filter,
                 the tool publishes no output schema, the tool reported a
                 failure, the server returned no structured content despite
-                publishing a schema, or the structured content did not
-                decode into ``expect``.
+                publishing a schema, the structured content did not decode
+                into ``expect``, or — on the ``Mcp()`` marker path, under
+                ``ai.remote_clients: optional`` — the server this grant names
+                never connected at start-up (``TOOL_UNAVAILABLE``).
         """
         ...
 
@@ -243,10 +256,13 @@ class McpHandle(Protocol):
         Raises:
             AgentRunError: With a code naming why the call failed — the tool
                 is outside this grant's filter, the tool reported a failure,
-                or the server returned structured content that is not a
+                the server returned structured content that is not a
                 mapping (a list, a scalar) — a contradiction of the protocol
                 this method returns, distinct from returning no structured
-                content at all, which comes back as ``{}``.
+                content at all, which comes back as ``{}`` — or, on the
+                ``Mcp()`` marker path under ``ai.remote_clients: optional``,
+                the server this grant names never connected at start-up
+                (``TOOL_UNAVAILABLE``).
         """
         ...
 

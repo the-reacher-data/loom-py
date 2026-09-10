@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import msgspec
 
+from loom.ai._filters import select_names
 from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, McpHandle, SqlGrantHandle
+from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.plan import ExecutionPlan
@@ -160,6 +162,81 @@ class McpHandleDouble:
                 "the use case"
             )
         return self._untyped_results[tool]
+
+
+class _FilteredMcpDouble:
+    """Narrows a published :class:`McpHandleDouble` by one binding's ``include``.
+
+    Bound to an ``Mcp(server, include=...)`` marker parameter through
+    :meth:`UseCaseTest.with_mcp`. Production refuses a tool call on two
+    distinct grounds before ever reaching the network
+    (``McpGrantView._require_tool``): the tool falls outside the
+    resolving signature's own ``include``, or it falls inside it but the
+    server's live catalogue never published it. This wrapper enforces
+    both against the double it wraps, so a test that calls an excluded or
+    unpublished tool fails the same way production would, instead of
+    passing against a double that never checked.
+
+    Args:
+        double: Published double whose scripted tools and results this
+            view narrows and delegates to.
+        server: Server name the resolving ``Mcp(server, ...)`` marker
+            declared, named in the refusal message — not necessarily the
+            name the double itself was constructed with.
+        include: The resolving binding's own ``include`` glob patterns.
+    """
+
+    def __init__(self, double: McpHandleDouble, *, server: str, include: tuple[str, ...]) -> None:
+        self._double = double
+        self._server = server
+        self._admitted = select_names(double.tools(), include=include, exclude=())
+
+    def tools(self) -> tuple[str, ...]:
+        """Return the scripted tool names this binding's ``include`` admits."""
+        return self._admitted
+
+    async def call(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        *,
+        expect: type[Any],
+    ) -> Any:
+        """Refuse *tool* outside this view, else delegate to the wrapped double.
+
+        Raises:
+            AgentRunError: With code ``TOOL_UNKNOWN`` if *tool* is not
+                among :meth:`tools`, naming the admitted tools — the same
+                refusal production makes before any network call.
+            AssertionError: If *tool* is admitted but the wrapped double
+                has no result scheduled for it through :meth:`McpHandleDouble.on_call`.
+        """
+        self._require_admitted(tool)
+        return await self._double.call(tool, arguments, expect=expect)
+
+    async def call_untyped(self, tool: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Refuse *tool* outside this view, else delegate to the wrapped double.
+
+        Raises:
+            AgentRunError: With code ``TOOL_UNKNOWN`` if *tool* is not
+                among :meth:`tools`, naming the admitted tools — the same
+                refusal production makes before any network call.
+            AssertionError: If *tool* is admitted but the wrapped double
+                has no result scheduled for it through
+                :meth:`McpHandleDouble.on_call_untyped`.
+        """
+        self._require_admitted(tool)
+        return await self._double.call_untyped(tool, arguments)
+
+    def _require_admitted(self, tool: str) -> None:
+        if tool in self._admitted:
+            return
+        granted = ", ".join(sorted(self._admitted)) or "none"
+        raise AgentRunError(
+            AgentRunErrorCode.TOOL_UNKNOWN,
+            f"mcp server {self._server!r} grants no tool named {tool!r}; "
+            f"tools this grant admits: {granted}",
+        )
 
 
 class SqlGrantHandleDouble:
@@ -375,6 +452,9 @@ if TYPE_CHECKING:  # the doubles stand in for the published protocols
     def _mcp_contract(double: McpHandleDouble) -> McpHandle:
         return double
 
+    def _filtered_mcp_contract(double: _FilteredMcpDouble) -> McpHandle:
+        return double
+
     def _sql_contract(double: SqlGrantHandleDouble) -> SqlGrantHandle:
         return double
 
@@ -410,6 +490,7 @@ class UseCaseTest(Generic[ResultT]):
         self._dependencies: dict[type[Any], Any] = {}
         self._identity: Identity | None = None
         self._agent_doubles: dict[str, AgentHandleDouble] = {}
+        self._mcp_doubles: dict[str, McpHandleDouble] = {}
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -531,6 +612,35 @@ class UseCaseTest(Generic[ResultT]):
         self._agent_doubles[name] = double
         return self
 
+    def with_mcp(self, server: str, double: McpHandleDouble) -> UseCaseTest[ResultT]:
+        """Bind *double* to the ``Mcp(server, include=...)`` marker parameter named *server*.
+
+        Without this call a use case declaring ``Mcp(server, ...)`` fails
+        closed when run, naming the use case and the server — the same
+        fail-closed design :meth:`with_agent` applies to ``Agent(name)``.
+
+        The double is narrowed to the resolving binding's own ``include``
+        before the use case ever sees it: a scripted tool outside
+        ``include``, or inside it but never scripted through
+        :meth:`~McpHandleDouble.with_tools`, is refused with the same
+        ``AgentRunError(TOOL_UNKNOWN)`` production raises before any
+        network call.
+
+        Args:
+            server: Server name exactly as the ``Mcp(server, ...)`` marker
+                declares it in the use case under test.
+            double: Pre-built :class:`McpHandleDouble` — script its tools
+                and results with :meth:`~McpHandleDouble.with_tools` /
+                :meth:`~McpHandleDouble.on_call` /
+                :meth:`~McpHandleDouble.on_call_untyped` before passing it
+                here.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._mcp_doubles[server] = double
+        return self
+
     def with_main_repo(self, repo: RepoFor[Any]) -> UseCaseTest[ResultT]:
         """Inject the main repository dependency into the UseCase instance.
 
@@ -560,20 +670,24 @@ class UseCaseTest(Generic[ResultT]):
             loom.core.errors.RuleViolations: If one or more rule steps fail.
             NotFound: If a Load step finds no entity.
             loom.core.errors.Unauthenticated: If the UseCase declares
-                ``Caller()`` and no :meth:`with_caller` was set.
+                ``Caller()``, ``Agent(name)`` or ``Mcp(server, ...)`` and
+                no :meth:`with_caller` was set.
             RuntimeError: If the UseCase declares ``Agent(name)`` and no
                 matching :meth:`with_agent` call registered a double for
-                *name*.
+                *name*, or declares ``Mcp(server, ...)`` and no matching
+                :meth:`with_mcp` call registered a double for *server*.
             loom.core.engine.compiler.CompilationError: If the UseCase fails
                 structural validation.
         """
         compiler = UseCaseCompiler()
         executor = RuntimeExecutor(compiler)
-        # Always bound, even with no doubles registered: a plan declaring no
-        # Agent() marker never calls it, and one that does must fail closed
-        # exactly like an unregistered Caller() does — see
-        # '_resolve_agent_double'.
+        # Both always bound, even with no doubles registered: a plan
+        # declaring no Agent() or Mcp() marker never calls the matching
+        # resolver, and one that does must fail closed exactly like an
+        # unregistered Caller() does — see '_resolve_agent_double' and
+        # '_resolve_mcp_double'.
         executor.bind_agent_resolver(self._resolve_agent_double)
+        executor.bind_mcp_resolver(self._resolve_mcp_double)
         return await executor.execute(  # type: ignore[no-any-return]
             self._use_case,
             params=self._params,
@@ -607,6 +721,35 @@ class UseCaseTest(Generic[ResultT]):
                 ".run()."
             )
         return double
+
+    def _resolve_mcp_double(
+        self, server: str, include: tuple[str, ...], identity: Identity
+    ) -> _FilteredMcpDouble:
+        """Resolve one ``Mcp(server, ...)`` marker to its registered double, failing closed.
+
+        Args:
+            server: Server name the marker declared.
+            include: The resolving binding's own ``include`` glob patterns,
+                narrowing the registered double the same way production
+                narrows the live catalogue.
+            identity: Verified caller of this execution; the double is not
+                identity-aware, so it is not consulted — the same reason
+                :meth:`_resolve_agent_double` does not consult it either.
+
+        Raises:
+            RuntimeError: If no :meth:`with_mcp` call registered a double
+                for *server*. Naming the use case and the server, the same
+                way an unregistered ``Agent(name)`` fails closed.
+        """
+        del identity
+        double = self._mcp_doubles.get(server)
+        if double is None:
+            raise RuntimeError(
+                f"{type(self._use_case).__qualname__}.execute declares Mcp({server!r}, ...) "
+                f"but no double was registered; call UseCaseTest.with_mcp({server!r}, ...) "
+                "before .run()."
+            )
+        return _FilteredMcpDouble(double, server=server, include=include)
 
     # ------------------------------------------------------------------
     # Inspection

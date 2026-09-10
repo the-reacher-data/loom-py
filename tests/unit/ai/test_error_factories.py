@@ -25,6 +25,7 @@ from loom.ai.errors import (
     conversation_invoker_missing,
     conversation_usecase_also_granted,
     conversation_usecase_unknown,
+    mcp_marker_unknown,
     mcp_server_unreachable,
     mcp_transport_invalid,
     on_output_input_unsatisfied,
@@ -32,6 +33,7 @@ from loom.ai.errors import (
     on_output_usecase_also_granted,
     on_output_usecase_unknown,
     provider_unknown,
+    use_case_tool_filter_matches_nothing,
 )
 
 
@@ -218,6 +220,51 @@ def test_agent_marker_unknown_declara_ninguno_cuando_no_hay_agentes_compilados()
     issue = agent_marker_unknown("incidents.report", "triage", "incident-triage", [])
 
     assert "none" in issue.message
+
+
+def test_mcp_marker_unknown_apunta_al_parametro_del_use_case() -> None:
+    """The offending field is the parameter, not the use case or the server.
+
+    ``parameter`` and ``server`` are deliberately disjoint strings (neither is
+    a substring of the other): a fixture where the parameter name is a
+    substring of the server name (e.g. ``"docs"`` inside ``"docs-server"``)
+    would let ``assert parameter in message`` pass on the server's presence
+    alone, without the message actually naming the parameter.
+    """
+    issue = mcp_marker_unknown("incidents.report", "gateway", "docs-server", ["billing-server"])
+
+    assert issue.code is AgentErrorCode.MCP_MARKER_UNKNOWN
+    assert issue.component == "incidents.report"
+    assert issue.field == "parameters.gateway"
+    assert "incidents.report" in issue.message
+    assert "gateway" in issue.message
+    assert "docs-server" in issue.message
+    assert "billing-server" in issue.message
+
+
+def test_mcp_marker_unknown_declara_ninguno_cuando_no_hay_servidores_configurados() -> None:
+    """An empty deployment still produces a readable message."""
+    issue = mcp_marker_unknown("incidents.report", "docs", "docs-server", [])
+
+    assert "none" in issue.message
+
+
+def test_use_case_tool_filter_matches_nothing_reutiliza_el_codigo_existente() -> None:
+    """One condition, one code: no new code is minted for this message.
+
+    ``parameter`` and ``server`` are deliberately disjoint strings (see the
+    equivalent note on ``test_mcp_marker_unknown_apunta_al_parametro_del_use_case``),
+    so each assertion below can only pass if the message actually names that
+    value, not because it is a substring of another fixture value.
+    """
+    issue = use_case_tool_filter_matches_nothing("incidents.report", "gateway", "docs-server")
+
+    assert issue.code is AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING
+    assert issue.component == "incidents.report"
+    assert issue.field == "parameters.gateway"
+    assert "incidents.report" in issue.message
+    assert "gateway" in issue.message
+    assert "docs-server" in issue.message
 
 
 def test_agent_marker_output_mismatch_lleva_lo_esperado_y_lo_declarado() -> None:

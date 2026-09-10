@@ -13,14 +13,14 @@ from celery import Celery  # type: ignore[import-untyped]
 
 import loom.celery.bootstrap as boot
 import loom.celery.runner as _runner
-from loom.ai.abc import AgentHandle
+from loom.ai.abc import AgentHandle, McpHandle
 from loom.ai.errors import AgentCompilationError
 from loom.celery.bootstrap import WorkerBootstrapResult, bootstrap_worker
 from loom.celery.constants import TASK_JOB_PREFIX
 from loom.core.job.job import Job
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.use_case import Agent
+from loom.core.use_case import Agent, Mcp
 from loom.core.use_case.use_case import UseCase
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,13 @@ class _NotifyIncidentUseCase(UseCase[object, object]):
 
     async def execute(self, triage: AgentHandle[dict] = Agent("triage")) -> object:
         return triage
+
+
+class _LookUpKnowledgeUseCase(UseCase[object, object]):
+    """Declares an ``Mcp()`` marker; no worker in this suite ever runs one."""
+
+    async def execute(self, gateway: McpHandle = Mcp("knowledge", include=["search_*"])) -> object:
+        return gateway
 
 
 # ---------------------------------------------------------------------------
@@ -235,5 +242,27 @@ class TestBootstrapWorkerRejectsAgentMarkers:
         assert "triage" in message
 
     def test_a_worker_with_no_agent_marker_still_boots(self, worker_config: str) -> None:
+        result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
+        assert isinstance(result, WorkerBootstrapResult)
+
+
+class TestBootstrapWorkerRejectsMcpMarkers:
+    """H3: the sibling of ``TestBootstrapWorkerRejectsAgentMarkers``, but for ``Mcp()``.
+
+    Pins ``bootstrap_worker``'s own call to ``_reject_mcp_markers`` (T402):
+    the existing unit coverage of that helper never goes through
+    ``bootstrap_worker`` itself, so deleting the call site left the suite
+    green.
+    """
+
+    def test_a_use_case_declaring_mcp_aborts_bootstrap(self, worker_config: str) -> None:
+        with pytest.raises(AgentCompilationError) as excinfo:
+            bootstrap_worker(worker_config, use_cases=[_LookUpKnowledgeUseCase])
+
+        message = str(excinfo.value)
+        assert "_LookUpKnowledgeUseCase" in message
+        assert "gateway" in message
+
+    def test_a_worker_with_no_mcp_marker_still_boots(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
         assert isinstance(result, WorkerBootstrapResult)

@@ -255,9 +255,15 @@ summary    = await triage.run_text(f"Write it up: {facts}") # open prose, decode
 `triage.mcp("runbooks")` and `triage.sql("observability_readonly")` return
 the very same composed view — over the same shared session or connection,
 filtered or bounded by the same predicate — that the model's own toolset
-runs over. There is no second, independently configured filter a use case
-could widen: the grant is declared once, on the artefact's `mcp` / `sql`
-capability, and reached from the use case, never re-declared by it.
+runs over. The grant reached this way is never re-declared: it is declared
+once, on the artefact's `mcp` / `sql` capability, and the use case reaches
+it as-is.
+
+That does not mean no wider view can exist. A use case may declare its own,
+independent view of an MCP server with [`Mcp()`](#mcp-marker--reaching-an-mcp-server-directly),
+whose filter belongs to the use case, not the agent — written in the
+signature and checked at start-up against the server's real tool list, the
+same way an agent's own `mcp` capability is checked.
 
 ### Testing it
 
@@ -304,6 +310,132 @@ the file to see the exact assertion.
 | A shape override (`expect=` or `run_text`) on an artefact whose `on_output` hook declares the `output` field | `AGENT_RUN_SHAPE_WITH_HOOK` | `agent 'incident-triage' declares an output hook that reads the run's output, so this run cannot use a per-run shape; call run(prompt) for the artefact's own declared output instead` | Call `run(prompt)` with no `expect` so the hook receives the artefact's declared shape, or narrow the hook's `Input` to conversation-bookkeeping fields only (drop `output`) so any mode is accepted. See `tests/unit/ai/runtime/test_agent_handle.py::TestRechazoPorHookDeSalida::test_el_mensaje_es_el_que_muestra_use_case_dsl_md`. |
 | A tool outside the artefact's own `mcp` grant filter | `TOOL_UNKNOWN` | `mcp server 'runbooks' grants no tool named 'delete_incident'; tools this grant admits: search_incident` | Call one of the tools `handle.mcp(server).tools()` lists, or widen the artefact's `include` / `exclude` filter for that server. See `tests/unit/ai/runtime/test_grants.py::TestElFiltroDelPermisoMcp::test_el_mensaje_de_tool_fuera_del_permiso_es_el_que_muestra_use_case_dsl_md`. |
 | A tool that publishes no output schema, called through `call(..., expect=X)` | `TOOL_UNTYPED` | `tool 'legacy_lookup' of mcp server 'runbooks' publishes no output schema; call it with call_untyped() instead` | Call `call_untyped(tool, arguments)` instead, and treat the result as the server's own, undecoded JSON. See `tests/unit/ai/runtime/test_grants.py::TestLlamadaTipada::test_el_mensaje_de_tool_sin_forma_es_el_que_muestra_use_case_dsl_md`. |
+
+---
+
+## Mcp marker — reaching an MCP server directly
+
+`Mcp(server, *, include)` declares a handle to one configured MCP server,
+bound to the caller already verified for this execution — the same identity
+`Agent()` binds. Unlike `triage.mcp(server)`, reached *through* an agent's
+own grant, `Mcp()` needs no agent in the middle: the use case is the
+capability's only owner, and its `include` is the *only* filter checked for
+it.
+
+`include` is mandatory, for the same reason it is required on every
+include/exclude filter this framework has: an empty sequence would mean
+"every tool this server publishes", not "the handful this signature names".
+Passing one glob is not enough of a decision to make by omission, so `Mcp()`
+raises `ValueError` rather than widening a grant no one asked for.
+
+The example below is complete and runnable, uses `Caller()` alongside
+`Mcp()`, and is the exact use case exercised — with no network and no MCP
+server — by
+[`tests/integration/ai/test_use_case_mcp_marker_test_double.py`](https://github.com/the-reacher-data/loom-py/blob/master/tests/integration/ai/test_use_case_mcp_marker_test_double.py):
+editing one without the other is a gap the next review will catch. As with
+`Agent()`, an example that skipped `Caller()` would teach a forgeable
+pattern.
+
+```python
+import msgspec
+
+from loom.ai.abc import McpHandle
+from loom.core.identity import Identity
+from loom.core.use_case import Caller, Mcp, UseCase
+
+
+class RunbookLookup(msgspec.Struct, frozen=True):
+    incident_id: str
+    requested_by: str
+    runbook_title: str
+
+
+class LookUpRunbookUseCase(UseCase[object, RunbookLookup]):
+    async def execute(
+        self,
+        incident_id: str,
+        caller: Identity = Caller(),
+        runbooks: McpHandle = Mcp("runbooks", include=("search_incident",)),
+    ) -> RunbookLookup:
+        result = await runbooks.call_untyped(
+            "search_incident", {"incident_id": incident_id}
+        )
+        return RunbookLookup(
+            incident_id=incident_id,
+            requested_by=caller.require_subject(),
+            runbook_title=str(result["title"]),
+        )
+```
+
+`server` is validated at start-up against `ai.mcp_servers`, naming the
+declaring use case and the parameter when it is not configured. `include`
+is checked at start-up too, against the server's *real* tool list — not a
+promise that no wider view exists (an `include` with broad globs admits
+everything, and nothing caps how broad it may be), but a guarantee that
+whatever it admits is written down in the signature and verified before the
+first request ever reaches it.
+
+### What the handle offers
+
+| Member | Returns | Notes |
+|---|---|---|
+| `tools()` | `tuple[str, ...]` | Tool names already narrowed by this marker's own `include`. |
+| `call(tool, arguments, expect=X)` | `X` | Decodes the tool's structured result into `X`; the tool must publish an output schema. |
+| `call_untyped(tool, arguments)` | `Mapping[str, Any]` | The server's own structured content, undecoded — for a tool that publishes no schema. |
+
+### Testing it
+
+`loom.testing.runner.McpHandleDouble` stands in for the handle, exactly as
+`AgentHandleDouble` does for `Agent()`: no network or server is ever
+reached, and a call the test never scripted fails closed. Unlike the
+published double, the resolver wraps it in a private filter carrying this
+marker's own `include`, so a test that calls a tool outside it gets the same
+refusal production would give — see [What the Mcp() marker
+refuses](#what-the-mcp-marker-refuses) below.
+
+```python
+from loom.testing.runner import McpHandleDouble, UseCaseTest
+
+double = McpHandleDouble("runbooks").with_tools("search_incident")
+double.on_call_untyped("search_incident", {"title": "checkout rollback runbook"})
+
+result = await (
+    UseCaseTest(LookUpRunbookUseCase())
+    .with_caller(identity)
+    .with_mcp("runbooks", double)
+    .with_params(incident_id="INC-100")
+    .run()
+)
+```
+
+A use case declaring `Mcp(server, ...)` with no matching `.with_mcp(server,
+...)` fails closed with a `RuntimeError` naming the use case and the server —
+the same fail-closed default `Agent()` already has.
+
+---
+
+## What the Mcp() marker refuses
+
+Every refusal below raises either `loom.ai.errors.AgentRunError` (a call, at
+run time) or `loom.ai.errors.AgentCompilationError` (start-up). Each row is
+pinned by a test — follow the file to see the exact assertion.
+
+| Refusal | Code | When | What to do | Test |
+|---|---|---|---|---|
+| A tool outside the marker's own `include` | `TOOL_UNKNOWN` (`AgentRunError`) | Call time | Call one of `handle.tools()`, or widen the marker's `include`. | `tests/unit/testing/test_runner.py::TestMcpHandleDoubleEnforcesInclude::test_a_use_case_cannot_widen_its_own_include_by_calling_outside_it` and, over the real chain, `tests/integration/ai/test_use_case_mcp_end_to_end.py::TestElDobleYElCaminoRealCoincidenEnElRechazo::test_ambos_caminos_rechazan_la_misma_llamada_fuera_de_include` |
+| A tolerated-unreachable server (`ai.remote_clients: optional`, the server never connected) | `TOOL_UNAVAILABLE` (`AgentRunError`) | Call time | Treat it like any other dependency outage: the server, not the filter, is the problem. | `tests/integration/ai/test_use_case_mcp_resolver.py::TestServidorInalcanzableTolerado::test_el_arranque_pasa_y_la_primera_llamada_es_tool_unavailable` |
+| `server` names no server configured under `ai.mcp_servers` | `MCP_MARKER_UNKNOWN` (`AgentCompilationError`) | Start-up | Fix the typo, or add the server to `ai.mcp_servers`. | `tests/unit/rest/test_fastapi_auto_mcp_markers.py::TestServidorDesconocido::test_un_typo_aborta_nombrando_caso_de_uso_parametro_servidor_y_configurados` |
+| `include` matches no tool the server actually publishes | `TOOL_FILTER_MATCHES_NOTHING` (`AgentCompilationError`) | Start-up | Fix the glob, or confirm the server still publishes the tool you expect. | `tests/integration/ai/test_use_case_mcp_end_to_end.py::TestElIncludeQueNoCasaNadaAbortaPorElCaminoReal::test_un_include_que_no_casa_nada_aborta_con_tool_filter_matches_nothing` |
+
+A tool that publishes no output schema, called through `call(..., expect=X)`,
+is refused the same way `Agent()`'s own grant refuses it (`TOOL_UNTYPED`) —
+but production is the only side that can know: a tool's published schema is
+not something the test double tracks, so `McpHandleDouble` cannot reproduce
+this particular refusal.
+
+Under `ai.remote_clients: optional`, a server tolerated as down never has its
+`include` checked at all — a tolerated outage means the filter goes
+**unverified**, not that it verified clean.
 
 ---
 
@@ -933,3 +1065,4 @@ methods stay on the protocol. Closing is the context manager's job
 | `Agent(name)` → `AgentHandle[T]` | Handle to a named agent, bound to the verified caller |
 | `handle.run(prompt)` / `run(prompt, expect=X)` / `run_text(prompt)` | The three run modes — declared shape, per-run shape, open text |
 | `handle.mcp(server)` / `handle.sql(connection)` | The artefact's own granted views, never re-declared |
+| `Mcp(server, include=[...])` → `McpHandle` | Handle to a configured MCP server, reached directly, bound to the verified caller |

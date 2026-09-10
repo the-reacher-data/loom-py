@@ -59,8 +59,10 @@ def _view(
     catalogue: tuple[McpToolInfo, ...],
 ) -> McpGrantView:
     return McpGrantView(
-        agent=_AGENT,
+        span_attributes={"agent": _AGENT},
         capability=capability,
+        include=capability.include,
+        exclude=capability.exclude,
         session=session,  # type: ignore[arg-type]
         catalogue=catalogue,
         timeout_s=1.0,

@@ -26,6 +26,7 @@ from types import MappingProxyType, TracebackType
 from typing import Any, Self
 from uuid import uuid4
 
+from loom.ai._filters import select_names
 from loom.ai.abc import (
     CONVERSATION_ID_MAX_LENGTH,
     AgentEngine,
@@ -46,6 +47,7 @@ from loom.ai.compiler._plan import (
     CompiledA2ACapability,
     CompiledMcpCapability,
     CompiledSqlCapability,
+    mcp_connection,
 )
 from loom.ai.config import AiConfig
 from loom.ai.errors import (
@@ -59,6 +61,7 @@ from loom.ai.errors import (
     mcp_server_unreachable,
     on_output_invoker_missing,
     sql_readonly_drift,
+    use_case_tool_filter_matches_nothing,
 )
 from loom.ai.runtime._bounded import RunContext
 from loom.ai.runtime._chain import enter_agent_call, exit_agent_call
@@ -119,6 +122,37 @@ class _OpenedClient:
     session: object
 
 
+@dataclass(frozen=True, slots=True)
+class UseCaseMcpGrant:
+    """One verified ``Mcp()`` marker binding, compiled into a runtime input.
+
+    Built by :mod:`loom.rest.fastapi.auto` (``_resolve_ai``) once the marker's
+    server name has already been verified against ``ai.mcp_servers``, and
+    handed to :class:`AgentRuntime` so the server it names joins the set the
+    runtime opens even when no agent plan declares it. ``capability`` carries
+    this binding's own ``include`` — read only by :meth:`_use_case_filter_issues`,
+    to check it at start-up against the server's real tool list. At call
+    time the resolver never reads this ``include`` back: it receives its own
+    from the resolving :class:`~loom.core.engine.plan.McpBinding`, via the
+    executor, which is why one instance of this class exists per binding
+    rather than per server, even though start-up and call time end up
+    checking the same value on two different objects. The *shared*
+    grant a server's live session and full catalogue are read from is a
+    separate, server-keyed :class:`~loom.ai.runtime._grants.McpGrant` built by
+    :meth:`_build_use_case_grants`, whose own capability carries no ``include``
+    at all. ``usecase`` names the declaring use case, and is also carried
+    into :class:`FilterTarget.agent` for the server this binding lists on its
+    own (:meth:`_use_case_filter_targets`) — carried, not read: nothing on
+    that path reads the field back. ``parameter`` is read in one place only:
+    to name the offending signature when the marker's own ``include`` matches
+    no tool the server publishes.
+    """
+
+    capability: CompiledMcpCapability
+    usecase: str
+    parameter: str
+
+
 def _dependency_key(capability: object) -> str | None:
     """Return the health-check key of a capability with a live dependency."""
     if type(capability) is CompiledMcpCapability:
@@ -156,6 +190,18 @@ class AgentRuntime:
             optional`` does not tolerate it either.
         a2a_client_factory: Builds the client of one A2A capability, with the
             same fail-closed rule.
+        use_case_mcp: Every ``Mcp()`` marker binding a declaring use case
+            carries, already verified and compiled — see
+            :class:`UseCaseMcpGrant`. Each one's server joins the set of
+            clients this runtime opens, even when no agent plan names it. A
+            server named only this way stays outside the background health
+            probe: this runtime never reports it as an ``/health`` check
+            entry — see :meth:`_probe_forever`, which iterates the per-plan
+            slots. What a caller observes when such a server is down is
+            decided by
+            :func:`~loom.ai.runtime._handle.mcp_marker_resolver`: a
+            tolerated-unreachable server resolves to a handle whose every
+            call raises ``TOOL_UNAVAILABLE``, never a bind-time failure.
 
     Runs emit no span of their own: the transport owns observability, because
     only it knows the route, the method and the status code a run is attributed
@@ -191,6 +237,7 @@ class AgentRuntime:
         sql_config: SqlConfig | None = None,
         mcp_client_factory: McpClientFactory | None = None,
         a2a_client_factory: A2AClientFactory | None = None,
+        use_case_mcp: Sequence[UseCaseMcpGrant] = (),
     ) -> None:
         self._plans: Mapping[str, AgentPlan] = MappingProxyType({p.name: p for p in plans})
         self._config = config
@@ -200,6 +247,7 @@ class AgentRuntime:
         self._sql_config = sql_config
         self._mcp_client_factory = mcp_client_factory
         self._a2a_client_factory = a2a_client_factory
+        self._use_case_mcp = tuple(use_case_mcp)
         self._stack: AsyncExitStack | None = None
         self._owner: asyncio.Task[Any] | None = None
         self._slots: dict[str, _AgentSlot] = {}
@@ -208,6 +256,7 @@ class AgentRuntime:
         self._live: set[str] = set()
         self._health: dict[str, AgentHealth] = {}
         self._grants: dict[str, AgentGrants] = {}
+        self._use_case_grants: dict[str, McpGrant] = {}
         self._runs = asyncio.Semaphore(config.max_concurrent_runs)
 
     async def __aenter__(self) -> Self:
@@ -237,6 +286,7 @@ class AgentRuntime:
             await self._verify_tool_filters(self._startup_deadline() if tolerated else deadline)
             self._build_engines()
             self._grants = self._build_grants()
+            self._use_case_grants = self._build_use_case_grants()
             self._start_health_probe(stack)
         except BaseException:
             self._stack = None
@@ -275,6 +325,7 @@ class AgentRuntime:
         self._tool_catalog.clear()
         self._live.clear()
         self._grants.clear()
+        self._use_case_grants.clear()
         await stack.aclose()
 
     def agent_names(self) -> tuple[str, ...]:
@@ -516,11 +567,15 @@ class AgentRuntime:
 
         Under ``ai.remote_clients: optional`` a client that does not connect is
         logged and dropped instead of aborting start-up: the runtime serves the
-        agents whose other dependencies are live and the health probe reports
-        the missing key ``unavailable``. A client that was never wired --- no
-        factory for a declared grant --- is a deployment bug rather than an
-        offline network, so it is collected apart, at the point the factory is
-        found ``None``, and stays fatal under both values.
+        agents whose other dependencies are live, and the health probe reports
+        the missing key ``unavailable`` for every server an agent declares
+        (``_probe_forever`` iterates compiled plans only — a server named
+        solely by a use case's ``Mcp()`` marker is outside its reach; see the
+        ``use_case_mcp`` parameter of :class:`AgentRuntime`). A client that was
+        never wired --- no factory for a declared grant --- is a deployment
+        bug rather than an offline network, so it is collected apart, at the
+        point the factory is found ``None``, and stays fatal under both
+        values.
 
         Returns:
             Whether a connection failure was tolerated, so the caller knows the
@@ -530,6 +585,7 @@ class AgentRuntime:
             AgentCompilationError: Aggregating every fatal start-up failure.
         """
         mcp, a2a = _remote_capabilities(self._plans.values())
+        mcp = _fold_use_case_mcp(mcp, self._use_case_mcp)
         if not mcp and not a2a:
             return False
         opened: list[_OpenedClient] = []
@@ -676,7 +732,7 @@ class AgentRuntime:
             AgentCompilationError: When a listing does not complete in the
                 budget, or a declared filter matches no offered tool.
         """
-        targets = filter_targets(self._plans.values())
+        targets = [*filter_targets(self._plans.values()), *self._use_case_filter_targets()]
         if not targets:
             return
         listed: dict[str, tuple[McpToolInfo, ...]] = {}
@@ -688,8 +744,59 @@ class AgentRuntime:
         finally:
             self._tool_catalog.update(listed)
         issues = filter_issues(targets, listed)
+        issues.extend(self._use_case_filter_issues())
         if issues:
             raise AgentCompilationError(issues)
+
+    def _use_case_filter_targets(self) -> tuple[FilterTarget, ...]:
+        """One unfiltered target per declaring use case's server.
+
+        An empty ``include``/``exclude`` pair still gets the server *listed*
+        (:func:`filter_targets`'s own contract) and is then skipped by
+        :func:`filter_issues`; the marker's own ``include`` is checked
+        separately, in :meth:`_use_case_filter_issues`, over the catalogue
+        this listing fills.  Contributed here, unconditionally, rather than
+        after ``filter_targets`` might return an empty tuple: a deployment
+        with zero compiled agent plans and one declaring use case must still
+        list this server, or the catalogue :meth:`_mcp_grant` reads from
+        stays empty and every call the resolved handle makes fails with
+        ``TOOL_UNKNOWN`` against a server that opened cleanly.
+        """
+        return tuple(
+            FilterTarget(
+                agent=grant.usecase,
+                server=grant.capability.server,
+                key=mcp_key(grant.capability),
+                include=(),
+                exclude=(),
+            )
+            for grant in self._use_case_mcp
+        )
+
+    def _use_case_filter_issues(self) -> list[AgentCompilationIssue]:
+        """One issue per marker whose own ``include`` matches no listed tool.
+
+        Not a :func:`filter_issues` variant: that function has no field to
+        carry a parameter name, and building one issue shape from inside it
+        would need a discriminant on :class:`FilterTarget`. A server that was
+        never listed (a tolerated, unreachable one) is skipped here too — its
+        outage is reported by the connection check, not this filter pass.
+        """
+        issues: list[AgentCompilationIssue] = []
+        for grant in self._use_case_mcp:
+            catalogue = self._tool_catalog.get(mcp_key(grant.capability))
+            if catalogue is None:
+                continue
+            names = tuple(tool.name for tool in catalogue)
+            if not select_names(
+                names, include=grant.capability.include, exclude=grant.capability.exclude
+            ):
+                issues.append(
+                    use_case_tool_filter_matches_nothing(
+                        grant.usecase, grant.parameter, grant.capability.server
+                    )
+                )
+        return issues
 
     async def _list_tools_once(
         self, targets: Sequence[FilterTarget], listed: dict[str, tuple[McpToolInfo, ...]]
@@ -859,6 +966,72 @@ class AgentRuntime:
         """Resolve every plan's grants once, right after its engine is built."""
         return {name: self._plan_grants(plan) for name, plan in self._plans.items()}
 
+    def _build_use_case_grants(self) -> dict[str, McpGrant]:
+        """Resolve the one shared substrate grant per server, keyed by server name.
+
+        This grant is **not** any one binding's filtered view: it carries the
+        live session and the server's full, unfiltered catalogue, which is why
+        its own capability is built through :func:`mcp_connection` — the same
+        helper that keys a shared MCP client by connection identity — so
+        ``include``/``exclude`` come back explicitly empty rather than
+        whichever binding happened to be folded in last. Two use cases naming
+        the same server can declare different ``include``s without either
+        one's filter leaking into the other or into this shared grant: each
+        binding's own filter is checked at start-up by
+        :meth:`_use_case_filter_issues` and applied at call time from its
+        own :class:`~loom.core.engine.plan.McpBinding`, via the executor —
+        never from the value returned here.
+
+        Built through the existing :meth:`_mcp_grant`, so a tolerated
+        unreachable server yields ``None`` here exactly as it does for an
+        agent's own grant. Keyed by server name alone: this is the shared
+        substrate every binding on that server reads its session and
+        catalogue from, so one entry per server is exactly right, not a
+        limitation to work around.
+        """
+        grants: dict[str, McpGrant] = {}
+        for entry in self._use_case_mcp:
+            server = entry.capability.server
+            if server in grants:
+                continue
+            grant = self._mcp_grant(mcp_connection(entry.capability))
+            if grant is not None:
+                grants[server] = grant
+        return grants
+
+    def use_case_mcp_grant(self, server: str) -> McpGrant | None:
+        """Return the shared substrate grant of one server ``Mcp()`` markers declared.
+
+        This is the server-keyed substrate — live session, full unfiltered
+        catalogue — every binding on *server* shares; it is **not** any one
+        caller's filtered view, and its own capability carries an explicitly
+        empty ``include``/``exclude`` (see :meth:`_build_use_case_grants`). A
+        caller's own filter comes from its own
+        :class:`~loom.core.engine.plan.McpBinding`, passed to the resolver
+        by the executor at resolution time, never from the value this
+        method returns.
+
+        Args:
+            server: MCP server name a marker declared.
+
+        Returns:
+            The resolved shared grant, or ``None`` when *server* was never
+            declared by any use case, or its connection was tolerated as
+            unreachable under ``ai.remote_clients: optional``.
+
+        Raises:
+            RuntimeError: When the runtime was never entered. This follows
+                ``_require_slot``'s own rule rather than calling it: that
+                method calls ``_require_plan`` first, which would raise
+                ``KeyError`` on a server name that is not an agent name.
+        """
+        if self._stack is None:
+            raise RuntimeError(
+                "AgentRuntime must be entered before use: wrap it in "
+                "'async with runtime:' to open its clients and build its engines"
+            )
+        return self._use_case_grants.get(server)
+
     def _plan_grants(self, plan: AgentPlan) -> AgentGrants:
         """Resolve one plan's ``mcp``/``sql`` grants against the clients start-up opened."""
         mcp: dict[str, McpGrant] = {}
@@ -1010,3 +1183,36 @@ def _remote_capabilities(
             elif type(capability) is CompiledA2ACapability:
                 a2a.setdefault(capability.agent, capability)
     return tuple(mcp.values()), tuple(a2a.values())
+
+
+def _fold_use_case_mcp(
+    mcp: tuple[CompiledMcpCapability, ...], use_case_mcp: Sequence[UseCaseMcpGrant]
+) -> tuple[CompiledMcpCapability, ...]:
+    """Fold each declaring use case's own server into the set the runtime opens.
+
+    Applied above ``_open_clients``'s ``if not mcp and not a2a: return False``
+    guard: with zero compiled agent plans and a server named only by a use
+    case, that guard would otherwise fire on the agent-only ``mcp`` tuple and
+    nothing would ever open.
+
+    Both sources compile from the same ``ai.mcp_servers`` entry for a given
+    server name and differ only in ``include``/``exclude``. Neither field
+    reaches anything on this path: the client is keyed by
+    ``f"mcp:{server}"`` alone (:func:`~loom.ai.runtime._mcp.mcp_key`), and
+    the factory that opens it never reads a filter — the filtering is a view
+    built later, per grant. So whichever of the two capabilities wins opens
+    the same client, and ``setdefault`` here is a de-duplication rule, not a
+    precedence one, exactly like the one :func:`_remote_capabilities` already
+    applies across plans.
+
+    Args:
+        mcp: MCP capabilities every compiled agent plan declares, de-duplicated.
+        use_case_mcp: Every verified ``Mcp()`` marker binding.
+
+    Returns:
+        *mcp* with one capability appended per use-case-only server name.
+    """
+    merged: dict[str, CompiledMcpCapability] = {capability.server: capability for capability in mcp}
+    for grant in use_case_mcp:
+        merged.setdefault(grant.capability.server, grant.capability)
+    return tuple(merged.values())

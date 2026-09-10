@@ -6,16 +6,17 @@ from unittest.mock import AsyncMock
 import msgspec
 import pytest
 
-from loom.ai.abc import AgentHandle
+from loom.ai.abc import AgentHandle, McpHandle
+from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.command import Command
 from loom.core.engine.plan import ExecutionPlan
 from loom.core.errors import NotFound
 from loom.core.identity import Identity
 from loom.core.model import LoomStruct
-from loom.core.use_case.markers import Agent, Caller, Input, LoadById
+from loom.core.use_case.markers import Agent, Caller, Input, LoadById, Mcp
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
-from loom.testing.runner import AgentHandleDouble, UseCaseTest
+from loom.testing.runner import AgentHandleDouble, McpHandleDouble, UseCaseTest
 
 # ---------------------------------------------------------------------------
 # Domain fixtures
@@ -124,6 +125,54 @@ class _NoDoubleUseCase(UseCase[Any, object]):
         self, triage: AgentHandle[_SeverityAssessment] = Agent("incident-triage")
     ) -> object:
         return triage
+
+
+class _McpUseCase(UseCase[Any, dict[str, Any]]):
+    """Declares an Mcp() marker narrowed to a single tool."""
+
+    async def execute(
+        self,
+        incident_id: str,
+        runbooks: McpHandle = Mcp("runbooks", include=("search_incident",)),
+    ) -> dict[str, Any]:
+        result = await runbooks.call_untyped("search_incident", {"incident_id": incident_id})
+        return dict(result)
+
+
+class _NoMcpDoubleUseCase(UseCase[Any, object]):
+    async def execute(self, runbooks: McpHandle = Mcp("runbooks", include=("*",))) -> object:
+        return runbooks
+
+
+class _McpTypedCallUseCase(UseCase[Any, Any]):
+    """Declares an Mcp() marker and calls the typed ``call()`` method."""
+
+    async def execute(
+        self,
+        tool: str,
+        runbooks: McpHandle = Mcp("runbooks", include=("search_incident",)),
+    ) -> Any:
+        return await runbooks.call(tool, {}, expect=dict)
+
+
+class _WideningMcpUseCase(UseCase[Any, object]):
+    """Calls a tool its own Mcp() include does not admit."""
+
+    async def execute(self, runbooks: McpHandle = Mcp("runbooks", include=("search_*",))) -> object:
+        return await runbooks.call_untyped("delete_incident", {})
+
+
+class _TwoMcpServersUseCase(UseCase[Any, dict[str, Any]]):
+    """Declares two independent Mcp() markers — exercises per-server routing."""
+
+    async def execute(
+        self,
+        runbooks: McpHandle = Mcp("runbooks", include=("search_incident",)),
+        docs: McpHandle = Mcp("docs", include=("lookup",)),
+    ) -> dict[str, Any]:
+        runbook = await runbooks.call_untyped("search_incident", {})
+        doc = await docs.call_untyped("lookup", {})
+        return {"runbook": runbook, "doc": doc}
 
 
 # ---------------------------------------------------------------------------
@@ -406,3 +455,178 @@ class TestAgentHandleDoubleRequiresNoNetworkModelOrDatabase:
         double.mcp("runbooks")
         double.sql("observability_readonly")
         assert double.grants() == ("runbooks", "observability_readonly")
+
+
+# ---------------------------------------------------------------------------
+# Mcp() marker doubles (spec 015, T401)
+# ---------------------------------------------------------------------------
+
+
+class TestMcpMarkerFailsClosedWithoutADouble:
+    async def test_declaring_mcp_with_no_double_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="runbooks"):
+            await UseCaseTest(_NoMcpDoubleUseCase()).with_caller(Identity(subject="ada")).run()
+
+    async def test_error_names_the_use_case_and_the_server(self) -> None:
+        with pytest.raises(RuntimeError) as excinfo:
+            await UseCaseTest(_NoMcpDoubleUseCase()).with_caller(Identity(subject="ada")).run()
+        message = str(excinfo.value)
+        assert "_NoMcpDoubleUseCase" in message
+        assert "runbooks" in message
+
+
+class TestMcpHandleDoubleEnforcesInclude:
+    """The closing criterion of T401: the double refuses what production refuses."""
+
+    async def test_the_use_case_runs_with_no_network_and_no_mcp_server(self) -> None:
+        runbooks = McpHandleDouble("runbooks").with_tools("search_incident")
+        runbooks.on_call_untyped("search_incident", {"title": "checkout runbook"})
+
+        result = await (
+            UseCaseTest(_McpUseCase())
+            .with_caller(Identity(subject="ada"))
+            .with_mcp("runbooks", runbooks)
+            .with_params(incident_id="INC-1")
+            .run()
+        )
+
+        assert result == {"title": "checkout runbook"}
+
+    async def test_with_tools_drives_tools_through_the_filter(self) -> None:
+        runbooks = McpHandleDouble("runbooks").with_tools("search_incident", "delete_incident")
+        runner = UseCaseTest(_McpUseCase()).with_mcp("runbooks", runbooks)
+        resolved = runner._resolve_mcp_double(
+            "runbooks", ("search_incident",), Identity(subject="ada")
+        )
+        assert resolved.tools() == ("search_incident",)
+
+    async def test_an_unscripted_in_filter_tool_call_raises_assertion_error(self) -> None:
+        runbooks = McpHandleDouble("runbooks").with_tools("search_incident")
+        # No on_call_untyped scripted: admitted by the filter, refused by the double.
+        with pytest.raises(AssertionError, match="search_incident"):
+            await (
+                UseCaseTest(_McpUseCase())
+                .with_caller(Identity(subject="ada"))
+                .with_mcp("runbooks", runbooks)
+                .with_params(incident_id="INC-1")
+                .run()
+            )
+
+    async def test_a_use_case_cannot_widen_its_own_include_by_calling_outside_it(self) -> None:
+        """B1 / M2: the include a call is checked against must come from the
+        resolving marker's own binding, exercised end to end through
+        :meth:`UseCaseTest.run` — not a tuple the test hands the resolver
+        by hand."""
+        runbooks = McpHandleDouble("runbooks").with_tools("search_incident", "delete_incident")
+        runbooks.on_call_untyped("delete_incident", {"ok": True})
+        with pytest.raises(AgentRunError) as excinfo:
+            await (
+                UseCaseTest(_WideningMcpUseCase())
+                .with_caller(Identity(subject="ada"))
+                .with_mcp("runbooks", runbooks)
+                .run()
+            )
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
+        message = str(excinfo.value)
+        assert "delete_incident" in message
+        assert "search_incident" in message  # the only tool this include actually admits
+
+    async def test_an_in_filter_tool_absent_from_with_tools_raises_tool_unknown(self) -> None:
+        runbooks = McpHandleDouble("runbooks")  # nothing scripted through with_tools
+        with pytest.raises(AgentRunError) as excinfo:
+            await (
+                UseCaseTest(_McpUseCase())
+                .with_caller(Identity(subject="ada"))
+                .with_mcp("runbooks", runbooks)
+                .with_params(incident_id="INC-1")
+                .run()
+            )
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
+        assert "none" in str(excinfo.value)  # nothing published, nothing admitted
+
+    async def test_with_mcp_returns_self_for_chaining(self) -> None:
+        runner = UseCaseTest(_NoMcpDoubleUseCase())
+        double = McpHandleDouble("runbooks")
+        assert runner.with_mcp("runbooks", double) is runner
+
+
+class TestMcpMarkerTypedCallEnforcesInclude:
+    """H1: the typed ``call()`` path enforces the same guard as ``call_untyped()``."""
+
+    async def test_a_typed_call_outside_include_raises_tool_unknown(self) -> None:
+        runbooks = McpHandleDouble("runbooks").with_tools("search_incident", "delete_incident")
+        runbooks.on_call("delete_incident", {"ok": True})
+        with pytest.raises(AgentRunError) as excinfo:
+            await (
+                UseCaseTest(_McpTypedCallUseCase())
+                .with_caller(Identity(subject="ada"))
+                .with_mcp("runbooks", runbooks)
+                .with_params(tool="delete_incident")
+                .run()
+            )
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
+
+    async def test_a_typed_call_inside_include_but_unpublished_raises_tool_unknown(self) -> None:
+        runbooks = McpHandleDouble("runbooks")  # nothing scripted through with_tools
+        with pytest.raises(AgentRunError) as excinfo:
+            await (
+                UseCaseTest(_McpTypedCallUseCase())
+                .with_caller(Identity(subject="ada"))
+                .with_mcp("runbooks", runbooks)
+                .with_params(tool="search_incident")
+                .run()
+            )
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
+
+
+class TestMcpMarkerRefusalNamesTheDeclaredServer:
+    """B2: the refusal names the server the marker declared, not the double's own name."""
+
+    async def test_the_message_names_the_markers_server_not_the_doubles_name(self) -> None:
+        mistyped = McpHandleDouble("runbook").with_tools("search_incident", "delete_incident")
+        with pytest.raises(AgentRunError) as excinfo:
+            await (
+                UseCaseTest(_WideningMcpUseCase())
+                .with_caller(Identity(subject="ada"))
+                .with_mcp("runbooks", mistyped)
+                .run()
+            )
+        message = str(excinfo.value)
+        assert "mcp server 'runbooks' grants" in message
+        assert "mcp server 'runbook' grants" not in message
+
+
+class TestMcpMarkerRoutesEachServerToItsOwnDouble:
+    """M1: a double registered under a different name never stands in for the
+    marker's own server, and two servers each reach their own double."""
+
+    async def test_a_double_registered_under_another_name_fails_closed(self) -> None:
+        other = McpHandleDouble("other").with_tools("search_incident")
+        other.on_call_untyped("search_incident", {"title": "wrong server"})
+        with pytest.raises(RuntimeError, match="runbooks"):
+            await (
+                UseCaseTest(_McpUseCase())
+                .with_caller(Identity(subject="ada"))
+                .with_mcp("other", other)
+                .with_params(incident_id="INC-1")
+                .run()
+            )
+
+    async def test_two_servers_each_reach_their_own_double(self) -> None:
+        runbooks = McpHandleDouble("runbooks").with_tools("search_incident")
+        runbooks.on_call_untyped("search_incident", {"title": "checkout runbook"})
+        docs = McpHandleDouble("docs").with_tools("lookup")
+        docs.on_call_untyped("lookup", {"title": "checkout doc"})
+
+        result = await (
+            UseCaseTest(_TwoMcpServersUseCase())
+            .with_caller(Identity(subject="ada"))
+            .with_mcp("runbooks", runbooks)
+            .with_mcp("docs", docs)
+            .run()
+        )
+
+        assert result == {
+            "runbook": {"title": "checkout runbook"},
+            "doc": {"title": "checkout doc"},
+        }

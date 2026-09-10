@@ -112,6 +112,17 @@ still parents correctly in both directions.
 |---|---|
 | `Scope.TOOL` | one capability call — a use case, a SQL query, an MCP tool, a remote agent |
 
+A `Scope.TOOL` span of an **MCP call** names the side that reached the
+server, and only one of the two:
+
+| Attribute | Present when |
+|---|---|
+| `agent` | the call came from an agent — its own capability, or an `AgentHandle.mcp()` view |
+| `mcp_server` | the call came from a use case's `Mcp()` marker |
+
+They never appear together. Anything that groups `Scope.TOOL` spans by
+`agent` alone will not see marker calls.
+
 The agent span of a run — streamed or not — closes with what the run spent,
 under the OpenTelemetry GenAI names:
 

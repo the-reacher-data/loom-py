@@ -14,6 +14,7 @@ roles under the grant's bounds.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -23,6 +24,7 @@ import pytest
 from loom.ai.abc import AgentHandle
 from loom.ai.compiler._plan import CompiledCapability
 from loom.ai.config import AiConfig, McpServerConfig
+from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.runtime import AgentRuntime
 from loom.ai.runtime._handle import agent_marker_resolver
@@ -30,6 +32,8 @@ from loom.core.di import LoomContainer
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
+from loom.core.observability.event import Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.sql.abc.contracts import SqlColumn, SqlQueryResult
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
 from loom.core.sql.service import NullSqlQueryService, SqlQueryService
@@ -38,12 +42,14 @@ from tests.integration.ai.conftest import (
     MARKER_AGENT_NAME,
     CountingEngineProvider,
     RecordingMcpSession,
+    RecordingObserver,
     ShapedRecordingEngine,
     StubDepsFactory,
     StubMcpClient,
     make_ai_config,
     make_mcp_capability,
     make_plan,
+    make_policies,
     make_sql_capability,
     make_sql_config,
     marker_use_case_executor,
@@ -171,12 +177,13 @@ def _wired(
     capabilities: Sequence[CompiledCapability] = (),
     mcp_clients: dict[str, StubMcpClient] | None = None,
     granted_sql: bool = False,
+    policies: PolicySpec | None = None,
 ) -> tuple[RuntimeExecutor, AgentRuntime]:
     """Wire a real executor to a real ``AgentRuntime``, exactly as ``create_app`` does."""
     _, executor = compiler_and_executor
     provider = CountingEngineProvider(engines={MARKER_AGENT_NAME: engine})
     runtime = AgentRuntime(
-        plans=[make_plan(MARKER_AGENT_NAME, capabilities=capabilities)],
+        plans=[make_plan(MARKER_AGENT_NAME, capabilities=capabilities, policies=policies)],
         config=_ai_config(granted_mcp=bool(mcp_clients)),
         engine_provider=provider,  # type: ignore[arg-type]
         deps=deps,
@@ -290,3 +297,102 @@ class TestUnaConsultaConLosRolesDelLlamante:
 
         assert list(rows) == [{"id": 1}, {"id": 2}]
         assert service.calls == [("analyst",)]
+
+
+class TestAgentPathIncludeIsWiredToo:
+    """PR3 moved include/exclude/agent/timeout to the AgentHandle.mcp() call site.
+
+    Nothing else in this module ever passes a narrowing ``include`` (every
+    other capability here uses ``exclude`` instead), so these are the only
+    tests standing between the agent path's own filter and a mutation that
+    drops it and admits the whole catalogue.
+    """
+
+    async def test_the_agent_handles_own_include_still_narrows(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        session = RecordingMcpSession(tools=("read_orders", "write_orders"))
+        engine = ShapedRecordingEngine()
+        executor, runtime = _wired(
+            engine=engine,
+            compiler_and_executor=marker_use_case_executor(GrantedToolUseCase),
+            deps=deps,
+            container=container,
+            capabilities=(make_mcp_capability(_MCP_SERVER, include=("read_*",)),),
+            mcp_clients={_MCP_SERVER: StubMcpClient(label=_MCP_SERVER, session=session, log=[])},
+        )
+
+        async with runtime:
+            resolver = agent_marker_resolver(
+                runtime, sql_query_service=NullSqlQueryService(), observability=None
+            )
+            handle = resolver(MARKER_AGENT_NAME, _ALICE)
+            assert handle.mcp(_MCP_SERVER).tools() == ("read_orders",)
+
+    async def test_the_agent_tool_span_still_says_agent_not_mcp_server(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        session = RecordingMcpSession(
+            tools=("read_orders",), results={"read_orders": {"orders": []}}
+        )
+        engine = ShapedRecordingEngine()
+        executor, runtime = _wired(
+            engine=engine,
+            compiler_and_executor=marker_use_case_executor(GrantedToolUseCase),
+            deps=deps,
+            container=container,
+            capabilities=(_granted_mcp_capability(),),
+            mcp_clients={_MCP_SERVER: StubMcpClient(label=_MCP_SERVER, session=session, log=[])},
+        )
+        observer = RecordingObserver()
+        observability = ObservabilityRuntime(observers=[observer])
+
+        async with runtime:
+            resolver = agent_marker_resolver(
+                runtime, sql_query_service=NullSqlQueryService(), observability=observability
+            )
+            handle = resolver(MARKER_AGENT_NAME, _ALICE)
+            await handle.mcp(_MCP_SERVER).call_untyped("read_orders", {})
+
+        tool_spans = [e.meta or {} for e in observer.events if e.scope is Scope.TOOL]
+        assert tool_spans
+        for meta in tool_spans:
+            assert meta.get("agent") == MARKER_AGENT_NAME, meta
+            assert "mcp_server" not in meta
+
+    async def test_the_agent_deadline_is_the_plans_own_not_the_servers(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """The plan's ``tool_timeout_ms`` (10ms) bounds the call, not the server's own (20s).
+
+        A swap of the two timeouts at the ``mcp()`` call site would let this
+        call sail through un-bounded by anything short enough for a test to
+        wait for, so this pins which one actually governs.
+        """
+
+        class SlowSession(RecordingMcpSession):
+            async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> Any:  # noqa: ANN401
+                await asyncio.sleep(0.05)
+                return await super().call_tool(name, arguments)
+
+        session = SlowSession(tools=("read_orders",), results={"read_orders": {"orders": []}})
+        engine = ShapedRecordingEngine()
+        executor, runtime = _wired(
+            engine=engine,
+            compiler_and_executor=marker_use_case_executor(GrantedToolUseCase),
+            deps=deps,
+            container=container,
+            capabilities=(_granted_mcp_capability(),),
+            mcp_clients={_MCP_SERVER: StubMcpClient(label=_MCP_SERVER, session=session, log=[])},
+            policies=make_policies(tool_timeout_ms=10),
+        )
+
+        async with runtime:
+            resolver = agent_marker_resolver(
+                runtime, sql_query_service=NullSqlQueryService(), observability=None
+            )
+            handle = resolver(MARKER_AGENT_NAME, _ALICE)
+            with pytest.raises(AgentRunError) as excinfo:
+                await handle.mcp(_MCP_SERVER).call_untyped("read_orders", {})
+
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_TIMEOUT
