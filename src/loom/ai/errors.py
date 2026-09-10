@@ -49,6 +49,9 @@ _FIELD_CAPABILITIES_CONNECTION: Final = "capabilities.connection"
 _FIELD_CAPABILITIES_LIBRARY: Final = "capabilities.library"
 _FIELD_CAPABILITIES_FACTORY: Final = "capabilities.factory"
 _FIELD_AI_ENGINE: Final = "ai.engine"
+_FIELD_DEPS_TYPE: Final = "deps_type"
+_FIELD_DEPS_SCHEMA: Final = "deps_schema"
+_FIELD_INSTRUCTIONS: Final = "instructions"
 
 
 class AgentErrorCode(StrEnum):
@@ -76,6 +79,18 @@ class AgentErrorCode(StrEnum):
     CONVERSATION_INPUT_UNSATISFIED = "CONVERSATION_INPUT_UNSATISFIED"
     CONVERSATION_USECASE_ALSO_GRANTED = "CONVERSATION_USECASE_ALSO_GRANTED"
     CONVERSATION_INVOKER_MISSING = "CONVERSATION_INVOKER_MISSING"
+
+    # State
+    STATE_DECLARATION_CONFLICT = "STATE_DECLARATION_CONFLICT"
+    STATE_TYPE_REF_UNRESOLVABLE = "STATE_TYPE_REF_UNRESOLVABLE"
+    STATE_TYPE_REF_UNSUPPORTED = "STATE_TYPE_REF_UNSUPPORTED"
+    STATE_SCHEMA_INVALID = "STATE_SCHEMA_INVALID"
+    STATE_SURFACE_UNSUPPORTED = "STATE_SURFACE_UNSUPPORTED"
+
+    # Instructions
+    INSTRUCTION_BLOCK_INVALID = "INSTRUCTION_BLOCK_INVALID"
+    TEMPLATE_COMPILATION_FAILED = "TEMPLATE_COMPILATION_FAILED"
+    TEMPLATE_EXTRA_MISSING = "TEMPLATE_EXTRA_MISSING"
 
     # Capabilities
     CAPABILITY_KIND_UNSUPPORTED = "CAPABILITY_KIND_UNSUPPORTED"
@@ -421,6 +436,118 @@ def conversation_invoker_missing(
         message=f"agents declare a conversation loader but {reason}: {', '.join(agents)}",
         component="ai",
         field="conversation",
+    )
+
+
+# ---------------------------------------------------------------------------
+# State factories
+# ---------------------------------------------------------------------------
+
+
+def state_declaration_conflict(component: str) -> AgentCompilationIssue:
+    """Both ``deps_type`` and ``deps_schema`` are declared; only one may be."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.STATE_DECLARATION_CONFLICT,
+        message=(
+            f"{component}: both 'deps_type' and 'deps_schema' are declared; declare at most one"
+        ),
+        component=component,
+        field=_FIELD_DEPS_TYPE,
+    )
+
+
+def state_type_ref_unresolvable(component: str, ref: str) -> AgentCompilationIssue:
+    """The ``module:Symbol`` state reference cannot be imported."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.STATE_TYPE_REF_UNRESOLVABLE,
+        message=f"{component}: state type reference '{ref}' cannot be imported",
+        component=component,
+        field=_FIELD_DEPS_TYPE,
+    )
+
+
+def state_type_ref_unsupported(component: str, ref: str, reason: str) -> AgentCompilationIssue:
+    """The state reference resolves to a symbol no schema can be derived from."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.STATE_TYPE_REF_UNSUPPORTED,
+        message=f"{component}: state type reference '{ref}' is unsupported: {reason}",
+        component=component,
+        field=_FIELD_DEPS_TYPE,
+    )
+
+
+def state_schema_invalid(component: str, reason: str) -> AgentCompilationIssue:
+    """The declared state schema is not a valid JSON Schema object."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.STATE_SCHEMA_INVALID,
+        message=f"{component}: state schema is not a valid JSON Schema: {reason}",
+        component=component,
+        field=_FIELD_DEPS_SCHEMA,
+    )
+
+
+def state_surface_unsupported(component: str, surface: str) -> AgentCompilationIssue:
+    """A stateful artifact is exposed over a run surface that carries no state."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.STATE_SURFACE_UNSUPPORTED,
+        message=(
+            f"{component}: declares state and is exposed over '{surface}', which carries no state"
+        ),
+        component=component,
+        field=_FIELD_DEPS_TYPE,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Instruction factories
+# ---------------------------------------------------------------------------
+
+
+def instruction_block_invalid(component: str, reason: str) -> AgentCompilationIssue:
+    """An authored instruction block violates a compile-time rule."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.INSTRUCTION_BLOCK_INVALID,
+        message=f"{component}: instruction block is invalid: {reason}",
+        component=component,
+        field=_FIELD_INSTRUCTIONS,
+    )
+
+
+def template_compilation_failed(component: str, block: str, reason: str) -> AgentCompilationIssue:
+    """A templated instruction block fails to compile against its declared state.
+
+    Args:
+        component: Artifact the block belongs to.
+        block: The block's name, or its position when it has none.
+        reason: The template checker's own message, interpolated verbatim.
+            A compilation error can carry a fragment of the source template,
+            so redacting it — if the caller needs that — is the caller's
+            responsibility, not this factory's.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.TEMPLATE_COMPILATION_FAILED,
+        message=f"{component}: instruction block '{block}' fails to compile: {reason}",
+        component=component,
+        field=_FIELD_INSTRUCTIONS,
+    )
+
+
+def template_extra_missing(component: str, block: str, extra: str) -> AgentCompilationIssue:
+    """A block declares ``template:`` while the templating extra is not installed.
+
+    Args:
+        component: Artifact the block belongs to.
+        block: The block's name, or its position when it has none.
+        extra: The optional dependency extra that installs the templating engine.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.TEMPLATE_EXTRA_MISSING,
+        message=(
+            f"{component}: instruction block '{block}' declares 'template: handlebars' "
+            f"but the '{extra}' extra is not installed"
+        ),
+        component=component,
+        field=_FIELD_INSTRUCTIONS,
     )
 
 

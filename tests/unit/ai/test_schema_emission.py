@@ -27,6 +27,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from loom.ai.declarative import agent_spec_json_schema, agent_spec_schema_path
+from loom.ai.declarative._v1 import DEPS_TYPE_PATTERN, INSTRUCTION_NAME_PATTERN
 
 _CONTRACT_PATH: Path = agent_spec_schema_path(1)
 
@@ -275,3 +276,110 @@ def test_locating_the_schema_fails_for_an_unpublished_version() -> None:
     """An unpublished spec version is a programming error, not a missing file."""
     with pytest.raises(ValueError, match="spec version 2"):
         agent_spec_schema_path(2)
+
+
+def test_the_emitted_required_list_is_unchanged() -> None:
+    """T104b adds properties, not requirements: the v1 contract's mandatory set is stable."""
+    assert _emitted()["required"] == [
+        "spec_version",
+        "name",
+        "description",
+        "instructions",
+        "output",
+    ]
+
+
+def test_emitted_deps_type_pattern_is_the_struct_constant_not_a_copy() -> None:
+    """NFR-005: the pattern is derived from the struct constant, never re-typed (T102)."""
+    assert _emitted()["properties"]["deps_type"]["pattern"] == DEPS_TYPE_PATTERN
+
+
+def test_emitted_instruction_block_name_pattern_is_the_struct_constant_not_a_copy() -> None:
+    """NFR-005: the pattern is derived from the struct constant, never re-typed (T101)."""
+    pattern = _emitted()["$defs"]["instruction_block"]["properties"]["name"]["pattern"]
+    assert pattern == INSTRUCTION_NAME_PATTERN
+
+
+def test_emitted_deps_type_description_states_the_dict_waiver() -> None:
+    """FR-006 must be readable in the schema text itself, not only in the struct docstring."""
+    assert "waive" in _emitted()["properties"]["deps_type"]["description"]
+
+
+@pytest.mark.parametrize(
+    "deps_type",
+    ["dict", "myapp.state:GeoState"],
+)
+def test_the_published_schema_accepts_every_deps_type_form(deps_type: str) -> None:
+    """Both spellings of ``deps_type`` validate (FR-002)."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["deps_type"] = deps_type
+
+    assert _schema_errors(payload) == []
+
+
+def test_the_published_schema_accepts_deps_schema_as_a_json_schema_object() -> None:
+    """``deps_schema`` validates as a JSON Schema object (FR-003)."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["deps_schema"] = {"type": "object", "properties": {"km": {"type": "integer"}}}
+
+    assert _schema_errors(payload) == []
+
+
+def test_the_published_schema_rejects_a_deps_type_filesystem_path() -> None:
+    """A filesystem path is not representable, exactly as for ``TypeRefOutput.ref``."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["deps_type"] = "./x.py"
+
+    assert _schema_errors(payload) != []
+
+
+def test_the_published_schema_accepts_a_string_instructions_form() -> None:
+    """The string form of ``instructions`` still validates."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+
+    assert _schema_errors(payload) == []
+
+
+def test_the_published_schema_accepts_a_block_sequence_instructions_form() -> None:
+    """The array-of-blocks form of ``instructions`` validates (FR-020)."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["instructions"] = [
+        {"text": "You are the triage assistant."},
+        {"text": "Context: {{summary}}", "name": "context", "template": "handlebars"},
+    ]
+
+    assert _schema_errors(payload) == []
+
+
+def test_the_published_schema_rejects_an_empty_instructions_sequence() -> None:
+    """An empty sequence carries nothing to author."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["instructions"] = []
+
+    assert _schema_errors(payload) != []
+
+
+@pytest.mark.parametrize("name", ["a:b", "agent"])
+def test_the_published_schema_rejects_a_reserved_instruction_block_name(name: str) -> None:
+    """The two names the engine reserves are rejected offline, before compilation (FR-021)."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["instructions"] = [{"text": "hi", "name": name}]
+
+    assert _schema_errors(payload) != []
+
+
+def test_the_published_schema_rejects_an_unknown_instruction_block_key() -> None:
+    """``instruction_block``'s ``additionalProperties: false`` is fixed, not incidental."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["instructions"] = [{"text": "hi", "dynamic": True}]
+
+    assert _schema_errors(payload) != []
+
+
+def test_the_published_schema_accepts_deps_type_and_deps_schema_together() -> None:
+    """The offline schema must not pre-empt the conflict compilation reports."""
+    payload = _python_artifact({"factory": "myapp.tools.geo:build_geo_toolset"})
+    payload["deps_type"] = "dict"
+    payload["deps_schema"] = {"type": "object"}
+
+    assert _schema_errors(payload) == []

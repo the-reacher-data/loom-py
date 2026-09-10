@@ -30,8 +30,43 @@ AGENT_NAME_PATTERN: Final[str] = r"^[a-z][a-z0-9_-]{0,62}$"
 MODEL_ROLE_PATTERN: Final[str] = r"^[a-z][a-z0-9_-]{0,31}$"
 """Pattern every logical model role must satisfy."""
 
-SYMBOL_REF_PATTERN: Final[str] = r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
+_SYMBOL_REF_BODY: Final[str] = r"[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*"
+"""Unanchored body of a ``module:symbol`` reference, shared by every pattern
+that embeds it as an alternative so anchoring it once cannot drift out of
+sync with a sliced copy."""
+
+SYMBOL_REF_PATTERN: Final[str] = rf"^{_SYMBOL_REF_BODY}$"
 """Pattern of a ``module:symbol`` reference; filesystem paths are not representable."""
+
+DEPS_TYPE_PATTERN: Final[str] = rf"^(dict|{_SYMBOL_REF_BODY})$"
+"""Pattern ``deps_type`` must satisfy: the literal ``dict`` or a ``module:Symbol``
+reference matching :data:`SYMBOL_REF_PATTERN`. ``dict`` contains no colon, so
+the two alternatives cannot collide."""
+
+RESERVED_INSTRUCTION_NAME: Final[str] = "agent"
+"""Instruction block name the engine reserves for itself
+(``pydantic_ai._instructions.validate_instruction_name``)."""
+
+_INSTRUCTION_NAME_BODY: Final[str] = r"[^:]+"
+
+INSTRUCTION_NAME_PATTERN: Final[str] = rf"^{_INSTRUCTION_NAME_BODY}$"
+"""Pattern an instruction block's ``name`` must satisfy: non-empty and no
+``:``. This is the pattern the published JSON Schema emits; rejecting
+:data:`RESERVED_INSTRUCTION_NAME` is expressed there through ``not``/``const``
+composition rather than folded into this pattern, because a look-around
+alternative compiles under Python's ``re`` but fails to compile under the
+RE2-family validators (Go, some editor plugins) that consume the published
+schema, which would make the whole document unusable rather than just this
+constraint."""
+
+_INSTRUCTION_NAME_DECODE_PATTERN: Final[str] = (
+    rf"^(?!{RESERVED_INSTRUCTION_NAME}$){_INSTRUCTION_NAME_BODY}$"
+)
+"""Decode-time pattern: :data:`INSTRUCTION_NAME_PATTERN` plus rejecting
+:data:`RESERVED_INSTRUCTION_NAME` via look-ahead. msgspec compiles this with
+Python's ``re``, which supports look-around, so a reserved name fails by its
+own name at decode time instead of surfacing later as an ``Agent``
+construction error."""
 
 SKILLS_LIBRARY_PATTERN: Final[str] = r"^(\./[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)$"
 """Pattern of a skill library name: ``./name`` beside the artifact, or a bare name.
@@ -100,6 +135,12 @@ here is part of the v1 format forever.
 
 NATIVE_TOOLS: Final[tuple[NativeToolName, ...]] = get_args(NativeToolName)
 """Values ``NativeCapability.tool`` accepts, derived from :data:`NativeToolName`."""
+
+TemplateEngine = Literal["handlebars"]
+"""Template engine an instruction block's ``template`` names."""
+
+TEMPLATE_ENGINES: Final[tuple[TemplateEngine, ...]] = get_args(TemplateEngine)
+"""Values :attr:`InstructionBlock.template` accepts, derived from :data:`TemplateEngine`."""
 
 _SymbolRef = Annotated[str, msgspec.Meta(pattern=SYMBOL_REF_PATTERN)]
 _NonEmptyStr = Annotated[str, msgspec.Meta(min_length=1)]
@@ -360,6 +401,41 @@ CapabilitySpec = (
 """Union of every supported capability declaration, tagged on ``kind``."""
 
 
+class InstructionBlock(
+    msgspec.Struct,
+    frozen=True,
+    kw_only=True,
+    forbid_unknown_fields=True,
+):
+    """One authored instruction block.
+
+    A bare string ``instructions`` is sugar for a single unnamed block with no
+    ``template``; a sequence of blocks is authored order, projected onto the
+    engine in that same order.
+
+    ``dynamic`` is not authored here: it is not cosmetic, it decides what a
+    provider may cache, and it follows from whether ``template`` is declared
+    — an author who could set it independently could only get it wrong
+    (FR-025).
+
+    Args:
+        text:     Instruction text. Literal unless ``template`` names a
+            template engine; with no ``template``, any ``{{`` it contains
+            reaches the model unchanged (FR-022).
+        name:     Optional name identifying the block in compilation issues
+            and start-up diagnostics; matches :data:`INSTRUCTION_NAME_PATTERN`.
+            It never becomes an addressable id on the engine's own side
+            (FR-026).
+        template: Names the template engine ``text`` is written for, one of
+            :data:`TEMPLATE_ENGINES`. ``None`` when ``text`` is a literal
+            string (FR-022).
+    """
+
+    text: _NonEmptyStr
+    name: Annotated[str, msgspec.Meta(pattern=_INSTRUCTION_NAME_DECODE_PATTERN)] | None = None
+    template: TemplateEngine | None = None
+
+
 class PolicySpec(
     msgspec.Struct,
     frozen=True,
@@ -440,8 +516,19 @@ class AgentSpecV1(
         spec_version:  Format version; always ``1`` for this struct.
         name:          Unique agent name within the application.
         description:   What the agent does. Published in the A2A card.
-        instructions:  Instructions the agent follows. Never published, and
-            never a place to encode authorization.
+        deps_type:     Declares the shape of the artifact's state: the
+            literal ``dict``, or a ``module:Symbol`` reference matching
+            :data:`DEPS_TYPE_PATTERN`. Sugar over ``deps_schema`` (FR-003).
+            ``dict`` contains no colon, so the two forms cannot collide.
+            ``None`` when the artifact declares no state.
+        deps_schema:   Declares the shape of the artifact's state directly,
+            as a JSON Schema object — the canonical form of the one
+            mechanism ``deps_type`` is sugar over (FR-003). ``None`` when the
+            artifact declares no state, or declares it through ``deps_type``.
+        instructions:  Instructions the agent follows: a literal string, or a
+            non-empty sequence of :class:`InstructionBlock` in authored
+            order. Never published, and never a place to encode
+            authorization.
         model_role:    Logical model role bound to a concrete provider and
             model by deployment configuration.
         output:        Declaration of the structured answer the agent returns.
@@ -458,7 +545,9 @@ class AgentSpecV1(
     spec_version: Annotated[int, msgspec.Meta(ge=SPEC_VERSION_V1, le=SPEC_VERSION_V1)]
     name: Annotated[str, msgspec.Meta(pattern=AGENT_NAME_PATTERN)]
     description: _NonEmptyStr
-    instructions: _NonEmptyStr
+    deps_type: Annotated[str, msgspec.Meta(pattern=DEPS_TYPE_PATTERN)] | None = None
+    deps_schema: Mapping[str, Any] | None = None
+    instructions: _NonEmptyStr | Annotated[tuple[InstructionBlock, ...], msgspec.Meta(min_length=1)]
     model_role: Annotated[str, msgspec.Meta(pattern=MODEL_ROLE_PATTERN)] = DEFAULT_MODEL_ROLE
     output: OutputSpec
     on_output: OutputHookSpec | None = None

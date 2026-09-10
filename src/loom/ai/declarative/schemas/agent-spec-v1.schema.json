@@ -27,9 +27,31 @@
       "minLength": 1,
       "description": "What the agent does. PUBLIC: published in the A2A card."
     },
-    "instructions": {
+    "deps_type": {
       "type": "string",
-      "minLength": 1,
+      "pattern": "^(dict|[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*)$",
+      "description": "State type the artifact declares: the literal 'dict', which waives marker validation for every templated instruction block, or a module:Symbol reference — sugar over deps_schema. Absent when the artifact declares no state."
+    },
+    "deps_schema": {
+      "type": "object",
+      "description": "State declared directly as a JSON Schema object, the canonical form of the one mechanism deps_type is sugar over. Absent when the artifact declares no state, or declares it through deps_type."
+    },
+    "instructions": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "One literal instruction block, unnamed."
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/instruction_block"
+          },
+          "description": "Instruction blocks in authored order."
+        }
+      ],
       "description": "Instructions the agent follows. NEVER published. Must not encode authorization."
     },
     "model_role": {
@@ -130,6 +152,35 @@
           "type": "string",
           "minLength": 1,
           "description": "Use-case key of the registry executed before a run that carries a conversation_id. It returns the prior messages as bytes in the engine's serialised form, or None on the first turn. Not a tool: the model never sees it, and the same key must not also be granted as a usecase capability."
+        }
+      }
+    },
+    "instruction_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Instruction text. Literal unless 'template' names a template engine; with no 'template', any '{{' it contains reaches the model unchanged."
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[^:]+$",
+          "not": {
+            "const": "agent"
+          },
+          "description": "Optional name identifying the block in compilation issues and start-up diagnostics. Never becomes an addressable id on the engine's own side."
+        },
+        "template": {
+          "type": "string",
+          "enum": [
+            "handlebars"
+          ],
+          "description": "Compiles 'text' as a Handlebars template, checked against the artifact's declared state and rendered against it at run time. Absent when 'text' is literal."
         }
       }
     },

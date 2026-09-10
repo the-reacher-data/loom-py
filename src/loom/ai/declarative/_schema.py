@@ -30,6 +30,8 @@ from ._envelope import LATEST_SPEC_VERSION
 from ._v1 import (
     AGENT_NAME_PATTERN,
     DEFAULT_MODEL_ROLE,
+    DEPS_TYPE_PATTERN,
+    INSTRUCTION_NAME_PATTERN,
     MAX_HISTORY_BYTES_DEFAULT,
     MAX_HISTORY_BYTES_MAX,
     MAX_HISTORY_BYTES_MIN,
@@ -51,6 +53,7 @@ from ._v1 import (
     NATIVE_TOOLS,
     ON_UNPRICED_SPEND_DEFAULT,
     ON_UNPRICED_SPEND_POLICIES,
+    RESERVED_INSTRUCTION_NAME,
     RETRIES_DEFAULT,
     RETRIES_MAX,
     RETRIES_MIN,
@@ -60,6 +63,7 @@ from ._v1 import (
     SKILLS_LIBRARY_PATTERN,
     SPEC_VERSION_V1,
     SYMBOL_REF_PATTERN,
+    TEMPLATE_ENGINES,
     TOOL_TIMEOUT_MS_DEFAULT,
     TOOL_TIMEOUT_MS_MAX,
     TOOL_TIMEOUT_MS_MIN,
@@ -82,9 +86,38 @@ def _v1_properties() -> dict[str, Any]:
             "minLength": 1,
             "description": "What the agent does. PUBLIC: published in the A2A card.",
         },
-        "instructions": {
+        "deps_type": {
             "type": "string",
-            "minLength": 1,
+            "pattern": DEPS_TYPE_PATTERN,
+            "description": (
+                "State type the artifact declares: the literal 'dict', which waives marker "
+                "validation for every templated instruction block, or a module:Symbol "
+                "reference \u2014 sugar over deps_schema. Absent when the artifact declares "
+                "no state."
+            ),
+        },
+        "deps_schema": {
+            "type": "object",
+            "description": (
+                "State declared directly as a JSON Schema object, the canonical form of the "
+                "one mechanism deps_type is sugar over. Absent when the artifact declares no "
+                "state, or declares it through deps_type."
+            ),
+        },
+        "instructions": {
+            "oneOf": [
+                {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "One literal instruction block, unnamed.",
+                },
+                {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"$ref": "#/$defs/instruction_block"},
+                    "description": "Instruction blocks in authored order.",
+                },
+            ],
             "description": (
                 "Instructions the agent follows. NEVER published. Must not encode authorization."
             ),
@@ -466,11 +499,54 @@ def _policy_properties() -> dict[str, Any]:
     }
 
 
+def _v1_instruction_block_def() -> dict[str, Any]:
+    """Emit the authored instruction block.
+
+    ``name`` publishes its reservation as ``not``/``const`` rather than the
+    look-ahead the decoder uses, so a validator built on an RE2-family engine
+    can compile the document.
+    """
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["text"],
+        "properties": {
+            "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Instruction text. Literal unless 'template' names a template engine; "
+                    "with no 'template', any '{{' it contains reaches the model unchanged."
+                ),
+            },
+            "name": {
+                "type": "string",
+                "pattern": INSTRUCTION_NAME_PATTERN,
+                "not": {"const": RESERVED_INSTRUCTION_NAME},
+                "description": (
+                    "Optional name identifying the block in compilation issues and start-up "
+                    "diagnostics. Never becomes an addressable id on the engine's own side."
+                ),
+            },
+            "template": {
+                "type": "string",
+                "enum": list(TEMPLATE_ENGINES),
+                "description": (
+                    "Compiles 'text' as a Handlebars template, checked against the artifact's "
+                    "declared state and rendered against it at run time. Absent when 'text' is "
+                    "literal."
+                ),
+            },
+        },
+    }
+
+
 def _v1_defs() -> dict[str, Any]:
     return {
         "output": _v1_output_def(),
         "on_output": _v1_output_hook_def(),
         "conversation": _v1_conversation_def(),
+        "instruction_block": _v1_instruction_block_def(),
         "capability": {
             "oneOf": [
                 _v1_usecase_capability(),
