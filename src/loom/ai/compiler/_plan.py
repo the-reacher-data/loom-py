@@ -22,6 +22,7 @@ from typing import Any, ClassVar, Final
 
 import msgspec
 
+from loom.ai.abc import StateShape
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
@@ -344,13 +345,37 @@ class CompiledConversation(LoomFrozenStruct, frozen=True, kw_only=True):
     accepted: frozenset[str]
 
 
+class CompiledInstruction(LoomFrozenStruct, frozen=True, kw_only=True):
+    """One instruction block in authored order, projected onto the plan.
+
+    A bare-string artifact and a one-block artifact compile to the same
+    single-element tuple, so nothing downstream branches on which of the two
+    forms an artifact declared (FR-003's instruction-side counterpart).
+
+    Attributes:
+        text: Instruction text. Literal unless ``template`` names a template
+            engine, matching :attr:`~loom.ai.declarative.InstructionBlock.text`.
+        name: Optional block name, carried for compilation issues and
+            start-up diagnostics. Never an id the engine can address.
+        template: Template engine ``text`` is written for, or ``None`` for a
+            literal block that reaches the model unrendered.
+    """
+
+    text: str
+    name: str | None = None
+    template: str | None = None
+
+
 class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
     """Immutable compiled agent, the only input to every downstream stage.
 
     Attributes:
         name: Unique agent name within the application.
         description: What the agent does; published in the A2A card.
-        instructions: Instructions the agent follows; never published.
+        instructions: Instruction blocks the agent follows, in authored
+            order; never published.
+        state: Shape of the artifact's declared state, or ``None`` when the
+            artifact declares neither ``deps_type`` nor ``deps_schema``.
         spec_version: Artifact format version, retained for self-description.
         inference: Resolved model binding; one binding, no fallback (FR-019a).
         output: Structured-output contract with its built decoder.
@@ -364,7 +389,8 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
 
     name: str
     description: str
-    instructions: str
+    instructions: tuple[CompiledInstruction, ...]
+    state: StateShape | None = None
     spec_version: int
     inference: InferenceTarget
     output: CompiledOutput

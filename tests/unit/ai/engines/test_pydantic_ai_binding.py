@@ -6,7 +6,7 @@ No network: building a model object configures a client, it does not call one.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from msgspec import structs
@@ -15,7 +15,7 @@ from pydantic_ai import NativeOutput, ToolOutput
 from pydantic_ai.models.bedrock import BedrockConverseModel
 from pydantic_ai.models.test import TestModel
 
-from loom.ai.compiler._plan import AgentPlan
+from loom.ai.compiler._plan import AgentPlan, CompiledInstruction
 from loom.ai.engines.pydantic_ai._models import SUPPORTED_PROVIDERS, resolve_model
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
 from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
@@ -23,6 +23,11 @@ from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from tests.helpers.pydantic_ai_engine import STRICT_SCHEMA, NullDeps, make_plan
+
+
+def _vendor_client(model: object) -> Any:
+    """Return the vendor SDK client a resolved model wraps."""
+    return cast(Any, model).client
 
 
 @pytest.fixture
@@ -81,7 +86,7 @@ class TestModelBinding:
 
         model = resolve_model(target)
 
-        assert model.client.api_key == "the-real-key"
+        assert _vendor_client(model).api_key == "the-real-key"
 
     def test_reads_the_sdks_default_variable_when_there_is_no_credentials_ref(
         self, monkeypatch: pytest.MonkeyPatch
@@ -90,7 +95,7 @@ class TestModelBinding:
         monkeypatch.setenv("OPENAI_API_KEY", "sdk-default")
         target = InferenceTarget(provider="openai", model="a-model")
 
-        assert resolve_model(target).client.api_key == "sdk-default"
+        assert _vendor_client(resolve_model(target)).api_key == "sdk-default"
 
     @pytest.mark.parametrize("provider", ["openai", "anthropic", "gateway"])
     def test_fails_naming_the_variable_when_it_is_unset(
@@ -168,6 +173,34 @@ class TestSpecTranslation:
 
         assert spec.metadata is None
         assert spec.model is None
+
+    def test_the_spec_carries_every_literal_blocks_text_in_authored_order(self) -> None:
+        """A multi-block plan projects onto a plain list of literal strings."""
+        plan = structs.replace(
+            make_plan(),
+            instructions=(
+                CompiledInstruction(text="First.", name="opening"),
+                CompiledInstruction(text="Second."),
+            ),
+        )
+
+        spec = build_agent_spec(plan)
+
+        assert spec.instructions == ["First.", "Second."]
+
+    def test_a_templated_block_fails_the_translation_naming_the_block(self) -> None:
+        """A block declaring ``template`` does not reach the engine unrendered."""
+        plan = structs.replace(
+            make_plan(),
+            instructions=(CompiledInstruction(text="Hi {{name}}", template="handlebars"),),
+        )
+
+        with pytest.raises(AgentCompilationError) as failure:
+            build_agent_spec(plan)
+
+        issue = failure.value.issues[0]
+        assert issue.code is AgentErrorCode.INSTRUCTION_BLOCK_INVALID
+        assert "template" in issue.message
 
 
 def _plan_with_output_mode(mode: str | None) -> AgentPlan:

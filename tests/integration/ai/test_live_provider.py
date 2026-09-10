@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from loom.ai.abc import AgentResult
-from loom.ai.compiler._plan import AgentPlan
+from loom.ai.compiler._plan import AgentPlan, CompiledInstruction
 from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
 from loom.ai.inference import InferenceTarget
@@ -64,7 +64,9 @@ def _plan(target: InferenceTarget) -> AgentPlan:
     return AgentPlan(
         name="live",
         description="live smoke agent",
-        instructions="Answer with the requested word and nothing else.",
+        instructions=(
+            CompiledInstruction(text="Answer with the requested word and nothing else."),
+        ),
         spec_version=1,
         inference=target,
         output=compiled_output(_SCHEMA),

@@ -49,6 +49,7 @@ from loom.ai.compiler import (
     AgentPlan,
     CompiledA2ACapability,
     CompiledCapability,
+    CompiledInstruction,
     CompiledMcpCapability,
     CompiledOutput,
     CompiledPythonCapability,
@@ -173,7 +174,7 @@ def _plan(**overrides: Any) -> AgentPlan:
     fields: dict[str, Any] = {
         "name": _AGENT_NAME,
         "description": _AGENT_DESCRIPTION,
-        "instructions": "Answer using the granted capabilities only.",
+        "instructions": (CompiledInstruction(text="Answer using the granted capabilities only."),),
         "spec_version": 1,
         "inference": InferenceTarget(provider="fake", model="fake-model"),
         "output": _output(),
@@ -223,7 +224,7 @@ def _canary_capabilities() -> tuple[CompiledCapability, ...]:
 def _canary_plan() -> AgentPlan:
     """Plan whose every non-published field carries a recognisable canary."""
     return _plan(
-        instructions="CANARY-INSTRUCTIONS-do-not-publish",
+        instructions=(CompiledInstruction(text="CANARY-INSTRUCTIONS-do-not-publish"),),
         inference=InferenceTarget(
             provider="bedrock",
             model="anthropic.claude-canary",

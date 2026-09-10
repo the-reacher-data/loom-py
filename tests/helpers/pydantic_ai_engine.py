@@ -30,7 +30,8 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
 from loom.ai.abc import AgentEngine
-from loom.ai.compiler._plan import AgentPlan, CompiledOutput
+from loom.ai.compiler._plan import AgentPlan, CompiledInstruction, CompiledOutput
+from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._output import compile_output
 from loom.ai.declarative import JsonSchemaOutput, PolicySpec
 from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
@@ -75,6 +76,13 @@ def compiled_output(schema: Mapping[str, Any]) -> CompiledOutput:
     return output
 
 
+def compiled_instructions(text: str) -> tuple[CompiledInstruction, ...]:
+    """Compile a literal string through the real instructions phase."""
+    instructions, issues = compile_instructions(text, None, "contract")
+    assert not issues, issues
+    return instructions
+
+
 def make_plan(
     *,
     schema: Mapping[str, Any] = OPEN_OBJECT_SCHEMA,
@@ -95,7 +103,7 @@ def make_plan(
     return AgentPlan(
         name="contract",
         description="contract agent",
-        instructions="answer the question",
+        instructions=compiled_instructions("answer the question"),
         spec_version=1,
         inference=inference or InferenceTarget(provider="openai", model="gpt-5.2"),
         output=compiled_output(schema),

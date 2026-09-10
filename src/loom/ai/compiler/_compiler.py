@@ -12,11 +12,12 @@ from collections import defaultdict
 from collections.abc import Sequence
 from types import MappingProxyType
 
-from loom.ai.abc import NativeToolSupport
+from loom.ai.abc import NativeToolSupport, StateShape
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledCapability,
     CompiledConversation,
+    CompiledInstruction,
     CompiledOutput,
     CompiledOutputHook,
 )
@@ -27,6 +28,7 @@ from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._limits import validate_policies
 from loom.ai.compiler.phases._model_role import resolve_model_role
 from loom.ai.compiler.phases._output import compile_output
+from loom.ai.compiler.phases._state import compile_state
 from loom.ai.config import AiConfig
 from loom.ai.declarative import AgentSpecV1, DecodedSpec
 from loom.ai.errors import (
@@ -136,7 +138,11 @@ class AgentCompiler:
         issues: list[AgentCompilationIssue] = []
         output, output_issues = compile_output(spec.output, component)
         issues.extend(output_issues)
-        instructions, instructions_issues = compile_instructions(spec.instructions, component)
+        state, state_issues = compile_state(spec.deps_type, spec.deps_schema, component)
+        issues.extend(state_issues)
+        instructions, instructions_issues = compile_instructions(
+            spec.instructions, state, component
+        )
         issues.extend(instructions_issues)
         on_output, hook_issues = compile_output_hook(
             spec, component=component, registry=self._registry
@@ -161,11 +167,12 @@ class AgentCompiler:
             source_path=source_path,
         )
         issues.extend(capability_issues)
-        if issues or output is None or inference is None or instructions is None:
+        if issues or output is None or inference is None or not instructions:
             return None, issues
         plan = self._build_plan(
             spec,
             instructions,
+            state,
             inference,
             output,
             capabilities,
@@ -178,7 +185,8 @@ class AgentCompiler:
     @staticmethod
     def _build_plan(
         spec: AgentSpecV1,
-        instructions: str,
+        instructions: tuple[CompiledInstruction, ...],
+        state: StateShape | None,
         inference: InferenceTarget,
         output: CompiledOutput,
         capabilities: tuple[CompiledCapability, ...],
@@ -190,6 +198,7 @@ class AgentCompiler:
             name=spec.name,
             description=spec.description,
             instructions=instructions,
+            state=state,
             spec_version=spec.spec_version,
             inference=inference,
             output=output,

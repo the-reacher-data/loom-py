@@ -7,7 +7,12 @@ import logging
 import msgspec
 import pytest
 
-from loom.ai.compiler._plan import CONVERSATION_CONTEXT_FIELDS, AgentPlan, CompiledOutput
+from loom.ai.compiler._plan import (
+    CONVERSATION_CONTEXT_FIELDS,
+    AgentPlan,
+    CompiledInstruction,
+    CompiledOutput,
+)
 from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
@@ -29,7 +34,7 @@ def _plan() -> AgentPlan:
     return AgentPlan(
         name="incident-triage",
         description="test agent",
-        instructions="answer",
+        instructions=(CompiledInstruction(text="answer"),),
         spec_version=1,
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(schema={"type": "object"}, decoder=msgspec.json.Decoder(dict)),

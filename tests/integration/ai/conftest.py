@@ -41,6 +41,7 @@ from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledCapability,
     CompiledConversation,
+    CompiledInstruction,
     CompiledMcpCapability,
     CompiledOutput,
     CompiledOutputHook,
@@ -598,7 +599,7 @@ def make_plan(
     return AgentPlan(
         name=name,
         description=f"{name} test agent",
-        instructions="answer",
+        instructions=(CompiledInstruction(text="answer"),),
         spec_version=1,
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(

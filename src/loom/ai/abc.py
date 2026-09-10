@@ -21,6 +21,8 @@ from contextlib import AbstractAsyncContextManager
 from decimal import Decimal
 from typing import Any, ClassVar, Final, Generic, Literal, Protocol, TypeAlias, TypeVar, overload
 
+import msgspec
+
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
@@ -40,6 +42,30 @@ independent of the handle's own :data:`AnswerT`."""
 
 ToolResultT = TypeVar("ToolResultT")
 """Decoded type of a single :meth:`McpHandle.call`."""
+
+
+class StateShape(LoomFrozenStruct, frozen=True, kw_only=True):
+    """The one shape ``deps_type``/``deps_schema`` compile to (FR-003).
+
+    ``deps_schema``, ``deps_type: <symbol>`` and ``deps_type: dict`` are three
+    authored spellings of one optional JSON Schema; the compiler resolves all
+    three to this value, never to one of three interchangeable objects. Same
+    idiom as its sibling :class:`~loom.ai.compiler._plan.CompiledOutput`,
+    including a ``decoder`` field msgspec cannot itself encode, under the
+    invariant :mod:`loom.ai.compiler._plan` documents.
+
+    Attributes:
+        schema: JSON Schema the artifact's state must satisfy, or ``None``
+            under the ``deps_type: dict`` waiver, where no schema exists and
+            template markers are not validated (FR-006).
+        decoder: Built ``msgspec`` JSON decoder producing the normalised
+            state mapping, or ``None`` alongside ``schema is None``.
+    """
+
+    schema: Mapping[str, Any] | None
+    # ``Any`` type parameter: the decoded type is derived from the artifact's
+    # declared state at compile time, so it cannot be named statically.
+    decoder: msgspec.json.Decoder[Any] | None
 
 
 class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):

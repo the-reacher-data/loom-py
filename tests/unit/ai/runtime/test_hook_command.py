@@ -12,6 +12,7 @@ from loom.ai.compiler._plan import (
     HOOK_MESSAGES_FIELD,
     HOOK_OUTPUT_FIELD,
     AgentPlan,
+    CompiledInstruction,
     CompiledOutput,
 )
 from loom.ai.declarative import PolicySpec
@@ -38,7 +39,7 @@ def _plan() -> AgentPlan:
     return AgentPlan(
         name="incident-triage",
         description="test agent",
-        instructions="answer",
+        instructions=(CompiledInstruction(text="answer"),),
         spec_version=1,
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(schema={"type": "object"}, decoder=msgspec.json.Decoder(dict)),

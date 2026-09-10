@@ -5,11 +5,23 @@ A ``json_schema`` output compiles to a concrete type via
 reflects per invocation (research R-004, invariant 5).  A ``type_ref`` output
 accepts ``msgspec.Struct`` subclasses only in v1, so pydantic never enters the
 compiler path (T053).
+
+:func:`_resolve_symbol` and :func:`_schema_to_decoder` are shared with the
+state phase (:mod:`loom.ai.compiler.phases._state`), which compiles the same
+two authored shapes — a symbol reference and a hand-written JSON Schema —
+into a schema-and-decoder pair. Each caller supplies its own issue factory
+and, for the schema path, its own generated-struct name; nothing about the
+issue codes, the messages, or the exceptions caught changes between the two
+callers. What differs between the two ``type_ref``/``deps_type`` paths stays
+local to each phase: the output side additionally requires the resolved
+symbol to be a ``msgspec.Struct`` declaring ``forbid_unknown_fields=True``
+(invariant 5); the state side derives its schema straight from
+``msgspec.json.schema()`` and admits whatever symbol that call accepts.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 
@@ -26,6 +38,11 @@ from loom.ai.errors import (
 from loom.core.symbols import import_symbol
 
 _CompileResult = tuple[CompiledOutput | None, list[AgentCompilationIssue]]
+
+_IssueFactory = Callable[[str, str], AgentCompilationIssue]
+"""Builds one compilation issue from ``(component, detail)`` — the shape
+every ``*_unresolvable`` and ``*_schema_invalid`` factory in
+:mod:`loom.ai.errors` already has."""
 
 # ``Any`` in the values: the mapped Python annotations are runtime objects
 # (``str``, ``list[...]``, generated structs) that a static alias cannot name.
@@ -54,22 +71,19 @@ def compile_output(output: OutputSpec, component: str) -> _CompileResult:
 
 
 def _compile_json_schema(output: JsonSchemaOutput, component: str) -> _CompileResult:
-    fault = _schema_fault(output.schema)
-    if fault is not None:
-        return None, [output_schema_invalid(component, fault)]
-    try:
-        answer_type = _annotation_for(output.schema, "CompiledOutputModel")
-        decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(answer_type)
-    except (TypeError, ValueError) as exc:
-        return None, [output_schema_invalid(component, str(exc))]
-    return CompiledOutput(schema=MappingProxyType(dict(output.schema)), decoder=decoder), []
+    compiled, issues = _schema_to_decoder(
+        output.schema, "CompiledOutputModel", component, output_schema_invalid
+    )
+    if compiled is None:
+        return None, issues
+    schema, decoder = compiled
+    return CompiledOutput(schema=schema, decoder=decoder), []
 
 
 def _compile_type_ref(output: TypeRefOutput, component: str) -> _CompileResult:
-    try:
-        symbol = import_symbol(output.ref)
-    except (ImportError, AttributeError, ValueError):
-        return None, [output_type_ref_unresolvable(component, output.ref)]
+    symbol, issues = _resolve_symbol(output.ref, component, output_type_ref_unresolvable)
+    if symbol is None:
+        return None, issues
     if not (isinstance(symbol, type) and issubclass(symbol, msgspec.Struct)):
         return None, [
             output_type_ref_unsupported(
@@ -87,6 +101,39 @@ def _compile_type_ref(output: TypeRefOutput, component: str) -> _CompileResult:
         ]
     decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(symbol)
     return CompiledOutput(schema=MappingProxyType(msgspec.json.schema(symbol)), decoder=decoder), []
+
+
+def _resolve_symbol(
+    ref: str, component: str, unresolvable_issue: _IssueFactory
+) -> tuple[Any | None, list[AgentCompilationIssue]]:
+    """Resolve *ref*, or report it as unresolvable via *unresolvable_issue*.
+
+    Shared with the state ``deps_type`` symbol path (:mod:`loom.ai.compiler.phases._state`).
+    """
+    try:
+        return import_symbol(ref), []
+    except (ImportError, AttributeError, ValueError):
+        return None, [unresolvable_issue(component, ref)]
+
+
+def _schema_to_decoder(
+    schema: Mapping[str, Any], model_name: str, component: str, invalid_issue: _IssueFactory
+) -> tuple[tuple[Mapping[str, Any], msgspec.json.Decoder[Any]] | None, list[AgentCompilationIssue]]:
+    """Compile a hand-written JSON Schema object into a ``(schema, decoder)`` pair.
+
+    *model_name* names the generated struct type; *invalid_issue* reports a
+    structural fault or a build failure. Shared with the state ``deps_schema``
+    path (:mod:`loom.ai.compiler.phases._state`).
+    """
+    fault = _schema_fault(schema)
+    if fault is not None:
+        return None, [invalid_issue(component, fault)]
+    try:
+        annotation = _annotation_for(schema, model_name)
+        decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(annotation)
+    except (TypeError, ValueError) as exc:
+        return None, [invalid_issue(component, str(exc))]
+    return (MappingProxyType(dict(schema)), decoder), []
 
 
 def _schema_fault(schema: Mapping[str, Any]) -> str | None:
