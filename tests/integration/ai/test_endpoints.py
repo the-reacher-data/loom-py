@@ -952,6 +952,8 @@ class TestMapeoDeErrores:
         ("code", "status"),
         [
             (AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION, 422),
+            (AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED, 422),
+            (AgentRunErrorCode.USAGE_LIMIT_EXCEEDED, 422),
             (AgentRunErrorCode.PROVIDER_UNAVAILABLE, 503),
             (AgentRunErrorCode.TOOL_UNAVAILABLE, 503),
             (AgentRunErrorCode.TOOL_TIMEOUT, 504),
@@ -960,6 +962,7 @@ class TestMapeoDeErrores:
             (AgentRunErrorCode.UNAUTHORIZED, 403),
             (AgentRunErrorCode.HOOK_FAILED, 500),
             (AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT, 504),
+            (AgentRunErrorCode.COST_NOT_MEASURABLE, 500),
         ],
     )
     async def test_mapea_el_status_cuando_la_ejecucion_falla(

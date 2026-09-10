@@ -151,9 +151,9 @@ class CountingToolsetBuilder:
 
     built: list[FakeMcpToolset] = field(default_factory=list)
 
-    def __call__(self, capability: CompiledMcpCapability) -> Any:
+    def __call__(self, capability: CompiledMcpCapability, *, init_timeout: float) -> Any:
         """Build one fake toolset for the grant's connection."""
-        del capability
+        del capability, init_timeout
         toolset = FakeMcpToolset()
         self.built.append(toolset)
         return toolset

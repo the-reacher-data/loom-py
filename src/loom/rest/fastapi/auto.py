@@ -693,6 +693,7 @@ def _resolve_ai(
     from loom.ai.config import AiConfig
     from loom.ai.declarative import load_specs
     from loom.ai.registry import (
+        configure_engine_mcp_connect_timeout,
         engine_client_factories,
         engine_native_tool_support,
         engine_supported_kinds,
@@ -702,6 +703,10 @@ def _resolve_ai(
 
     ai_cfg = ctx.section(ConfigKey.AI, AiConfig)
     provider = resolve_engine_provider(ai_cfg.engine)
+    # `ai.startup_timeout_ms` is the published start-up connect budget; handed
+    # to the engine here so its own MCP handshake deadline stops being the
+    # engine's undocumented five seconds (FR-051).
+    configure_engine_mcp_connect_timeout(provider, ai_cfg.startup_timeout_ms / 1000)
     mcp_factory, a2a_factory = engine_client_factories(provider)
     native_tools = engine_native_tool_support(provider)
     compiler = AgentCompiler(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, ClassVar, cast
 
@@ -145,6 +146,7 @@ def _make_plan(
     *,
     name: str = _AGENT,
     capabilities: tuple[CompiledCapability, ...],
+    policies: PolicySpec | None = None,
 ) -> AgentPlan:
     """Build a compiled plan carrying every field the projection must consider."""
     return AgentPlan(
@@ -161,7 +163,8 @@ def _make_plan(
         ),
         output=CompiledOutput(schema=_OUTPUT_SCHEMA, decoder=msgspec.json.Decoder(dict)),
         capabilities=capabilities,
-        policies=PolicySpec(
+        policies=policies
+        or PolicySpec(
             retries=3,
             tool_timeout_ms=30000,
             max_iterations=20,
@@ -241,14 +244,40 @@ class TestProyeccionDelAgente:
         assert _normalise(describe_agent(full_plan).output_schema) == _normalise(_OUTPUT_SCHEMA)
 
     def test_publica_las_politicas_cuando_describe_un_plan(self, full_plan: AgentPlan) -> None:
-        """The execution limits are published as a plain integer mapping."""
+        """The execution limits are published as a plain mapping."""
         assert dict(describe_agent(full_plan).policies) == {
             "retries": 3,
             "tool_timeout_ms": 30000,
             "max_iterations": 20,
             "run_timeout_ms": 300000,
             "max_history_bytes": 1048576,
+            "max_usd": None,
+            "max_total_tokens": None,
+            "max_input_tokens_per_request": None,
+            "max_tool_calls": None,
+            "max_requests": 50,
+            "on_unpriced_spend": "serve",
         }
+
+    def test_max_usd_is_published_as_a_number_when_declared(self) -> None:
+        """``max_usd`` survives the projection as a number, matching the published schema.
+
+        msgspec encodes a bare ``Decimal`` as a JSON *string*: the schema
+        declares ``policies.max_usd`` as ``type: number``, so this projection
+        fixes the wire form to match the published schema, rather than
+        leaving it to whatever msgspec's default happens to be.
+        """
+        plan = _make_plan(
+            capabilities=(),
+            policies=PolicySpec(max_usd=Decimal("2.00")),
+        )
+
+        described = describe_agent(plan)
+        assert described.policies["max_usd"] == 2.0
+
+        encoded = msgspec.to_builtins(described, enc_hook=_as_builtin)
+        payload = json.loads(msgspec.json.encode(encoded))
+        assert payload["policies"]["max_usd"] == 2.0
 
     def test_publica_la_procedencia_cuando_el_plan_la_conoce(self, full_plan: AgentPlan) -> None:
         """``source_path`` is provenance, not secret material."""

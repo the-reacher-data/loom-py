@@ -20,6 +20,7 @@ Excluded at agent level (FR-054): ``instructions``, the resolved
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, cast
 
@@ -36,6 +37,7 @@ from loom.ai.compiler._plan import (
     CompiledSqlCapability,
     CompiledUsecaseCapability,
 )
+from loom.ai.declarative import PolicySpec
 from loom.core.introspection import IntrospectionError
 from loom.core.model import LoomFrozenStruct
 
@@ -69,7 +71,11 @@ class AgentDescription(LoomFrozenStruct, frozen=True, kw_only=True):
         spec_version: Artifact format the agent compiled from.
         output_schema: JSON Schema of the agent's structured answer.
         capabilities: Described grants, in the order the plan carries them.
-        policies: Validated execution limits.
+        policies: Validated execution limits. An absent optional cap
+            (FR-042) is published as ``None``. ``max_usd`` is published as a
+            JSON number, matching the published schema's own
+            ``policies.max_usd`` (``type: number``) — never as the string
+            msgspec would otherwise encode a ``Decimal`` to.
         source_path: Artifact the agent was compiled from, when known.
     """
 
@@ -78,7 +84,7 @@ class AgentDescription(LoomFrozenStruct, frozen=True, kw_only=True):
     spec_version: int
     output_schema: Mapping[str, Any]
     capabilities: tuple[AgentCapabilityDescription, ...]
-    policies: Mapping[str, int]
+    policies: Mapping[str, int | float | str | None]
     source_path: str | None
 
 
@@ -173,9 +179,27 @@ def describe_agent(plan: AgentPlan) -> AgentDescription:
         spec_version=plan.spec_version,
         output_schema=plan.output.schema,
         capabilities=tuple(_describe_capability(item) for item in plan.capabilities),
-        policies=msgspec.structs.asdict(plan.policies),
+        policies=_describe_policies(plan.policies),
         source_path=plan.source_path,
     )
+
+
+def _describe_policies(policies: PolicySpec) -> Mapping[str, int | float | str | None]:
+    """Project ``policies`` onto JSON-encodable values, on the wire's own terms.
+
+    ``msgspec.structs.asdict`` alone would leave ``max_usd`` a ``Decimal``,
+    which ``msgspec.to_builtins`` then encodes as a string, diverging from
+    the published schema's ``policies.max_usd`` (``type: number``).
+    ``float(Decimal)`` is not exact in general
+    (``Decimal(float(Decimal("0.1"))) != Decimal("0.1")``); this projection
+    is a wire-friendly approximation for display and never reaches
+    enforcement, which always checks the exact ``Decimal`` on
+    ``PolicySpec.max_usd``.
+    """
+    described = dict(msgspec.structs.asdict(policies))
+    if isinstance(described["max_usd"], Decimal):
+        described["max_usd"] = float(described["max_usd"])
+    return described
 
 
 def _as_builtin(value: Any) -> Any:

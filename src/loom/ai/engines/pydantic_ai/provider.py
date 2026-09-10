@@ -26,6 +26,7 @@ from loom.ai.engines.pydantic_ai._capabilities import (
     build_toolsets,
 )
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
+from loom.ai.engines.pydantic_ai._limits import usage_limits, warn_if_model_not_priceable
 from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
 from loom.ai.engines.pydantic_ai._native import supported_native_tools
@@ -50,6 +51,14 @@ class PydanticAIEngineProvider:
             contract suite supplies one to exercise this adapter with no
             network and no credentials (FR-048).
 
+    Every MCP toolset this provider builds starts at
+    :data:`~loom.ai.engines.pydantic_ai._mcp.DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS`
+    for its connection and ``initialize`` handshake (FR-051), because
+    :func:`~loom.ai.registry.resolve_engine_provider` constructs this class
+    with no arguments. The composition root instead calls
+    :meth:`configure_mcp_connect_timeout` once it has read
+    ``ai.startup_timeout_ms``.
+
     One instance serves one runtime lifecycle. It holds the worker's shared
     MCP toolsets, which are never evicted, so re-entering the same provider
     from a second event loop would reuse a connection lock bound to the first.
@@ -61,6 +70,7 @@ class PydanticAIEngineProvider:
     Example::
 
         provider = PydanticAIEngineProvider()
+        provider.configure_mcp_connect_timeout(ai_cfg.startup_timeout_ms / 1000)
         engine = provider.create_engine(plan, deps=deps, container=container)
     """
 
@@ -73,6 +83,19 @@ class PydanticAIEngineProvider:
     def __init__(self, *, model_resolver: ModelResolver | None = None) -> None:
         self._resolve_model: ModelResolver = model_resolver or resolve_model
         self._mcp = SharedMcpToolsets()
+
+    def configure_mcp_connect_timeout(self, seconds: float) -> None:
+        """Replace the MCP handshake deadline every toolset built from now on waits for.
+
+        Read structurally, with ``getattr``, by the composition root (FR-051),
+        so a third-party engine that declares no such method is simply left
+        at its own default. Has no effect on a connection whose toolset was
+        already built: call this before the runtime opens its clients.
+
+        Args:
+            seconds: New handshake deadline, in seconds.
+        """
+        self._mcp.set_connect_timeout(seconds)
 
     def mcp_client_factory(
         self, capability: CompiledMcpCapability
@@ -115,6 +138,10 @@ class PydanticAIEngineProvider:
         if not isinstance(plan, AgentPlan):
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
         model = self._resolve_model(plan.inference)
+        provider_name = model.provider.name if model.provider is not None else None
+        warn_if_model_not_priceable(
+            model.model_name, provider_name, plan.policies, f"agent '{plan.name}'"
+        )
         toolsets = build_toolsets(plan, container, mcp=self._mcp)
         capabilities = build_capabilities(plan, container)
         output_type = build_output_type(plan)
@@ -130,7 +157,13 @@ class PydanticAIEngineProvider:
             capabilities=capabilities or None,
             **pinned,
         )
-        return PydanticAIEngine(plan=plan, agent=agent, deps=deps, container=container)
+        return PydanticAIEngine(
+            plan=plan,
+            agent=agent,
+            deps=deps,
+            container=container,
+            usage_limits=usage_limits(plan.policies),
+        )
 
     def native_tool_support(self, target: InferenceTarget) -> frozenset[str]:
         """Return the provider tools the model bound to *target* admits.

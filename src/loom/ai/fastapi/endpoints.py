@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Annotated, Final
 
 import msgspec
@@ -67,20 +68,34 @@ _MEDIA_TYPE_SSE: Final[str] = "text/event-stream"
 # Published mapping of run-error codes to HTTP statuses (contract table). Codes
 # absent from the table are deliberate 500s: an unmapped outcome is a defect in
 # this table, not something to guess a status for.
-_STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = {
-    AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION: 422,
-    AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED: 422,
-    AgentRunErrorCode.PROVIDER_UNAVAILABLE: 503,
-    AgentRunErrorCode.PROVIDER_RATE_LIMITED: 503,
-    AgentRunErrorCode.TOOL_UNAVAILABLE: 503,
-    AgentRunErrorCode.TOOL_TIMEOUT: 504,
-    AgentRunErrorCode.RUN_TIMEOUT: 504,
-    AgentRunErrorCode.TOO_MANY_RUNS: 429,
-    AgentRunErrorCode.UNAUTHORIZED: 403,
-    AgentRunErrorCode.HOOK_FAILED: 500,
-    AgentRunErrorCode.CONVERSATION_LOAD_FAILED: 500,
-    AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: 504,
-}
+_STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = MappingProxyType(
+    {
+        AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION: 422,
+        AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED: 422,
+        AgentRunErrorCode.USAGE_LIMIT_EXCEEDED: 422,
+        AgentRunErrorCode.PROVIDER_UNAVAILABLE: 503,
+        AgentRunErrorCode.PROVIDER_RATE_LIMITED: 503,
+        AgentRunErrorCode.TOOL_UNAVAILABLE: 503,
+        AgentRunErrorCode.TOOL_TIMEOUT: 504,
+        AgentRunErrorCode.RUN_TIMEOUT: 504,
+        AgentRunErrorCode.TOO_MANY_RUNS: 429,
+        AgentRunErrorCode.UNAUTHORIZED: 403,
+        AgentRunErrorCode.HOOK_FAILED: 500,
+        AgentRunErrorCode.CONVERSATION_LOAD_FAILED: 500,
+        AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: 504,
+    }
+)
+
+# The remainder of ``AgentRunErrorCode`` deliberately falls back to the ``500``
+# below: these are wiring bugs (an unknown grant, a tool call that raised, a
+# call cycle), client-side cancellation, or a deployment defect (a declared
+# ``max_usd`` against a model the deployed price catalogue cannot price), none
+# of which the HTTP contract names a status for. That deliberate set has no
+# production reader — the fallback is the literal ``500`` in
+# ``_run_error_response`` — so it lives only in
+# ``tests/unit/ai/test_error_catalogue_totality.py``, next to the totality
+# test it exists for: a new code added to the enum without an entry in either
+# table fails that test instead of silently defaulting to 500.
 
 
 class _AgentRunRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):

@@ -67,11 +67,62 @@ ai:
 That separation is what lets the same artifact run against a staging server and
 a production one with no edit.
 
+### The handshake deadline vs. the call deadline
+
+Three deadlines govern one MCP connection: one for the handshake, and two
+that race each other on every call an agent makes.
+
+| Deadline | Answers | Configured by |
+|---|---|---|
+| Handshake | How long to wait for the connection and the `initialize` exchange | `ai.startup_timeout_ms` (default `10000`) |
+| Call (transport) | How long to wait for one tool call's response | the server's own `timeout_ms` (default `20000`) |
+| Call (supervisor) | How long an agent's own tool call may run before loom's supervisor cuts it off, coded `TOOL_TIMEOUT` | the plan's `policies.tool_timeout_ms` (default `20000`) |
+
+`ai.startup_timeout_ms` is the same published budget that already bounds
+opening every live client concurrently at start-up; it now reaches the MCP
+client's own handshake deadline too, so the number an operator configures is
+the number a slow `initialize` is actually bound by. The server's `timeout_ms`
+now governs **both** paths that call it: the use-case path, which it always
+governed, and the agent's own tool calls' transport-level wait, which used to
+run on the engine's undocumented 300-second default instead.
+
+That transport wait is not the only deadline an agent's own call was ever
+under, though: `guarded_toolset` already wrapped every MCP tool call an agent
+makes in `asyncio.timeout(policies.tool_timeout_ms / 1000)` (`capability_call`,
+in `loom/ai/engines/pydantic_ai/_guards.py`), before and after this change,
+raising `TOOL_TIMEOUT` on expiry. This is the table's third row, "Call
+(supervisor)" — the *model-facing* MCP path, contrasted below with the
+marker's own `Mcp()` grant (`loom/ai/runtime/_grants.py`), whose own
+`asyncio.timeout` guard raises the same `TOOL_TIMEOUT` directly to the caller,
+never a refusal value the model reads: a use case invoked outside a run has no
+model to hand the refusal to. With both deadlines at their default of `20000`
+ms, the two races to the same number with different outcomes: if the
+supervisor's `asyncio.timeout` wins, the call fails `TOOL_TIMEOUT` and the
+run ends; if the transport wins first, `guarded` turns the failure into a
+refusal value the model reads and may retry on its own. Whichever deadline a
+deployment cares about winning should be set strictly shorter than the
+other — in general, `policies.tool_timeout_ms` at or below the server's
+`timeout_ms` gives the model a chance to see and react to the refusal, rather
+than ending the run outright.
+
 Under `transport: http` (the default) the URL must be `https://`, carry no
 credentials in its userinfo and no query string — compilation refuses anything
 else and redacts the URL in the error, so the message cannot leak the credential
 it just rejected. `headers_ref` is a reference the deployment's secret resolver
 looks up; a literal secret is rejected fail-closed.
+
+**Under the SSE transport, the server's `timeout_ms` governs a second thing as
+well.** Whenever a server declares `headers_ref` or `auth`, loom builds its
+transport explicitly rather than letting the client infer one, and the same
+`timeout_ms` value that bounds one tool call's response also reaches
+`SSETransport.sse_read_timeout` — the deadline of the server's *idle event
+stream*, not of one call. A server whose SSE stream today survives 300 seconds
+of silence between events can therefore be cut off at the shorter `timeout_ms`
+a deployment names for "one call". A server declaring neither `headers_ref`
+nor `auth` keeps FastMCP's own inferred transport and is unaffected. This is a
+real, documented behaviour change, not a hidden one — raise `timeout_ms` for
+an SSE server whose event stream legitimately idles longer than one call
+should ever take.
 
 ### stdio: a subprocess in your container
 
@@ -113,9 +164,12 @@ What stdio does not do:
 - **it does not inherit your environment.** The child receives only `HOME`,
   `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER` plus what `env` declares, so a
   secret in the worker's environment cannot leak into the tool by accident;
-- **it does not precompile your command.** The client gives the handshake a
-  five-second budget, so a cold `uvx`/`npx` download will miss it: install the
-  server in the image and let `command` run it.
+- **it does not precompile your command.** The handshake budget is
+  `ai.startup_timeout_ms` (see [The handshake deadline
+  vs. the call deadline](#the-handshake-deadline-vs-the-call-deadline)
+  below), so a cold `uvx`/`npx` download must complete inside it: raise
+  `startup_timeout_ms`, or install the server in the image and let `command`
+  run it.
 
 Values in `env` reach loom already resolved — `${secrets:…}` is an OmegaConf
 resolver that runs before this configuration is validated — so loom cannot tell a
@@ -126,7 +180,11 @@ interpolation; keeping real secrets out of the file is the deployment's job.
 ### Failures happen at start-up
 
 - an unreachable server fails start-up **by name**, under `startup_timeout_ms`,
-  rather than hanging the ASGI lifespan;
+  rather than hanging the ASGI lifespan — the MCP client's own handshake
+  deadline is now derived from this same setting (see [The handshake
+  deadline vs. the call deadline](#the-handshake-deadline-vs-the-call-deadline)
+  above), so a server that is merely *slow* to connect gets the whole budget
+  you configured, not a fixed five seconds nobody could adjust;
 - an `include`/`exclude` filter that matches **no tool the server actually
   offers** fails start-up — a filter that silently matches nothing is how an
   agent quietly loses a capability it was granted;
@@ -165,6 +223,46 @@ dependency `unavailable` once its first pass has run — for every server **an
 agent declares**. A server named only by a use case's `Mcp()` marker is not
 covered; see [The health probe does not cover a server reached only this
 way](#the-health-probe-does-not-cover-a-server-reached-only-this-way).
+
+A slow-but-live server now spends real budget under `optional`, not a fixed
+five seconds. Because the handshake deadline is `ai.startup_timeout_ms`
+(above), a server that is merely slow — not down — is given the whole
+configured budget before it is dropped, exactly as it would be under
+`required`. A deployment relying on the old five-second ceiling to fail fast
+and move on now waits up to `startup_timeout_ms` for that one server before
+tolerating it, and the concurrent open of every other declared server shares
+that same clock: one slow server can consume the group's whole budget, and
+when the shared deadline does expire, every server whose connection had not
+completed yet is reported `MCP_SERVER_UNREACHABLE` — named individually, but
+the cause may be a single slow neighbour rather than a fault of its own.
+Lower `startup_timeout_ms` if failing fast matters more than giving a slow
+server room to connect.
+
+**The per-server handshake deadline never fires first.** Each MCP toolset
+carries its own `init_timeout`, and the group of concurrent connection
+attempts is wrapped in its own deadline — but both are the *same*
+`ai.startup_timeout_ms`. The group's deadline is not armed when the
+connection attempts themselves start; it is computed once, as an absolute
+clock reading (`AgentRuntime._startup_deadline`), at the very top of
+`__aenter__`, before `_verify_sql_readonly`, `_verify_invoker` and
+`_verify_mcp_connections` run — three synchronous checks with no timeout of
+their own — and only then handed to `_open_clients`, which arms
+`asyncio.timeout_at` on that same absolute reading. So the group's deadline is
+always armed strictly *before* any per-server handshake even begins, and
+by the time a connection attempt starts, part of the shared budget is already
+spent, which is what makes the group's clock always at least as tight as —
+in practice, strictly tighter than — any one server's own handshake budget.
+The same absolute reading is reused, unless start-up already tolerated an
+unreachable server, by `_verify_tool_filters` right after `_open_clients`
+returns, so one shared clock covers the whole of start-up, not only the
+handshake. The per-server deadline exists in the code (`SharedMcpToolsets`'s
+`init_timeout`, applied to every toolset it builds) but is structurally
+dominated by the group's: the diagnostic a slow server produces is always the
+aggregated `MCP_SERVER_UNREACHABLE` list the group timeout raises for every
+connection still in flight, never a per-server timeout that singles it out. A
+future change that wants a genuinely slower server to self-identify would
+need the per-server budget to carry a margin below the group's, not merely
+equal it.
 
 `optional` tolerates a network that is not there. It tolerates nothing else, and
 three carve-outs are deliberate:

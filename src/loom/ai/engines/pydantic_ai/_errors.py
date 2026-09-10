@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from pydantic_ai.exceptions import (
+    CostCalculationFailedWarning,
+    CostNotFoundWarning,
     ModelAPIError,
     ModelHTTPError,
     UnexpectedModelBehavior,
@@ -36,10 +38,24 @@ _STATUS_CODES: Mapping[int, AgentRunErrorCode] = MappingProxyType(
 
 _EXCEPTION_CODES: Mapping[type[Exception], AgentRunErrorCode] = MappingProxyType(
     {
-        UsageLimitExceeded: AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED,
+        # The engine raises this one exception for every ``UsageLimits`` field:
+        # the engine's own request-count default, and every ``policies`` spend
+        # cap FR-040 declares, land on the same coded failure. Distinct from
+        # ``MAX_ITERATIONS_EXCEEDED``, which is loom's own supervisor counting
+        # tool calls over the event stream (``runtime/_limits.py``) — a
+        # different counter, raised from a different place, never from here
+        # (FR-046).
+        UsageLimitExceeded: AgentRunErrorCode.USAGE_LIMIT_EXCEEDED,
         UnexpectedModelBehavior: AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION,
         ModelAPIError: AgentRunErrorCode.PROVIDER_UNAVAILABLE,
         TimeoutError: AgentRunErrorCode.RUN_TIMEOUT,
+        # Both subclass ``Warning``, not ``UserWarning``; see "Spend caps" in
+        # docs/ai/artifacts.md for why that makes this mapping load-bearing
+        # under ``-W error``. ``test_pydantic_ai_errors.py`` walks every
+        # ``pydantic_ai._warnings`` subclass of ``Warning`` that is not a
+        # ``UserWarning`` and fails the day a third one is added here unmapped.
+        CostNotFoundWarning: AgentRunErrorCode.COST_NOT_MEASURABLE,
+        CostCalculationFailedWarning: AgentRunErrorCode.COST_NOT_MEASURABLE,
     }
 )
 

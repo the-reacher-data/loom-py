@@ -20,6 +20,13 @@ effect to duplicate — keeps its retries.
 
 One resolved provider serves the agent, always: a failure is never re-routed to
 another vendor (FR-019a).
+
+``policies.max_usd`` is an *elastic* cap (see :class:`~loom.ai.declarative.PolicySpec`
+and "Spend caps" in ``docs/ai/artifacts.md``): a run whose cost this engine
+cannot fully compute is served by default (``on_unpriced_spend: serve``) with
+the gap recorded in :attr:`~loom.ai.abc.AgentUsage.details`, rather than
+discarded after the provider has already billed it. :meth:`PydanticAIEngine.health`
+carries the same gap forward once observed.
 """
 
 from __future__ import annotations
@@ -30,10 +37,11 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import fields
 from time import perf_counter
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.messages import ModelResponse
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from loom.ai.abc import (
     AgentEvent,
@@ -97,6 +105,17 @@ _HEALTH_BY_CODE: Mapping[AgentRunErrorCode, HealthStatus] = MappingProxyType(
     }
 )
 
+_UNPRICED_SPEND_HEALTH: Final[HealthStatus] = HealthStatus(
+    status="degraded",
+    detail=(
+        "a run produced a model response this engine could not fully price; "
+        "policies.max_usd may not be fully enforced"
+    ),
+)
+"""Reported once :attr:`PydanticAIEngine._unpriced_spend_observed` is set;
+never cleared by a later clean run, unlike :data:`_HEALTH_BY_CODE`. See
+"Spend caps" in ``docs/ai/artifacts.md``."""
+
 
 class PydanticAIEngine:
     """One compiled agent, running on pydantic-ai.
@@ -108,6 +127,9 @@ class PydanticAIEngine:
             captured here, at build, and the caller's identity is supplied per
             invocation (FR-043).
         container: Application container the dependency factory resolves from.
+        usage_limits: The plan's spend caps, projected once at construction
+            (:func:`~loom.ai.engines.pydantic_ai._limits.usage_limits`) and
+            passed on every run and every streamed attempt.
     """
 
     def __init__(
@@ -117,13 +139,16 @@ class PydanticAIEngine:
         agent: Agent[Any, Any],
         deps: DepsFactory,
         container: LoomContainer,
+        usage_limits: UsageLimits,
     ) -> None:
         self._plan = plan
         self._agent = agent
         self._deps = deps
         self._container = container
+        self._usage_limits = usage_limits
         self._attempts = max(plan.policies.retries, 0) + 1
         self._last_failure: AgentRunErrorCode | None = None
+        self._unpriced_spend_observed = False
 
     async def run(
         self,
@@ -148,19 +173,23 @@ class PydanticAIEngine:
             AgentRunError: Carrying the coded, classified failure and what the
                 run had already spent before it failed. A history that does
                 not decode fails here before any provider call, with no usage.
+                ``COST_NOT_MEASURABLE`` when ``policies.on_unpriced_spend`` is
+                ``'refuse'`` and this run priced incompletely.
         """
         decoded = decode_conversation(conversation)
         started = perf_counter()
         spend = RunUsage()
         try:
             result = await self._run_with_retries(prompt, identity, spend, decoded)
+            unpriced = self._apply_unpriced_spend_policy(result)
             output = decode_output(self._plan.output, result)
         except AgentRunError as error:
+            self._record(error.code)
             error.usage = self._usage(spend, started)
             raise
         return AgentResult(
             output=output,
-            usage=self._usage(spend, started),
+            usage=self._usage(spend, started, unpriced_requests=unpriced),
             messages=new_messages(result, decoded),
         )
 
@@ -230,12 +259,19 @@ class PydanticAIEngine:
         """Report health from the last observed outcome, with no network I/O.
 
         Returns:
-            ``unavailable`` after a provider outage, ``degraded`` after a rate
-            limit, ``ok`` otherwise; a successful run clears the state.
+            ``unavailable`` after a provider outage; ``degraded`` after a
+            rate limit, or once this engine's bound model has produced a
+            response — served or refused — that it could not fully price;
+            ``ok`` otherwise.
         """
-        if self._last_failure is None:
-            return _HEALTHY
-        return _HEALTH_BY_CODE.get(self._last_failure, _HEALTHY)
+        by_code = (
+            _HEALTH_BY_CODE.get(self._last_failure) if self._last_failure is not None else None
+        )
+        if by_code is not None:
+            return by_code
+        if self._unpriced_spend_observed:
+            return _UNPRICED_SPEND_HEALTH
+        return _HEALTHY
 
     # -- internals ---------------------------------------------------------
 
@@ -257,7 +293,11 @@ class PydanticAIEngine:
         for attempt in range(self._attempts):
             try:
                 result = await self._agent.run(
-                    prompt, deps=deps, usage=spend, **run_kwargs(conversation)
+                    prompt,
+                    deps=deps,
+                    usage=spend,
+                    usage_limits=self._usage_limits,
+                    **run_kwargs(conversation),
                 )
             except Exception as exc:
                 error = as_run_error(exc)
@@ -286,9 +326,81 @@ class PydanticAIEngine:
         return is_retriable(code) and attempt + 1 < self._attempts
 
     def _record(self, code: AgentRunErrorCode | None) -> None:
-        self._last_failure = code
+        """Record this attempt's outcome; the single writer of :attr:`_last_failure`.
 
-    def _usage(self, usage: RunUsage, started: float) -> AgentUsage:
+        Every caller that raises or catches an :class:`AgentRunError` —
+        :meth:`run`, :meth:`_run_with_retries` and :meth:`_events` alike —
+        routes through here before the error leaves it, so ``health()`` never
+        depends on which of those callers happened to fail. ``COST_NOT_MEASURABLE``
+        also sticks :attr:`_unpriced_spend_observed`; the ``on_unpriced_spend:
+        serve`` path sets that same attribute itself, from
+        :meth:`_apply_unpriced_spend_policy`, since a served response has
+        nothing to route through here — it never raises.
+        """
+        self._last_failure = code
+        if code is AgentRunErrorCode.COST_NOT_MEASURABLE:
+            self._unpriced_spend_observed = True
+
+    def _record_attempt_failure(
+        self, exc: Exception, attempt: int, emitted: bool
+    ) -> tuple[AgentRunError, bool]:
+        """Classify one streamed attempt's failure and record it.
+
+        Shared by :meth:`_events`' two failure points — the attempt's own
+        event stream and, separately, :meth:`_conclude` — so both route
+        through :meth:`_record` the same way and neither has to repeat the
+        retry decision.
+
+        Returns:
+            The classified error, and whether the caller may retry.
+        """
+        error = as_run_error(exc)
+        self._record(error.code)
+        return error, not emitted and self._may_retry(error.code, attempt)
+
+    def _apply_unpriced_spend_policy(self, result: AgentRunResult[Any]) -> int:
+        """Act on this run's responses that pydantic-ai could not price.
+
+        A no-op whenever ``policies.max_usd`` is absent, or when every
+        response in *result* priced cleanly. Counted via
+        :func:`_count_unpriced_responses`, from the winning attempt's own
+        messages only — see "Spend caps" in ``docs/ai/artifacts.md`` for what
+        that excludes and why.
+
+        Args:
+            result: The winning attempt's result, carrying its own messages.
+
+        Returns:
+            Responses this run could not price; ``0`` when nothing is missing
+            or no cap is declared. Under ``on_unpriced_spend: serve``, also
+            marks this engine's :meth:`health` ``degraded`` from now on.
+
+        Raises:
+            AgentRunError: ``COST_NOT_MEASURABLE`` when
+                ``policies.on_unpriced_spend`` is ``'refuse'`` and at least
+                one response priced incompletely. Every caller of this method
+                catches that error and calls :meth:`_record`, so the flag
+                this raise implies is set there, not here.
+        """
+        if self._plan.policies.max_usd is None:
+            return 0
+        unpriced = _count_unpriced_responses(result)
+        if unpriced == 0:
+            return 0
+        if self._plan.policies.on_unpriced_spend == "refuse":
+            raise AgentRunError(
+                AgentRunErrorCode.COST_NOT_MEASURABLE,
+                f"policies.max_usd is declared but {unpriced} of this run's "
+                "model response(s) could not be priced, so the cap could not "
+                "be fully enforced; policies.on_unpriced_spend is 'refuse'",
+            )
+        self._unpriced_spend_observed = True
+        return unpriced
+
+    def _usage(self, usage: RunUsage, started: float, *, unpriced_requests: int = 0) -> AgentUsage:
+        details = _extra_counters(usage)
+        if unpriced_requests:
+            details = {**details, "unpriced_requests": unpriced_requests}
         return AgentUsage(
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
@@ -298,7 +410,7 @@ class PydanticAIEngine:
             cache_write_tokens=usage.cache_write_tokens,
             tool_calls=usage.tool_calls,
             cost=usage.cost,
-            details=_extra_counters(usage),
+            details=details,
         )
 
     @asynccontextmanager
@@ -327,6 +439,12 @@ class PydanticAIEngine:
 
         A history that does not decode is not a provider outcome: it ends the
         stream with its coded error, no usage and no health record.
+
+        ``on_unpriced_spend: refuse`` is evaluated only once an attempt's
+        deltas are fully drained and its result is in hand: a refused stream
+        can still deliver a complete answer's deltas and end on an ``error``
+        terminal frame instead of a ``final`` one, so a caller that only
+        watches the terminal event misses the answer it was already sent.
         """
         try:
             decoded = decode_conversation(conversation)
@@ -338,45 +456,94 @@ class PydanticAIEngine:
         started = perf_counter()
         for attempt in range(self._attempts):
             emitted = False
-            attempt_run = self._one_run(prompt, deps, spend, started, decoded, output_type)
+            outcome: list[AgentRunResult[Any]] = []
+            attempt_run = self._one_run(prompt, deps, spend, decoded, output_type, outcome)
             try:
                 async for event in attempt_run:
                     emitted = True
                     yield event
-                self._record(None)
-                return
             except Exception as exc:
-                error = as_run_error(exc)
-                self._record(error.code)
-                if not emitted and self._may_retry(error.code, attempt):
+                error, retry = self._record_attempt_failure(exc, attempt, emitted)
+                if retry:
                     await _backoff(attempt)
                     continue
                 yield ErrorEvent(
                     code=error.code, message=str(error), usage=self._usage(spend, started)
                 )
                 return
+            # Deliberately outside both ``try`` blocks: this checks the engine's
+            # own contract with pydantic-ai, not a provider or policy failure,
+            # so it must never be classified as one (FR-028 correction).
+            if not outcome:
+                raise AssertionError(
+                    "unreachable: the engine's own event stream always ends with a "
+                    "trailing AgentRunResultEvent"
+                )
+            try:
+                final = self._conclude(outcome[0], spend, started, decoded, output_type)
+            except Exception as exc:
+                error, _ = self._record_attempt_failure(exc, attempt, emitted=True)
+                yield ErrorEvent(
+                    code=error.code, message=str(error), usage=self._usage(spend, started)
+                )
+                return
+            self._record(None)
+            yield final
+            return
 
     async def _one_run(
         self,
         prompt: str,
         deps: object,
         spend: RunUsage,
-        started: float,
         conversation: RunConversation | None,
         output_type: type[Any] | None,
+        outcome: list[AgentRunResult[Any]],
     ) -> AsyncIterator[AgentEvent]:
-        """One attempt: engine events in, loom events out, ending in ``final``."""
+        """One attempt: engine events in, loom delta events out.
+
+        Never yields the terminal ``final`` event and never applies
+        ``on_unpriced_spend`` itself: the winning result is appended to
+        *outcome*, so :meth:`_events` can apply the policy only once every
+        delta from this attempt has already reached the caller.
+        """
         pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
         async with self._agent.run_stream_events(
-            prompt, deps=deps, usage=spend, **run_kwargs(conversation), **pinned
+            prompt,
+            deps=deps,
+            usage=spend,
+            usage_limits=self._usage_limits,
+            **run_kwargs(conversation),
+            **pinned,
         ) as stream:
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
-                    yield self._final(event.result, spend, started, conversation, output_type)
+                    outcome.append(event.result)
                     return
                 mapped = translate(event)
                 if mapped is not None:
                     yield mapped
+
+    def _conclude(
+        self,
+        result: AgentRunResult[Any],
+        spend: RunUsage,
+        started: float,
+        conversation: RunConversation | None,
+        output_type: type[Any] | None,
+    ) -> FinalEvent:
+        """Apply ``on_unpriced_spend`` to a finished attempt and build its ``final`` event.
+
+        Raises:
+            AgentRunError: ``COST_NOT_MEASURABLE``, propagated to
+                :meth:`_events` exactly as any other attempt failure — but
+                never retried, because :func:`~loom.ai.errors.is_retriable`
+                excludes it.
+        """
+        unpriced = self._apply_unpriced_spend_policy(result)
+        return self._final(
+            result, spend, started, conversation, output_type, unpriced_requests=unpriced
+        )
 
     def _final(
         self,
@@ -385,6 +552,8 @@ class PydanticAIEngine:
         started: float,
         conversation: RunConversation | None,
         output_type: type[Any] | None,
+        *,
+        unpriced_requests: int = 0,
     ) -> FinalEvent:
         # An overridden shape skips loom's own output check on purpose
         # (T304): 'decode_output' is compiled against the plan's declared
@@ -396,7 +565,7 @@ class PydanticAIEngine:
             output = decode_output(self._plan.output, result)
         return FinalEvent(
             output=output,
-            usage=self._usage(spend, started),
+            usage=self._usage(spend, started, unpriced_requests=unpriced_requests),
             messages=new_messages(result, conversation),
         )
 
@@ -421,6 +590,32 @@ def _extra_counters(usage: RunUsage) -> dict[str, int | float]:
     unnamed = sorted((declared | set(vars(usage))) - _NAMED_COUNTERS)
     extras: dict[str, int | float] = {name: getattr(usage, name) for name in unnamed}
     return {**usage.details, **extras}
+
+
+def _count_unpriced_responses(result: AgentRunResult[Any]) -> int:
+    """Count this run's own model responses whose cost pydantic-ai left unset.
+
+    Reads ``result.new_messages()``, never ``result.all_messages()``: the
+    latter also walks the ``message_history`` a multi-turn conversation
+    injected, and a prior turn's response was already billed and already
+    evaluated against its own run's ``max_usd``. A response with no
+    ``model_name`` is a capability's own synthetic reply, never a provider
+    call, so it never had a price to miss.
+
+    Args:
+        result: A completed attempt's result.
+
+    Returns:
+        The number of this run's own ``ModelResponse`` messages with no
+        computed cost.
+    """
+    return sum(
+        1
+        for message in result.new_messages()
+        if isinstance(message, ModelResponse)
+        and message.model_name is not None
+        and message.usage.cost is None
+    )
 
 
 async def _backoff(attempt: int) -> None:

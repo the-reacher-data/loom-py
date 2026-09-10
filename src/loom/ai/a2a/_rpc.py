@@ -47,6 +47,10 @@ RUN_ERROR_DETAILS: Final[Mapping[AgentRunErrorCode, str]] = MappingProxyType(
         AgentRunErrorCode.TOOL_UNAVAILABLE: "a capability is unavailable",
         AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION: "the run produced an invalid output",
         AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED: "the run exceeded its step limit",
+        AgentRunErrorCode.USAGE_LIMIT_EXCEEDED: "the run exceeded a declared spend or usage limit",
+        AgentRunErrorCode.COST_NOT_MEASURABLE: (
+            "the run's cost could not be measured, so a declared spend cap could not be enforced"
+        ),
         AgentRunErrorCode.RUN_TIMEOUT: "the run exceeded its time limit",
         AgentRunErrorCode.TOO_MANY_RUNS: "the agent is at its concurrency limit",
         AgentRunErrorCode.UNAUTHORIZED: "the caller is not permitted to perform this run",

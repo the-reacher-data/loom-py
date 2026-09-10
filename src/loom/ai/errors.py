@@ -30,6 +30,7 @@ Issue factories
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -835,11 +836,17 @@ def output_mode_unknown(role: str, value: str, valid: Sequence[str]) -> AgentCom
 def policy_out_of_range(
     component: str,
     policy: str,
-    value: int,
-    minimum: int,
-    maximum: int,
+    value: int | Decimal,
+    minimum: int | Decimal,
+    maximum: int | Decimal,
 ) -> AgentCompilationIssue:
-    """A policy value falls outside its documented range."""
+    """A policy value falls outside its documented range.
+
+    ``value``, ``minimum`` and ``maximum`` accept ``Decimal`` as well as
+    ``int``: every policy value is an integer count except ``max_usd``, which
+    is a ``Decimal`` (FR-043), and the two share this one factory rather than
+    each carrying its own near-identical message.
+    """
     return AgentCompilationIssue(
         code=AgentErrorCode.POLICY_OUT_OF_RANGE,
         message=(
@@ -1283,6 +1290,8 @@ class AgentRunErrorCode(StrEnum):
     TOOL_UNAVAILABLE = "TOOL_UNAVAILABLE"
     OUTPUT_SCHEMA_VIOLATION = "OUTPUT_SCHEMA_VIOLATION"
     MAX_ITERATIONS_EXCEEDED = "MAX_ITERATIONS_EXCEEDED"
+    USAGE_LIMIT_EXCEEDED = "USAGE_LIMIT_EXCEEDED"
+    COST_NOT_MEASURABLE = "COST_NOT_MEASURABLE"
     RUN_TIMEOUT = "RUN_TIMEOUT"
     TOO_MANY_RUNS = "TOO_MANY_RUNS"
     UNAUTHORIZED = "UNAUTHORIZED"
@@ -1353,6 +1362,12 @@ _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProx
         AgentRunErrorCode.TOOL_UNAVAILABLE: AgentRunErrorClass.INFRASTRUCTURE,
         AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION: AgentRunErrorClass.MODEL_BEHAVIOUR,
         AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED: AgentRunErrorClass.LIMIT,
+        AgentRunErrorCode.USAGE_LIMIT_EXCEEDED: AgentRunErrorClass.LIMIT,
+        # The cap was never evaluated here, unlike USAGE_LIMIT_EXCEEDED: a
+        # gap in the price catalogue, not a run that spent too much. Classed
+        # INFRASTRUCTURE — the artifact is not at fault — but carved out of
+        # 'is_retriable' below; see that function and _NEVER_RETRIED.
+        AgentRunErrorCode.COST_NOT_MEASURABLE: AgentRunErrorClass.INFRASTRUCTURE,
         AgentRunErrorCode.RUN_TIMEOUT: AgentRunErrorClass.LIMIT,
         AgentRunErrorCode.TOO_MANY_RUNS: AgentRunErrorClass.LIMIT,
         AgentRunErrorCode.UNAUTHORIZED: AgentRunErrorClass.AUTHORIZATION,
@@ -1412,17 +1427,33 @@ def run_error_class(code: AgentRunErrorCode) -> AgentRunErrorClass:
     return _RUN_ERROR_CLASSES[code]
 
 
+_NEVER_RETRIED: frozenset[AgentRunErrorCode] = frozenset({AgentRunErrorCode.COST_NOT_MEASURABLE})
+"""``INFRASTRUCTURE``-classed codes that retrying can never help.
+
+An explicit exception list, not a change to :data:`AgentRunErrorClass`:
+``COST_NOT_MEASURABLE`` stays ``INFRASTRUCTURE`` (mapped to HTTP 500, not
+503, so callers and gateways do not retry it without consulting
+:func:`is_retriable`) but is raised only after the run's provider call has
+already returned and already been billed, so retrying would only spend the
+caller's money again on a gap it does not control."""
+
+
 def is_retriable(code: AgentRunErrorCode) -> bool:
     """Return whether a run-time failure may be retried by the caller.
 
-    Only :data:`AgentRunErrorClass.INFRASTRUCTURE` failures are retriable;
-    model behaviour, limits, authorization, client cancellation and
-    application failures are final.
+    Only :data:`AgentRunErrorClass.INFRASTRUCTURE` failures are retriable,
+    with one explicit exception: ``COST_NOT_MEASURABLE`` stays
+    ``INFRASTRUCTURE`` but is never retriable, because the provider call it
+    reports on has already returned and already been billed.
 
     Args:
         code: Run-time error code to test.
 
     Returns:
-        ``True`` when the code's class is ``INFRASTRUCTURE``.
+        ``True`` when the code's class is ``INFRASTRUCTURE``; ``False`` for
+        every other class, and for ``COST_NOT_MEASURABLE`` despite its
+        ``INFRASTRUCTURE`` class.
     """
+    if code in _NEVER_RETRIED:
+        return False
     return run_error_class(code) is AgentRunErrorClass.INFRASTRUCTURE

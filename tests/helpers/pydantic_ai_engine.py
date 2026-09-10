@@ -75,16 +75,31 @@ def compiled_output(schema: Mapping[str, Any]) -> CompiledOutput:
     return output
 
 
-def make_plan(*, schema: Mapping[str, Any] = OPEN_OBJECT_SCHEMA, retries: int = 0) -> AgentPlan:
-    """Build a compiled plan for a pure-language agent."""
+def make_plan(
+    *,
+    schema: Mapping[str, Any] = OPEN_OBJECT_SCHEMA,
+    retries: int = 0,
+    policies: PolicySpec | None = None,
+    inference: InferenceTarget | None = None,
+) -> AgentPlan:
+    """Build a compiled plan for a pure-language agent.
+
+    ``policies`` overrides ``retries`` when given, so a test declaring a spend
+    cap does not also have to restate the retry count. ``inference`` defaults
+    to a binding ``genai-prices`` can price; override it when a test cares
+    about what the *build-time* probe (``_limits.py:warn_if_model_not_priceable``)
+    logs for a given model or provider name — it no longer refuses to boot,
+    so the override is not load-bearing for building the engine, only for
+    inspecting the notice.
+    """
     return AgentPlan(
         name="contract",
         description="contract agent",
         instructions="answer the question",
         spec_version=1,
-        inference=InferenceTarget(provider="openai", model="gpt-5.2"),
+        inference=inference or InferenceTarget(provider="openai", model="gpt-5.2"),
         output=compiled_output(schema),
-        policies=PolicySpec(retries=retries),
+        policies=policies if policies is not None else PolicySpec(retries=retries),
         metadata={},
     )
 
@@ -186,6 +201,7 @@ class _ScriptedUsageStream(StreamedResponse):
     _payload: str = ""
     _scripted: RequestUsage = field(default_factory=RequestUsage)
     _timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    _model_name: str = _SCRIPTED_NAME
 
     def __post_init__(self) -> None:
         self._usage = self._scripted
@@ -201,7 +217,7 @@ class _ScriptedUsageStream(StreamedResponse):
     @property
     def model_name(self) -> str:
         """Return the scripted model name."""
-        return _SCRIPTED_NAME
+        return self._model_name
 
     @property
     def provider_name(self) -> str:
@@ -231,17 +247,30 @@ class ScriptedUsageModel(Model):
     Args:
         payload: JSON arguments of the output-tool call, as bytes on the wire.
         usage: Accounting reported for the single request of the run.
+        model_name: Identifier the build-time pricing notice would see, and
+            also stamped onto every response this model returns, in both run
+            modes — a real provider always names itself on its own response,
+            and the engine's own unpriced-response count
+            (``_engine.py:_count_unpriced_responses``) now reads that field
+            to tell a provider response from a capability's synthetic one.
+            Defaults to ``"scripted"``, unpriceable by ``genai-prices``; a
+            test asserting on that notice's text overrides it. It has no
+            bearing on whether the engine builds — the notice never blocks a
+            build — only on whether it fires.
     """
 
-    def __init__(self, payload: bytes, usage: RequestUsage) -> None:
+    def __init__(
+        self, payload: bytes, usage: RequestUsage, *, model_name: str = _SCRIPTED_NAME
+    ) -> None:
         super().__init__()
         self._payload = payload.decode()
         self._scripted = usage
+        self._model_name = model_name
 
     @property
     def model_name(self) -> str:
         """Return the scripted model name."""
-        return _SCRIPTED_NAME
+        return self._model_name
 
     @property
     def system(self) -> str:
@@ -258,7 +287,9 @@ class ScriptedUsageModel(Model):
         del messages, model_settings
         tool = model_request_parameters.output_tools[0].name
         return ModelResponse(
-            parts=[ToolCallPart(tool_name=tool, args=self._payload)], usage=self._scripted
+            parts=[ToolCallPart(tool_name=tool, args=self._payload)],
+            usage=self._scripted,
+            model_name=self._model_name,
         )
 
     @asynccontextmanager
@@ -275,6 +306,7 @@ class ScriptedUsageModel(Model):
             model_request_parameters=model_request_parameters,
             _payload=self._payload,
             _scripted=self._scripted,
+            _model_name=self._model_name,
         )
 
 
