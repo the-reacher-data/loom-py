@@ -360,7 +360,7 @@ class TestTheFullExampleRunsWithoutNetworkOrMcpServer:
 
 
 class TestTheDoubleAndTheRealPathAgreeOnTheRefusal:
-    """T501 item 10 (B6): the same call, refused the same way, both paths."""
+    """T501 item 10: the same call, refused the same way, both paths."""
 
     async def test_both_paths_refuse_the_same_call_outside_include(
         self,

@@ -4,7 +4,7 @@ engine's own, ``SharedMcpSession``, and any third-party
 
 Extracted into its own module (``loom/ai/_concurrency.py``) without a test of
 its own until now. The drained call's own outcome must never be reported as
-"never retrieved" once the caller that awaited it has moved on (O4): a
+"never retrieved" once the caller that awaited it has moved on: a
 black-box test through ``shield_and_drain`` alone -- a call that raises,
 drained after its caller is cancelled -- pins that at the loop boundary,
 without reaching into the private helper that keeps the promise.

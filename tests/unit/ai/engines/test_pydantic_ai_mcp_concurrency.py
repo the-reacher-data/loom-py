@@ -54,7 +54,7 @@ class _FakeMcpClient:
 
 
 class _FakeToolset:
-    """Stands in for ``MCPToolset``: a real refcount behind a real lock (O2).
+    """Stands in for ``MCPToolset``: a real refcount behind a real lock.
 
     A fake whose ``__aexit__`` returns without awaiting anything can never
     exercise the path that matters -- ``MCPToolset``'s own ``__aexit__``

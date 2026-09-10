@@ -39,7 +39,7 @@ def test_registers_both_the_unbound_and_the_caller_bound_collaborators() -> None
 
 
 def test_registers_the_caller_bound_collaborator_without_a_sql_section() -> None:
-    """Resolution never depends on the config being present (M5)."""
+    """Resolution never depends on the config being present."""
     container = LoomContainer()
     _register_sql_collaborators(
         container,

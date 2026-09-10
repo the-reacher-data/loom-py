@@ -168,7 +168,7 @@ def _kernel_runtime() -> KernelRuntime:
     """Build a real, minimal ``KernelRuntime`` — every collaborator genuine, none stubbed.
 
     ``SqlQueryService`` is registered the same way ``create_app`` always
-    registers it (M5), before ``_bind_agent_resolver`` ever runs: that
+    registers it, before ``_bind_agent_resolver`` ever runs: that
     function resolves it unconditionally now, so an unregistered container
     here would fail every test in this class for a reason unrelated to what
     each one is pinning.

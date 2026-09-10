@@ -6,7 +6,7 @@ declares :class:`~loom.ai.abc.ConcurrentMcpSession`. These tests measure what
 matters -- that several concurrent calls on a declared session really do run in
 parallel, not merely that the lock is gone -- and pin the opposite: an
 undeclared session keeps serialising. They also cover cancellation in both
-shapes, which does not behave the same way (B1): ``SharedMcpSession`` still
+shapes, which does not behave the same way: ``SharedMcpSession`` still
 drains the cancelled call before releasing its lock, so its neighbours on the
 same session remain usable; a session declared concurrent holds no lock to
 protect, so cancelling it returns to the caller immediately instead of
@@ -80,7 +80,7 @@ class _DelayedConcurrentSession(_DelayedSession, ConcurrentMcpSession):
 
     Inherits :meth:`_DelayedSession.call_tool` unchanged: a session declaring
     :class:`~loom.ai.abc.ConcurrentMcpSession` must **not** shield a call from
-    its own caller's cancellation (B1) — there is no shared frame left to
+    its own caller's cancellation — there is no shared frame left to
     desynchronise, so nothing here should drain.
     """
 
@@ -108,7 +108,7 @@ class TestConcurrencyDeclaration:
 class TestRealParallelism:
     """The success criterion is not that the lock disappears: it is that N
     concurrent calls on one grant really do run in parallel. The "declared"
-    side of that criterion (O3) is not measured by a double with no lock of
+    side of that criterion is not measured by a double with no lock of
     its own -- ``_DelayedConcurrentSession`` runs in parallel by
     construction, and nothing in production can turn it red -- but by the
     real path, which crosses ``mcp_session_for`` and ``_ToolsetSession``
@@ -124,10 +124,10 @@ class TestRealParallelism:
 
 class TestDrainingOnCancellation:
     """A call cancelled halfway through ``SharedMcpSession`` must not
-    desynchronise its neighbours: it drains before releasing the lock. A
-    session declared concurrent holds no lock to protect, so its
-    cancellation returns to the caller immediately instead of draining
-    (B1)."""
+     desynchronise its neighbours: it drains before releasing the lock. A
+     session declared concurrent holds no lock to protect, so its
+     cancellation returns to the caller immediately instead of draining
+    ."""
 
     async def test_shared_mcp_session_drains_the_cancelled_call(self) -> None:
         session = _DelayedSession(delay=0.1)
