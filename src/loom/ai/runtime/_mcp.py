@@ -1,9 +1,11 @@
 """MCP sessions shared per server, and the tool filters checked against them.
 
-A JSON-RPC session is a single framed stream, so one shared session per server
-serialises the calls of every concurrent run. The declared tool filters are
-validated here too (FR-025): they are checked against the tools a server really
-lists, which is a property of the session, not of the runtime lifecycle.
+A JSON-RPC session gets one shared lock serialising every concurrent call by
+default, unless it declares itself already safe for concurrent calls (see
+:func:`mcp_session_for` and :class:`~loom.ai.abc.ConcurrentMcpSession`). The
+declared tool filters are validated here too (FR-025): they are checked
+against the tools a server really lists, which is a property of the session,
+not of the runtime lifecycle.
 """
 
 from __future__ import annotations
@@ -15,8 +17,9 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from loom.ai._concurrency import shield_and_drain
 from loom.ai._filters import select_names
-from loom.ai.abc import McpSession, McpToolCallResult, McpToolInfo
+from loom.ai.abc import ConcurrentMcpSession, McpSession, McpToolCallResult, McpToolInfo
 from loom.ai.compiler import AgentPlan, CompiledMcpCapability, mcp_connection
 from loom.ai.errors import (
     AgentCompilationIssue,
@@ -60,7 +63,7 @@ class SharedMcpSession:
         Returns:
             Every tool the underlying session advertises.
         """
-        return await self._serialised(self._session.list_tools())
+        return await self._serialised(self._session.list_tools)
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
         """Invoke one tool, serialised with every other call on this session.
@@ -76,24 +79,44 @@ class SharedMcpSession:
             asyncio.CancelledError: When the caller is cancelled. The in-flight
                 call still runs to completion, so the session stays usable.
         """
-        return await self._serialised(self._session.call_tool(name, arguments))
+        return await self._serialised(lambda: self._session.call_tool(name, arguments))
 
-    async def _serialised(self, call: Coroutine[Any, Any, _T]) -> _T:
+    async def _serialised(self, make_call: Callable[[], Coroutine[Any, Any, _T]]) -> _T:
+        """Run *make_call* behind this session's lock, building its coroutine only once held.
+
+        *make_call* is a callable, not an already-built coroutine: building
+        the coroutine before the lock is acquired would let a caller
+        cancelled while still queued for its turn abandon one nobody ever
+        awaits.
+        """
         async with self._lock:
-            in_flight = asyncio.ensure_future(call)
-            try:
-                return await asyncio.shield(in_flight)
-            except asyncio.CancelledError:
-                _logger.debug("mcp session %r: draining a cancelled call", self._label)
-                await asyncio.wait([in_flight])
-                _discard_outcome(in_flight)
-                raise
+            return await shield_and_drain(make_call(), label=self._label)
 
 
-def _discard_outcome(task: asyncio.Future[Any]) -> None:
-    """Consume a drained call's outcome so it is never reported as unretrieved."""
-    if not task.cancelled():
-        task.exception()
+def mcp_session_for(session: McpSession, *, label: str) -> McpSession:
+    """Return the session a grant view calls through, serialised unless declared safe.
+
+    ``session`` already carries the answer: one that subclasses
+    :class:`~loom.ai.abc.ConcurrentMcpSession` already guards its own frames
+    — the engine's own session does, because the underlying JSON-RPC client
+    multiplexes concurrent calls by request id rather than writing straight
+    through a single unmatched stream — so wrapping it again would only add
+    a second, redundant lock, queuing every grant view behind its own
+    neighbours. A session that declares nothing is serialised behind
+    :class:`SharedMcpSession`, the safe default for a third-party session
+    this runtime does not control.
+
+    Args:
+        session: The just-opened session of one MCP connection.
+        label: Human-readable name used in the wrapper's log messages.
+
+    Returns:
+        ``session`` unchanged when it declares itself concurrency-safe;
+        otherwise a new :class:`SharedMcpSession` guarding it.
+    """
+    if isinstance(session, ConcurrentMcpSession):
+        return session
+    return SharedMcpSession(session, label=label)
 
 
 def _filtered_tools(

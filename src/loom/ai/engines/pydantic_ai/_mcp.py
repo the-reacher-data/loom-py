@@ -14,11 +14,14 @@ One ``MCPToolset`` per connection serves the whole worker, and
   connection is the run's connection and a worker holds one channel per server
   rather than one per agent (FR-026).
 
-What is shared is the toolset, never a
-:class:`~loom.ai.runtime.SharedMcpSession`: that wrapper serialises every call
-on one lock, so routing runs through it would queue every agent's tool call
-behind every other agent's. ``MCPToolset`` instead reference-counts its
-entries, so concurrent agents keep their calls in parallel over one session.
+What is shared is the toolset, and :class:`_ToolsetSession` — what a grant
+view (:meth:`~loom.ai.abc.AgentHandle.mcp`, a use case's ``Mcp()``) calls
+through — declares itself with
+:class:`~loom.ai.abc.ConcurrentMcpSession`, so the runtime leaves it
+unwrapped too: it goes straight to the same reference-counted ``MCPToolset``
+the model's own tool calls use, so a grant view's calls run concurrently with
+the model's and with each other, never queued behind
+:class:`~loom.ai.runtime.SharedMcpSession`'s single lock.
 
 :func:`build_mcp_toolset` holds the connection rules of one grant — its
 validated URL and its credential — once, so start-up cannot validate a server
@@ -37,7 +40,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
-from loom.ai.abc import McpToolCallResult, McpToolInfo
+from loom.ai.abc import ConcurrentMcpSession, McpToolCallResult, McpToolInfo
 from loom.ai.compiler import CompiledMcpCapability, mcp_connection
 from loom.ai.errors import AgentCompilationError, mcp_transport_invalid, provider_not_installed
 from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
@@ -47,13 +50,20 @@ if TYPE_CHECKING:
     from pydantic_ai.mcp import MCPToolset
 
 
-class _ToolsetSession:
+class _ToolsetSession(ConcurrentMcpSession):
     """Adapts a connected ``MCPToolset`` to the runtime's session contract.
 
     The runtime asks a session for two things only — the tool names a server
     exposes, and one tool call — so the adapter is the narrowing of the
     toolset's much wider surface down to
-    :class:`~loom.ai.runtime.McpSession`.
+    :class:`~loom.ai.runtime.McpSession`. It subclasses
+    :class:`~loom.ai.abc.ConcurrentMcpSession` because the underlying
+    ``fastmcp`` client multiplexes concurrent calls by request id rather
+    than writing straight through a single unmatched stream, so the runtime
+    does not need to serialise calls made through this adapter with a second
+    lock. ``MCPToolset`` itself only reference-counts ``__aenter__`` /
+    ``__aexit__`` to decide when the connection opens and closes; that is a
+    connection-lifecycle concern, not what makes concurrent calls safe.
 
     Args:
         toolset: Already-entered toolset speaking to one server.
@@ -87,6 +97,17 @@ class _ToolsetSession:
         ``ok`` itself — before deciding whether to decode — so the raw
         protocol result is what it needs, with neither prose-fallback mapping
         nor an engine-facing exception in the way.
+
+        Nothing here shields the round trip from the caller's own
+        cancellation: this adapter holds no lock over the shared
+        ``MCPToolset``, so cancelling a caller here never desynchronises a
+        neighbour the way it would on a locked, single-framed session — the
+        JSON-RPC client keeps every in-flight call's response matched to its
+        own request id regardless. A cancelled caller — including the plan's
+        own ``tool_timeout_ms``, enforced by
+        :func:`~loom.ai.engines.pydantic_ai._guards.capability_call` around
+        this call on the ``kind: python`` and ``kind: mcp`` routes — is
+        therefore free to return the moment it fires.
 
         Args:
             name: Tool name as the server exposes it.
@@ -204,9 +225,14 @@ class SharedMcpToolsets:
 
     Sharing the toolset — rather than a
     :class:`~loom.ai.runtime.SharedMcpSession` over it — is what keeps the
-    runs concurrent: the session wrapper serialises on one lock and drains a
-    cancelled call while still holding it, so one agent's ``tool_timeout_ms``
-    would stop bounding anything for its neighbours.
+    runs concurrent: the session wrapper serialises every call on one lock,
+    so one agent's ``tool_timeout_ms`` would stop bounding anything for its
+    neighbours, queued behind it. :class:`_ToolsetSession` holds no such
+    lock, so a caller cancelled mid-call — the plan's own
+    ``tool_timeout_ms`` firing, in particular — returns immediately instead
+    of waiting for the call to drain; the underlying JSON-RPC client still
+    matches every in-flight response to its own request id, so an abandoned
+    call never desynchronises a neighbour sharing the connection.
 
     All of that holds only while the runtime's ``mcp_client_factory`` and the
     engine build read the *same* instance. :meth:`open` records every

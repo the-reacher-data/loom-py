@@ -487,22 +487,31 @@ surfaces only on the first business request that reaches it, as
 `TOOL_UNAVAILABLE`. Extending the probe to a use-case-only server is future
 work, not something this version does.
 
-### A use case's call queues behind other grant views
+### A use case's call runs in parallel with other grant views
 
-A use case's tool call takes the server's single session lock
-(`SharedMcpSession`, `loom/ai/runtime/_mcp.py`), shared with every other
-view built over that session: another use case's `Mcp()`, and an agent
-handle's own `handle.mcp(server)`.
+A use case's tool call goes through `_ToolsetSession`
+(`loom/ai/engines/pydantic_ai/_mcp.py`) — the same reference-counted
+`MCPToolset` the model's own tool calls and every other grant view over
+that server share: another use case's `Mcp()`, and an agent handle's own
+`handle.mcp(server)`. None of them takes a lock over the others, so they
+all run concurrently, the same way the model's own calls always have.
 
-The model's own tool calls do **not** take it. They run over the raw
-`MCPToolset`, which reference-counts instead of serialising, so concurrent
-runs keep issuing calls in parallel, as the operational notes below
-describe.
+`timeout_ms` bounds the wait exactly where you would expect on the
+unwrapped, concurrent path: `_ToolsetSession.call_tool` holds no lock over
+the shared `MCPToolset`, so a caller cancelled by its own deadline returns
+immediately — the round trip it started is simply abandoned, not waited
+out, and the underlying JSON-RPC client keeps every neighbour's own
+in-flight response matched to its own request id regardless.
 
-The wait counts against this call's own deadline — the server's
-`timeout_ms`, not any plan's `tool_timeout_ms` — and surfaces as
-`TOOL_TIMEOUT`, attributed to that deadline rather than to the queue that
-produced it.
+Only the serialised fallback changes this: a session this engine did not
+open falls back to `SharedMcpSession`'s single lock
+(`loom/ai/runtime/_mcp.py`), which shields and drains the call it is
+currently holding — a caller cancelled by its own deadline still waits out
+that in-flight round trip before the lock is released and its cancellation
+reaches it (`shield_and_drain`, `loom/ai/_concurrency.py`). That drain
+exists only because a locked, single-framed session would otherwise leave
+its next holder desynchronised; it is the cost of the lock, not of the
+timeout.
 
 ## The rule: your own tools are a `usecase` grant
 

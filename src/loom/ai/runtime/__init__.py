@@ -14,6 +14,7 @@ artifact format they run is not.  See :mod:`loom.ai` for the distinction.
 
 from __future__ import annotations
 
+from loom.ai.abc import ConcurrentMcpSession as ConcurrentMcpSession
 from loom.ai.abc import HealthState as HealthState
 from loom.ai.abc import McpSession as McpSession
 from loom.ai.errors import (
@@ -29,8 +30,9 @@ __all__ = [
     "A2AClientFactory",
     "AgentHealth",
     "AgentRuntime",
-    "UseCaseMcpGrant",
+    "ConcurrentMcpSession",
     "McpClientFactory",
     "McpSession",
     "SharedMcpSession",
+    "UseCaseMcpGrant",
 ]
