@@ -35,21 +35,38 @@ inside it: ``AgentSpec.output_schema`` has no mode field, so the mode travels as
 ``Agent.from_spec(output_type=...)`` via :func:`build_output_type`. Absent, the
 engine keeps resolving the mode itself from ``output_schema``.
 
-``instructions`` projects each compiled block's literal text, in authored
-order, through :func:`_literal_instructions`. A block's ``name`` does not
-travel through this projection — ``AgentSpec.instructions`` has no field for
-one — and a block declaring ``template`` fails the translation rather than
-reaching the engine unrendered.
+``instructions`` and ``description`` are never set on the spec built here.
+Both travel to ``Agent.from_spec`` as keywords instead
+(:func:`~loom.ai.engines.pydantic_ai._instructions.build_instructions`,
+``create_engine``), the technique already used for ``output_type``. Two
+reasons, one for each field:
+
+* ``pydantic_ai.agent.spec.AgentSpec.instructions`` is typed
+  ``TemplateStr[Any] | str | list[TemplateStr[Any] | str] | None`` and admits
+  neither an ``InstructionPart`` (needed to carry a block's ``name``) nor a
+  callable (needed to render a templated block); ``Agent.from_spec``'s own
+  ``instructions=`` keyword is typed ``AgentInstructions[Any]``, which
+  admits both.
+* ``AgentSpec.description`` is typed ``TemplateStr[Any] | str | None``, and
+  that field's own validator (``TemplateStr.__get_pydantic_core_schema__``)
+  compiles any string containing ``{{`` into a template, later rendered
+  against the whole dependency bundle by ``Agent.render_description`` and
+  attached to the run span as ``gen_ai.agent.description``. Against the
+  real bundle that render raises; against a bundle whose fields all
+  serialise it leaks the caller's own subject onto the span. A plain
+  ``str`` keyword bypasses that validator entirely — ``Agent.from_spec``
+  merges keyword-first for ``description`` — so the description reaches
+  the span exactly as authored. loom does not offer a templated
+  ``description``: only ``instructions`` renders against state.
 """
 
 from __future__ import annotations
 
 from typing import Any, assert_never, cast
 
-from pydantic_ai import AgentSpec, NativeOutput, StructuredDict, TemplateStr, ToolOutput
+from pydantic_ai import AgentSpec, NativeOutput, StructuredDict, ToolOutput
 
 from loom.ai.compiler import AgentPlan
-from loom.ai.errors import AgentCompilationError, instruction_block_invalid
 from loom.ai.inference import OutputMode
 
 
@@ -61,61 +78,21 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
     validation at the boundary (see ``_output``). How the engine asks for that
     shape (tool call or native structured output) is not part of the spec;
     :func:`build_output_type` overrides it when the binding pins a mode.
+    ``instructions`` and ``description`` are left unset; see this module's
+    docstring for why both travel as keywords instead.
 
     Args:
         plan: Compiled agent plan.
 
     Returns:
         The engine spec ``Agent.from_spec()`` consumes.
-
-    Raises:
-        AgentCompilationError: A block declares ``template``; this projection
-            carries literal text only.
     """
     schema: dict[str, Any] = dict(plan.output.schema)
     return AgentSpec(
         name=plan.name,
-        description=plan.description,
-        instructions=_literal_instructions(plan),
         output_schema=schema,
         retries=plan.policies.retries,
     )
-
-
-def _literal_instructions(plan: AgentPlan) -> list[TemplateStr[Any] | str]:
-    """Project the plan's instruction blocks onto the engine's literal list.
-
-    Every block's ``text`` reaches the engine unchanged and in authored
-    order. A block's ``name`` does not travel through this projection:
-    ``AgentSpec.instructions`` has no field for it, and the engine only reads
-    a block name off its own ``InstructionPart``, which this keyword route
-    never builds — no promise is broken, since a block's name is never an
-    engine-addressable id either way.
-
-    Args:
-        plan: Compiled agent plan.
-
-    Returns:
-        One string per instruction block, in authored order.
-
-    Raises:
-        AgentCompilationError: A block declares ``template``. Rendering one
-            requires the engine's own template compiler, which this
-            projection does not carry.
-    """
-    templated_issues = [
-        instruction_block_invalid(
-            plan.name,
-            f"instruction block at position {index} declares template "
-            f"'{block.template}', which this engine build does not render",
-        )
-        for index, block in enumerate(plan.instructions)
-        if block.template is not None
-    ]
-    if templated_issues:
-        raise AgentCompilationError(templated_issues)
-    literal: list[TemplateStr[Any] | str] = [block.text for block in plan.instructions]
-    return literal
 
 
 def build_output_type(plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | None:

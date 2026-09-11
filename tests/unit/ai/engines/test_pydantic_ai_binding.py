@@ -174,33 +174,28 @@ class TestSpecTranslation:
         assert spec.metadata is None
         assert spec.model is None
 
-    def test_the_spec_carries_every_literal_blocks_text_in_authored_order(self) -> None:
-        """A multi-block plan projects onto a plain list of literal strings."""
+    def test_the_spec_carries_no_instructions_or_description(self) -> None:
+        """Both fields travel as ``from_spec`` keywords, never through the spec (T403).
+
+        A ``description`` or an instruction block's text containing ``{{``
+        would otherwise pass through ``AgentSpec``'s own ``TemplateStr``
+        validator and compile into a live template; leaving the spec fields
+        unset is what keeps every block's text — and the description —
+        literal at this layer.
+        """
         plan = structs.replace(
             make_plan(),
+            description="Agent for {{identity}}",
             instructions=(
-                CompiledInstruction(text="First.", name="opening"),
+                CompiledInstruction(text="First {{name}}.", name="opening"),
                 CompiledInstruction(text="Second."),
             ),
         )
 
         spec = build_agent_spec(plan)
 
-        assert spec.instructions == ["First.", "Second."]
-
-    def test_a_templated_block_fails_the_translation_naming_the_block(self) -> None:
-        """A block declaring ``template`` does not reach the engine unrendered."""
-        plan = structs.replace(
-            make_plan(),
-            instructions=(CompiledInstruction(text="Hi {{name}}", template="handlebars"),),
-        )
-
-        with pytest.raises(AgentCompilationError) as failure:
-            build_agent_spec(plan)
-
-        issue = failure.value.issues[0]
-        assert issue.code is AgentErrorCode.INSTRUCTION_BLOCK_INVALID
-        assert "template" in issue.message
+        assert spec.instructions is None
+        assert spec.description is None
 
 
 def _plan_with_output_mode(mode: str | None) -> AgentPlan:
@@ -318,6 +313,30 @@ class TestOutputMode:
         assert isinstance(native, NativeOutput)
         assert (tool.name, tool.description) == (None, None)
         assert (native.name, native.description) == (None, None)
+
+
+class TestInstructionsAndDescriptionKeywords:
+    def test_from_spec_receives_both_as_keywords_never_through_the_spec(
+        self, from_spec: _FromSpecRecorder
+    ) -> None:
+        """T403: ``instructions=`` and ``description=`` reach ``from_spec`` directly.
+
+        A description containing ``{{identity}}`` reaches ``from_spec`` as a
+        plain ``str`` keyword: it never becomes a ``TemplateStr`` rendered
+        against the dependency bundle (FR-061).
+        """
+        plan = structs.replace(
+            make_plan(),
+            description="Agent for {{identity}}",
+            instructions=(CompiledInstruction(text="Be terse.", name="tone"),),
+        )
+
+        _create_engine(plan)
+
+        assert from_spec.kwargs is not None
+        assert from_spec.kwargs["description"] == "Agent for {{identity}}"
+        assert isinstance(from_spec.kwargs["description"], str)
+        assert len(from_spec.kwargs["instructions"]) == 1
 
 
 class TestEntryPoint:
