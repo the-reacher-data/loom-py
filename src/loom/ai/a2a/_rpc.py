@@ -64,6 +64,11 @@ RUN_ERROR_DETAILS: Final[Mapping[AgentRunErrorCode, str]] = MappingProxyType(
         # here (STATE_SURFACE_UNSUPPORTED, start-up). Present for the
         # catalogue's own totality test.
         AgentRunErrorCode.STATE_UNDECLARED: "the run declares no state, so it accepts none",
+        # Unreachable over this surface for the same reason as
+        # STATE_UNDECLARED above: a stateful artefact never publishes here.
+        AgentRunErrorCode.STATE_REQUIRED: (
+            "the run declares a required state field with no default, and no state was given"
+        ),
         AgentRunErrorCode.MCP_GRANT_UNKNOWN: "the requested MCP grant is unknown",
         AgentRunErrorCode.SQL_GRANT_UNKNOWN: "the requested SQL grant is unknown",
         AgentRunErrorCode.TOOL_UNKNOWN: "the requested tool is unknown",

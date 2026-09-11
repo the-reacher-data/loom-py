@@ -319,7 +319,7 @@ class TestInstructionsAndDescriptionKeywords:
     def test_from_spec_receives_both_as_keywords_never_through_the_spec(
         self, from_spec: _FromSpecRecorder
     ) -> None:
-        """T403: ``instructions=`` and ``description=`` reach ``from_spec`` directly.
+        """T403, AC-014: ``instructions=`` and ``description=`` reach ``from_spec`` directly.
 
         A description containing ``{{identity}}`` reaches ``from_spec`` as a
         plain ``str`` keyword: it never becomes a ``TemplateStr`` rendered

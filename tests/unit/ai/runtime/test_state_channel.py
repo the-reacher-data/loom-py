@@ -42,6 +42,18 @@ class _DefaultedState(msgspec.Struct, forbid_unknown_fields=True):
 _SCHEMA_STATE = StateShape(schema={"type": "object"}, decoder=msgspec.json.Decoder(_DefaultedState))
 
 
+class _RequiredState(msgspec.Struct, forbid_unknown_fields=True):
+    """A state shape with one field carrying no declared default."""
+
+    marca: str
+
+
+_REQUIRED_SCHEMA_STATE = StateShape(
+    schema={"type": "object", "properties": {"marca": {"type": "string"}}, "required": ["marca"]},
+    decoder=msgspec.json.Decoder(_RequiredState),
+)
+
+
 def _runtime(plan: Any, engine: RecordingScriptedEngine) -> AgentRuntime:
     return AgentRuntime(
         plans=[plan],
@@ -101,6 +113,19 @@ class TestNoneStateOnAStatefulArtefact:
         async with runtime:
             await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)
         assert engine.states == [{"marca": "", "km": 0}]
+
+
+class TestNoneStateAgainstARequiredField:
+    async def test_fails_coded_instead_of_crashing_with_a_raw_validation_error(self) -> None:
+        engine = RecordingScriptedEngine()
+        runtime = _runtime(make_plan(_AGENT, state=_REQUIRED_SCHEMA_STATE), engine)
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)
+
+        assert excinfo.value.code == AgentRunErrorCode.STATE_REQUIRED
+        assert engine.stream_count == 0
+        assert engine.states == []
 
 
 class TestStateAgainstNoDeclaredShape:

@@ -79,6 +79,9 @@ _STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = MappingProxyType(
         # called. Mapped anyway, for a marker-driven caller that reaches
         # AgentRuntime.run directly and for the totality test.
         AgentRunErrorCode.STATE_UNDECLARED: 422,
+        # A caller-omitted 'state' against a shape with a required field and
+        # no default; the same client-mistake status as STATE_UNDECLARED.
+        AgentRunErrorCode.STATE_REQUIRED: 422,
         AgentRunErrorCode.PROVIDER_UNAVAILABLE: 503,
         AgentRunErrorCode.PROVIDER_RATE_LIMITED: 503,
         AgentRunErrorCode.TOOL_UNAVAILABLE: 503,

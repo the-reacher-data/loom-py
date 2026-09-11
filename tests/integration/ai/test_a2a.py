@@ -437,7 +437,7 @@ class TestOptionality:
 
 
 class TestStateSurfaceRefusal:
-    """A stateful artifact and A2A exposure are refused together (T306, FR-014)."""
+    """A stateful artifact and A2A exposure are refused together (T306, FR-014, AC-012)."""
 
     async def test_fails_to_start_when_a_stateful_artifact_is_exposed_over_a2a(
         self, deps: StubDepsFactory, container: LoomContainer
