@@ -36,7 +36,11 @@ from loom.ai.inference import InferenceTarget
 from loom.ai.runtime import AgentRunError, AgentRuntime
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
-from tests.helpers.pydantic_ai_engine import OPEN_OBJECT_SCHEMA, compiled_output
+from tests.helpers.pydantic_ai_engine import (
+    OPEN_OBJECT_SCHEMA,
+    compiled_instructions,
+    compiled_output,
+)
 
 REMOTE_AGENT = "market"
 """Name the deployment registered the remote agent under (``ai.a2a_agents``)."""
@@ -98,7 +102,7 @@ def make_plan(
     return AgentPlan(
         name="analyst",
         description="delegates to a remote agent",
-        instructions="answer the question",
+        instructions=compiled_instructions("answer the question"),
         spec_version=1,
         inference=InferenceTarget(provider="openai", model="gpt-5.2"),
         output=compiled_output(OPEN_OBJECT_SCHEMA),

@@ -23,6 +23,7 @@ from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledA2ACapability,
     CompiledCapability,
+    CompiledInstruction,
     CompiledMcpCapability,
     CompiledNativeCapability,
     CompiledOutput,
@@ -152,7 +153,7 @@ def _make_plan(
     return AgentPlan(
         name=name,
         description="Investigates incidents and proposes the next remediation step.",
-        instructions="Never published: the artifact's private prompt.",
+        instructions=(CompiledInstruction(text="Never published: the artifact's private prompt."),),
         spec_version=1,
         inference=InferenceTarget(
             provider="bedrock",

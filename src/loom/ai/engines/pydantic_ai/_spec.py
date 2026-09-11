@@ -34,15 +34,22 @@ single operator-facing knob — but neither enforcement subsumes the other.
 inside it: ``AgentSpec.output_schema`` has no mode field, so the mode travels as
 ``Agent.from_spec(output_type=...)`` via :func:`build_output_type`. Absent, the
 engine keeps resolving the mode itself from ``output_schema``.
+
+``instructions`` projects each compiled block's literal text, in authored
+order, through :func:`_literal_instructions`. A block's ``name`` does not
+travel through this projection — ``AgentSpec.instructions`` has no field for
+one — and a block declaring ``template`` fails the translation rather than
+reaching the engine unrendered.
 """
 
 from __future__ import annotations
 
 from typing import Any, assert_never, cast
 
-from pydantic_ai import AgentSpec, NativeOutput, StructuredDict, ToolOutput
+from pydantic_ai import AgentSpec, NativeOutput, StructuredDict, TemplateStr, ToolOutput
 
 from loom.ai.compiler import AgentPlan
+from loom.ai.errors import AgentCompilationError, instruction_block_invalid
 from loom.ai.inference import OutputMode
 
 
@@ -60,15 +67,55 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
 
     Returns:
         The engine spec ``Agent.from_spec()`` consumes.
+
+    Raises:
+        AgentCompilationError: A block declares ``template``; this projection
+            carries literal text only.
     """
     schema: dict[str, Any] = dict(plan.output.schema)
     return AgentSpec(
         name=plan.name,
         description=plan.description,
-        instructions=plan.instructions,
+        instructions=_literal_instructions(plan),
         output_schema=schema,
         retries=plan.policies.retries,
     )
+
+
+def _literal_instructions(plan: AgentPlan) -> list[TemplateStr[Any] | str]:
+    """Project the plan's instruction blocks onto the engine's literal list.
+
+    Every block's ``text`` reaches the engine unchanged and in authored
+    order. A block's ``name`` does not travel through this projection:
+    ``AgentSpec.instructions`` has no field for it, and the engine only reads
+    a block name off its own ``InstructionPart``, which this keyword route
+    never builds — no promise is broken, since a block's name is never an
+    engine-addressable id either way.
+
+    Args:
+        plan: Compiled agent plan.
+
+    Returns:
+        One string per instruction block, in authored order.
+
+    Raises:
+        AgentCompilationError: A block declares ``template``. Rendering one
+            requires the engine's own template compiler, which this
+            projection does not carry.
+    """
+    templated_issues = [
+        instruction_block_invalid(
+            plan.name,
+            f"instruction block at position {index} declares template "
+            f"'{block.template}', which this engine build does not render",
+        )
+        for index, block in enumerate(plan.instructions)
+        if block.template is not None
+    ]
+    if templated_issues:
+        raise AgentCompilationError(templated_issues)
+    literal: list[TemplateStr[Any] | str] = [block.text for block in plan.instructions]
+    return literal
 
 
 def build_output_type(plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | None:

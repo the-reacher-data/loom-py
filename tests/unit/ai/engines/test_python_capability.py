@@ -36,7 +36,11 @@ from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunError,
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
-from tests.helpers.pydantic_ai_engine import OPEN_OBJECT_SCHEMA, compiled_output
+from tests.helpers.pydantic_ai_engine import (
+    OPEN_OBJECT_SCHEMA,
+    compiled_instructions,
+    compiled_output,
+)
 
 FACTORY_REF = "myapp.tools.geo:build_geo_toolset"
 """Reference the artifact named; the compiler resolved it to the callable below."""
@@ -164,7 +168,7 @@ def make_plan(*capabilities: CompiledCapability) -> AgentPlan:
     return AgentPlan(
         name=AGENT,
         description="looks up service points",
-        instructions="answer the question",
+        instructions=compiled_instructions("answer the question"),
         spec_version=1,
         inference=InferenceTarget(provider="openai", model="gpt-5.2"),
         output=compiled_output(OPEN_OBJECT_SCHEMA),

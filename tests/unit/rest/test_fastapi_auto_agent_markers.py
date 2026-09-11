@@ -15,7 +15,7 @@ import msgspec
 import pytest
 
 from loom.ai.abc import AgentHandle
-from loom.ai.compiler._plan import AgentPlan, CompiledOutput
+from loom.ai.compiler._plan import AgentPlan, CompiledInstruction, CompiledOutput
 from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
@@ -44,7 +44,7 @@ def _plan(name: str, *, output_type: type[Any] = dict) -> AgentPlan:
     return AgentPlan(
         name=name,
         description=f"{name} test agent",
-        instructions="answer",
+        instructions=(CompiledInstruction(text="answer"),),
         spec_version=1,
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(
