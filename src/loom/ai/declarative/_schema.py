@@ -132,6 +132,15 @@ def _v1_properties() -> dict[str, Any]:
             ),
         },
         "output": {"$ref": "#/$defs/output"},
+        "output_check": {
+            "type": "string",
+            "pattern": SYMBOL_REF_PATTERN,
+            "description": (
+                "module:symbol reference to a pure predicate over the parsed answer, "
+                "returning None to accept or the correction text to reject and retry. "
+                "Absent when the artifact declares no check."
+            ),
+        },
         "on_output": {"$ref": "#/$defs/on_output"},
         "conversation": {"$ref": "#/$defs/conversation"},
         "capabilities": {

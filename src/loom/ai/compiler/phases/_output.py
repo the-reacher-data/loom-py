@@ -23,14 +23,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 
+from loom.ai.abc import OutputCheck
 from loom.ai.compiler._plan import CompiledOutput
 from loom.ai.declarative import JsonSchemaOutput, OutputSpec, TypeRefOutput
 from loom.ai.errors import (
     AgentCompilationIssue,
+    output_check_unresolvable,
     output_schema_invalid,
     output_type_ref_unresolvable,
     output_type_ref_unsupported,
@@ -68,6 +70,28 @@ def compile_output(output: OutputSpec, component: str) -> _CompileResult:
     if isinstance(output, JsonSchemaOutput):
         return _compile_json_schema(output, component)
     return _compile_type_ref(output, component)
+
+
+def compile_output_check(
+    ref: str | None, component: str
+) -> tuple[OutputCheck | None, list[AgentCompilationIssue]]:
+    """Resolve the artifact's ``output_check`` reference, when it declares one.
+
+    Args:
+        ref: ``module:symbol`` reference from :attr:`~loom.ai.declarative.AgentSpecV1.output_check`,
+            or ``None`` when the artifact declares no check.
+        component: Artifact path or agent name the issue points at.
+
+    Returns:
+        The resolved :data:`~loom.ai.abc.OutputCheck`, or ``None`` when *ref*
+        is ``None`` or does not resolve; paired with the issues found.
+    """
+    if ref is None:
+        return None, []
+    symbol, issues = _resolve_symbol(ref, component, output_check_unresolvable)
+    if symbol is None:
+        return None, issues
+    return cast("OutputCheck", symbol), []
 
 
 def _compile_json_schema(output: JsonSchemaOutput, component: str) -> _CompileResult:

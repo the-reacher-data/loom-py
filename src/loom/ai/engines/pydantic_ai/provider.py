@@ -13,11 +13,12 @@ and that keyword is absent when no mode is pinned.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry
 
-from loom.ai.abc import AgentEngine, DepsFactory
+from loom.ai.abc import AgentEngine, DepsFactory, OutputCheck
 from loom.ai.compiler import AgentPlan, CompiledMcpCapability
 from loom.ai.engines.pydantic_ai._a2a import create_a2a_client
 from loom.ai.engines.pydantic_ai._capabilities import (
@@ -162,19 +163,35 @@ class PydanticAIEngineProvider:
         # engine's default for ``output_type`` is ``str``, and passing ``None``
         # would override the resolution ``output_schema`` alone triggers.
         pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
-        agent = Agent.from_spec(
-            build_agent_spec(plan),
-            model=model,
-            deps_type=object,
-            instructions=build_instructions(plan),
-            description=plan.description,
-            toolsets=toolsets or None,
-            capabilities=capabilities or None,
+        spec = build_agent_spec(plan)
+        agent_kwargs: dict[str, Any] = {
+            "model": model,
+            "deps_type": object,
+            "instructions": build_instructions(plan),
+            "description": plan.description,
+            "toolsets": toolsets or None,
+            "capabilities": capabilities or None,
             **pinned,
-        )
+        }
+        agent = Agent.from_spec(spec, **agent_kwargs)
+        shaped_agent = agent
+        if plan.output_check is not None:
+            _register_output_check(agent, plan.output_check)
+            # A run overriding the plan's shape (``AgentHandle.run(expect=...)``,
+            # ``run_text``) must not carry the check above: pydantic-ai refuses
+            # a custom ``output_type`` on a run whenever the agent holds an
+            # output validator (``UserError``), and the check was compiled
+            # against the plan's own declared schema, not the override's. A
+            # second agent, built from the same spec and kwargs but with no
+            # validator registered, serves that path instead
+            # (:meth:`PydanticAIEngine.run_stream_shaped`); built here, at
+            # start-up, alongside the checked one — never lazily or cached
+            # per call.
+            shaped_agent = Agent.from_spec(spec, **agent_kwargs)
         return PydanticAIEngine(
             plan=plan,
             agent=agent,
+            shaped_agent=shaped_agent,
             deps=deps,
             container=container,
             usage_limits=usage_limits(plan.policies),
@@ -209,3 +226,27 @@ class PydanticAIEngineProvider:
             The supported ``kind`` identifiers.
         """
         return SUPPORTED_KINDS
+
+
+def _register_output_check(agent: Agent[Any, Any], check: OutputCheck) -> None:
+    """Register *check* on *agent* as a pydantic-ai output validator.
+
+    A rejection is a :class:`~pydantic_ai.ModelRetry` carrying the text
+    *check* returned, which the engine reads back as the correction the
+    model must act on (see :data:`~loom.ai.abc.OutputCheck`). The validator
+    returns its argument unchanged on acceptance: the engine never uses that
+    return value to build the answer (:func:`~loom.ai.engines.pydantic_ai._output.decode_output`
+    decodes the model's own bytes instead), so a mapping this validator built
+    could only ever be discarded.
+
+    Args:
+        agent: Agent built by :meth:`PydanticAIEngineProvider.create_engine`.
+        check: Resolved :data:`~loom.ai.abc.OutputCheck` of the plan.
+    """
+
+    @agent.output_validator
+    def _validate(output: Mapping[str, Any]) -> Mapping[str, Any]:
+        rejection = check(output)
+        if rejection is not None:
+            raise ModelRetry(rejection)
+        return output

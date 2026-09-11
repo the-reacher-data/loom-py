@@ -898,6 +898,28 @@ an engine. May raise :class:`~loom.ai.errors.AgentCompilationError` when the
 provider SDK is missing.
 """
 
+OutputCheck: TypeAlias = Callable[[Mapping[str, Any]], str | None]
+"""Target of an ``output_check`` reference: a pure predicate over an answer.
+
+Called once per attempt inside the engine's own output-retry loop, with the
+mapping the engine parsed from the model's answer — never loom's decoded
+object, so nothing is decoded twice. Returns ``None`` to accept the answer
+unchanged, or the text the model must read to correct itself, which drives a
+real retry bounded by the artifact's ``policies.retries``.
+
+The return contract is the inverse of the usual predicate convention, which
+is why this alias is published rather than left for an author to spell: it
+is the one name in this module carrying ``Mapping[str, Any]``, because the
+payload shape is the artifact's own declared schema, which loom cannot type
+statically.
+
+A returned mapping is never substituted for the answer: the engine decodes
+the model's own bytes independently of what this callable returns, so a
+check that builds and returns a different mapping has that mapping
+discarded. Synchronous and dependency-free, because any side effect inside
+the retry loop would run once per attempt.
+"""
+
 
 class AgentEngineProvider(Protocol):
     """Entry-point target in group ``loom.ai.engines``.

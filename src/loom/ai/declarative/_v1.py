@@ -532,6 +532,10 @@ class AgentSpecV1(
         model_role:    Logical model role bound to a concrete provider and
             model by deployment configuration.
         output:        Declaration of the structured answer the agent returns.
+        output_check:  ``module:symbol`` reference to an
+            :data:`~loom.ai.abc.OutputCheck`, matching
+            :data:`SYMBOL_REF_PATTERN`. Resolved at compile time; ``None``
+            when the artifact declares no check.
         on_output:     Use case executed once per completed run with the
             validated output; ``None`` when the artifact declares no hook.
         conversation:  Use case executed before a run that carries a
@@ -550,6 +554,7 @@ class AgentSpecV1(
     instructions: _NonEmptyStr | Annotated[tuple[InstructionBlock, ...], msgspec.Meta(min_length=1)]
     model_role: Annotated[str, msgspec.Meta(pattern=MODEL_ROLE_PATTERN)] = DEFAULT_MODEL_ROLE
     output: OutputSpec
+    output_check: _SymbolRef | None = None
     on_output: OutputHookSpec | None = None
     conversation: ConversationSpec | None = None
     capabilities: tuple[CapabilitySpec, ...] = ()

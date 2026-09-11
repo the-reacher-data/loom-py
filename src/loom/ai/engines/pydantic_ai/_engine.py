@@ -40,7 +40,7 @@ from types import MappingProxyType
 from typing import Any, Final, cast
 
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import ModelResponse
+from pydantic_ai.messages import ModelResponse, PartStartEvent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from loom.ai.abc import (
@@ -52,6 +52,7 @@ from loom.ai.abc import (
     ErrorEvent,
     FinalEvent,
     HealthStatus,
+    TextDeltaEvent,
 )
 from loom.ai.compiler import AgentPlan
 from loom.ai.engines.pydantic_ai._errors import as_run_error
@@ -122,7 +123,16 @@ class PydanticAIEngine:
 
     Args:
         plan: Compiled plan this engine serves.
-        agent: Engine agent already built from the plan's spec and model.
+        agent: Engine agent already built from the plan's spec and model,
+            carrying the plan's own ``output_check`` validator when it
+            declares one.
+        shaped_agent: Engine agent serving a per-run shape override
+            (:meth:`run_stream_shaped`), built with no output validator
+            registered. Defaults to *agent* when not given, which is
+            correct whenever the plan declares no ``output_check``: the
+            two agents would behave identically, so
+            :class:`~loom.ai.engines.pydantic_ai.provider.PydanticAIEngineProvider`
+            builds only one and passes it for both.
         deps: Per-invocation dependency factory; singleton services are
             captured here, at build, and the caller's identity is supplied per
             invocation (FR-043).
@@ -137,12 +147,14 @@ class PydanticAIEngine:
         *,
         plan: AgentPlan,
         agent: Agent[Any, Any],
+        shaped_agent: Agent[Any, Any] | None = None,
         deps: DepsFactory,
         container: LoomContainer,
         usage_limits: UsageLimits,
     ) -> None:
         self._plan = plan
         self._agent = agent
+        self._shaped_agent = shaped_agent if shaped_agent is not None else agent
         self._deps = deps
         self._container = container
         self._usage_limits = usage_limits
@@ -247,7 +259,12 @@ class PydanticAIEngine:
         unshaped run; what this method skips is loom's *own* output check
         (:func:`~loom.ai.engines.pydantic_ai._output.decode_output`), because
         that check is compiled against the plan's declared schema and *this*
-        answer is deliberately shaped otherwise.
+        answer is deliberately shaped otherwise. When the plan declares an
+        ``output_check``, this call is also served by :attr:`_shaped_agent`
+        rather than :attr:`_agent`: pydantic-ai itself refuses a run-level
+        ``output_type`` on an agent that holds an output validator, and the
+        plan's checked agent always holds one once ``output_check`` is
+        declared.
 
         Args:
             prompt: Caller prompt.
@@ -527,9 +544,26 @@ class PydanticAIEngine:
         ``on_unpriced_spend`` itself: the winning result is appended to
         *outcome*, so :meth:`_events` can apply the policy only once every
         delta from this attempt has already reached the caller.
+
+        When the plan declares ``output_check``, text deltas are buffered in
+        *pending* rather than relayed live, and flushed only once this
+        attempt's ``AgentRunResultEvent`` arrives: an ``output_check``
+        rejection replays the model request inside this same call, each
+        replay's ``PartStartEvent`` starts again at ``index=0``, and a delta
+        already relayed cannot be un-sent. A plan with no check never
+        buffers: *pending* stays empty and every mapped event is yielded as
+        it arrives, exactly as before ``output_check`` existed.
+
+        *output_type* also selects which built agent serves this attempt:
+        :attr:`_shaped_agent`, carrying no output validator, when given —
+        pydantic-ai refuses a run-level ``output_type`` on an agent holding
+        one — and :attr:`_agent`, the plan's own checked agent, otherwise.
         """
+        withhold = self._plan.output_check is not None
+        pending: list[AgentEvent] = []
         pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
-        async with self._agent.run_stream_events(
+        agent = self._agent if output_type is None else self._shaped_agent
+        async with agent.run_stream_events(
             prompt,
             deps=deps,
             usage=spend,
@@ -540,9 +574,17 @@ class PydanticAIEngine:
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
                     outcome.append(event.result)
+                    for held in pending:
+                        yield held
                     return
+                if withhold and isinstance(event, PartStartEvent) and event.index == 0:
+                    pending.clear()
                 mapped = translate(event)
-                if mapped is not None:
+                if mapped is None:
+                    continue
+                if withhold and isinstance(mapped, TextDeltaEvent):
+                    pending.append(mapped)
+                else:
                     yield mapped
 
     def _conclude(

@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from types import MappingProxyType
 
-from loom.ai.abc import NativeToolSupport, StateShape
+from loom.ai.abc import NativeToolSupport, OutputCheck, StateShape
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledCapability,
@@ -27,7 +27,7 @@ from loom.ai.compiler.phases._hook import compile_output_hook
 from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._limits import validate_policies
 from loom.ai.compiler.phases._model_role import resolve_model_role
-from loom.ai.compiler.phases._output import compile_output
+from loom.ai.compiler.phases._output import compile_output, compile_output_check
 from loom.ai.compiler.phases._state import compile_state
 from loom.ai.config import AiConfig
 from loom.ai.declarative import AgentSpecV1, DecodedSpec
@@ -138,6 +138,8 @@ class AgentCompiler:
         issues: list[AgentCompilationIssue] = []
         output, output_issues = compile_output(spec.output, component)
         issues.extend(output_issues)
+        output_check, output_check_issues = compile_output_check(spec.output_check, component)
+        issues.extend(output_check_issues)
         state, state_issues = compile_state(spec.deps_type, spec.deps_schema, component)
         issues.extend(state_issues)
         instructions, instructions_issues = compile_instructions(
@@ -175,6 +177,7 @@ class AgentCompiler:
             state,
             inference,
             output,
+            output_check,
             capabilities,
             on_output,
             conversation,
@@ -189,6 +192,7 @@ class AgentCompiler:
         state: StateShape | None,
         inference: InferenceTarget,
         output: CompiledOutput,
+        output_check: OutputCheck | None,
         capabilities: tuple[CompiledCapability, ...],
         on_output: CompiledOutputHook | None,
         conversation: CompiledConversation | None,
@@ -202,6 +206,7 @@ class AgentCompiler:
             spec_version=spec.spec_version,
             inference=inference,
             output=output,
+            output_check=output_check,
             capabilities=capabilities,
             policies=spec.policies,
             on_output=on_output,
