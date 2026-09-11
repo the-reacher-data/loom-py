@@ -4,15 +4,20 @@
 
 ### etl
 
-- **etl:** the reader registry no longer takes per-kind readers. Nothing
-  registered one: the Mongo, ClickHouse and DynamoDB readers are built from
-  configuration and injected into the Polars reader, and the writer registry
-  is where a per-kind handler is actually used. Both registries now name the
-  `SourceReader`, `StreamingSourceReader` and `TargetWriter` protocols
-  instead of `Any`, which surfaced that `ClickHouseTargetWriter.write`
-  declared a narrower spec type than the protocol it is dispatched through;
-  it now accepts the protocol's type and refuses a spec of another kind with
-  a `TypeError`, which the registry's dispatch already made unreachable.
+- **etl:** the reader registry is gone. Nothing registered a per-kind
+  reader: the Mongo, ClickHouse and DynamoDB readers are built from
+  configuration and injected into the Polars reader, so the registry wrapped
+  one reader and forwarded to it. `PolarsProvider.create_backends` now
+  returns that reader directly, as the Spark provider already did. The
+  executor's own `StreamingSourceReader` check consequently inspects the
+  reader instead of the wrapper, which satisfied the protocol whatever it
+  wrapped, and a step that asks for a streaming read its reader cannot serve
+  is now refused by that check, naming the reader.
+- **etl:** the writer registry names the `TargetWriter` protocol instead of
+  `Any`. That surfaced `ClickHouseTargetWriter.write` declaring a narrower
+  spec type than the protocol it is dispatched through; it now accepts the
+  protocol's type and refuses a spec of another kind with a `TypeError`,
+  which the registry's dispatch by kind already made unreachable.
 
 # 🚀 Release 2.1.2 ([#238](https://github.com/the-reacher-data/loom-py/pull/238))
 

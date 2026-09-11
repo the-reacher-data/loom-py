@@ -1,13 +1,10 @@
-"""Tests for ReaderRegistry and WriterRegistry dispatch logic."""
+"""Tests for WriterRegistry dispatch logic."""
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
-from loom.etl.io._registry import ReaderRegistry, WriterRegistry
+from loom.etl.io._registry import WriterRegistry
 
 
 class _FakeSpec:
@@ -18,58 +15,6 @@ class _FakeSpec:
 
 
 _PARAMS = object()
-
-
-class _StreamingCapableReader:
-    """Reader that implements both read and read_streaming."""
-
-    def __init__(self) -> None:
-        self.read_calls: list[tuple[Any, Any]] = []
-        self.stream_calls: list[tuple[Any, Any]] = []
-
-    def read(self, spec: Any, params: Any, /) -> Any:
-        self.read_calls.append((spec, params))
-        return "non-streaming-result"
-
-    def read_streaming(self, spec: Any, params: Any, /) -> Any:
-        self.stream_calls.append((spec, params))
-        return "streaming-result"
-
-
-class _NonStreamingReader:
-    """Reader that only implements read (no streaming capability)."""
-
-    def read(self, spec: Any, params: Any, /) -> Any:
-        return "result"
-
-
-class TestReaderRegistryRead:
-    def test_reads_through_its_reader(self) -> None:
-        reader = MagicMock()
-        reader.read.return_value = "result"
-        registry = ReaderRegistry(reader)
-
-        spec = _FakeSpec(kind="table")
-        assert registry.read(spec, _PARAMS) == "result"
-        reader.read.assert_called_once_with(spec, _PARAMS)
-
-
-class TestReaderRegistryReadStreaming:
-    def test_streams_through_a_capable_reader(self) -> None:
-        reader = _StreamingCapableReader()
-        registry = ReaderRegistry(reader)
-        spec = _FakeSpec(kind="clickhouse")
-
-        assert registry.read_streaming(spec, _PARAMS) == "streaming-result"
-        assert reader.stream_calls == [(spec, _PARAMS)]
-        assert reader.read_calls == []
-
-    def test_refuses_a_streaming_read_a_reader_cannot_serve(self) -> None:
-        # Falling back to a non-streaming read would risk OOM, so it is refused.
-        registry = ReaderRegistry(_NonStreamingReader())
-
-        with pytest.raises(TypeError, match="StreamingSourceReader"):
-            registry.read_streaming(_FakeSpec(kind="clickhouse"), _PARAMS)
 
 
 class TestWriterRegistryDispatch:

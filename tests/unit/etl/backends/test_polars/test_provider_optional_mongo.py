@@ -38,7 +38,7 @@ def test_provider_imports_with_pymongo_hidden(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["ReaderRegistry", "PolarsTargetWriter"]
+    assert result.stdout.split() == ["PolarsSourceReader", "PolarsTargetWriter"]
 
 
 def test_mongo_source_without_pymongo_names_the_extra(

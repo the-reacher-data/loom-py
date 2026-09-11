@@ -1,60 +1,15 @@
-"""Dispatch registries that route specs to per-kind readers and writers."""
+"""Dispatch registry that routes a target spec to the writer registered for its kind."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from loom.etl.declarative.source import SourceSpec
 from loom.etl.declarative.target import TargetSpec
-from loom.etl.runtime.contracts import SourceReader, StreamingSourceReader, TargetWriter
+from loom.etl.runtime.contracts import TargetWriter
 
 if TYPE_CHECKING:
     from loom.etl.lineage._records import WriteContext
-
-
-class ReaderRegistry:
-    """Read a source spec through one reader, refusing a streaming read it cannot serve.
-
-    Args:
-        base: Reader every spec is read through.
-    """
-
-    def __init__(self, base: SourceReader) -> None:
-        self._base = base
-
-    def read(self, spec: SourceSpec, params: Any, /) -> Any:
-        """Read *spec* and return its frame.
-
-        Args:
-            spec: Compiled source specification.
-            params: Concrete params for current run.
-
-        Returns:
-            Backend frame produced by the reader.
-        """
-        return self._base.read(spec, params)
-
-    def read_streaming(self, spec: SourceSpec, params: Any, /) -> Any:
-        """Read *spec* with the reader's memory-bounded strategy.
-
-        Args:
-            spec: Compiled source specification.
-            params: Concrete params for current run.
-
-        Returns:
-            Backend frame produced by the reader's ``read_streaming``.
-
-        Raises:
-            TypeError: When the reader does not implement
-                :class:`~loom.etl.runtime.contracts.StreamingSourceReader`.
-        """
-        if not isinstance(self._base, StreamingSourceReader):
-            raise TypeError(
-                f"Reader {type(self._base).__qualname__!r} does not implement "
-                "StreamingSourceReader; cannot honor streaming=True."
-            )
-        return self._base.read_streaming(spec, params)
 
 
 class WriterRegistry:
