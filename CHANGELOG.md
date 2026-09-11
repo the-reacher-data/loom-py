@@ -1,5 +1,55 @@
 # Unreleased
 
+## 🐛 Fixes
+
+### prefect
+
+- **prefect:** `backfill_flow` resumes from a `start_from` submitted as a
+  string. A flow's run parameters are not validated against its signature
+  (`validate_parameters=False`), so `start_from` reached the chunk algebra
+  exactly as the Prefect API delivered it and an ISO string failed the run
+  with `AttributeError: 'str' object has no attribute 'tzinfo'`. It now goes
+  through the same placeholder resolution and datetime coercion as every
+  other parameter: a `datetime`, a `date`, an ISO string (naive read as UTC,
+  offset-bearing keeping its instant) or a placeholder. A value that resolves to none of those
+  raises `ValueError` naming the parameter instead of `AttributeError`.
+- **prefect:** a `${today}` placeholder reaches a parameter declared
+  `datetime`, read as its midnight in UTC. It used to fail the run with
+  `ValidationError: Expected datetime, got date`, because the placeholder
+  resolves to a `date` and only `date`-declared parameters accepted one.
+  Applies to `etl_flow`, `maintenance_flow` and `backfill_flow` alike. A
+  parameter declared `date` still receives a `date`.
+- **prefect:** a `datetime` parameter submitted as an offset-bearing ISO
+  string is parsed into a `datetime` before the flow decodes its parameters,
+  where the string used to travel on unparsed. Two consequences, both in
+  `etl_flow` as well as `backfill_flow`. A string that Python's ISO parser
+  accepts but msgspec rejects — an offset carrying seconds, say — now decodes
+  instead of failing the run. And a flow whose `correlation_field` is such a
+  parameter gets a different correlation id: the compact `20260603T000000`
+  form the naive-string path already produced, instead of the raw string.
+  Since the correlation id keys the manifest store, do not upgrade across a
+  run you intend to resume from its manifest — start it again instead.
+
+# 🚀 Release 2.1.0 ([#235](https://github.com/the-reacher-data/loom-py/pull/235))
+
+## ✨ Features
+
+### ai
+
+- **ai:** an `on_output` hook receives the run's tool traffic. `messages` used
+  to be `None` unless the run carried a conversation, so a hook could compose
+  only from the answer; it now carries the run's serialised messages either
+  way, bounded by `policies.max_history_bytes` — over that bound the hook
+  receives `None` and the run logs the artifact, the measured size and the
+  bound.
+- **ai:** `policies.retries` states both axes it governs wherever an author
+  reads it — the field's docstring and the published JSON Schema description.
+  It retries a failed tool call and an answer `output_check` rejects inside
+  one run, always; it retries a failed provider call across runs only when the
+  plan holds no capability. The number itself is unchanged.
+
+# 🚀 Release 2.0.0 ([#234](https://github.com/the-reacher-data/loom-py/pull/234))
+
 ## ⚠ Behaviour changes
 
 ### ai
@@ -43,6 +93,27 @@
   be published over A2A; a deployment listing one in `ai.a2a.expose` fails
   start-up naming both the artifact and the conflict. See
   `docs/ai/artifacts.md#the-artifacts-state--deps_type-and-deps_schema`.
+- **ai:** an artefact may declare `output_check`, a `module:Symbol` reference
+  to an `OutputCheck` — aliased publicly as `loom.ai.OutputCheck`
+  (`Callable[[Mapping[str, Any]], str | None]`) — a pure, synchronous
+  predicate over the mapping the engine parsed from the model's answer.
+  `None` accepts the answer; a non-empty string is the text the model must
+  read to correct itself, driving a real retry inside the engine's own run,
+  bounded by `policies.retries`. It is a predicate, not a transformer: a
+  mapping the check builds and returns is discarded, never substituted for
+  the answer, which loom always decodes independently from the model's own
+  bytes. Declaring `output_check` changes how a run streams: loom withholds
+  the answer's deltas until they pass the check, then emits them, instead of
+  relaying them token by token as an artifact with no check does — the
+  trade-off is no partial text on the wire until the check accepts, in
+  exchange for never streaming an answer the check goes on to reject. See
+  `docs/ai/artifacts.md#output_check--demanding-the-shape-of-the-answer`.
+
+# 🚀 Release 1.19.0 ([#224](https://github.com/the-reacher-data/loom-py/pull/224))
+
+## ⚠ Behaviour changes
+
+### ai
 
 - **ai:** the MCP handshake deadline is now `ai.startup_timeout_ms` instead of
   the engine's own undocumented five seconds. Two consequences ship silently
@@ -104,21 +175,6 @@
   consequence, turns `policies.on_unpriced_spend: serve` into `refuse` no
   matter what the artifact declares — see "Spend caps" in
   `docs/ai/artifacts.md` for the mechanism and the remedy.
-- **ai:** an artefact may declare `output_check`, a `module:Symbol` reference
-  to an `OutputCheck` — aliased publicly as `loom.ai.OutputCheck`
-  (`Callable[[Mapping[str, Any]], str | None]`) — a pure, synchronous
-  predicate over the mapping the engine parsed from the model's answer.
-  `None` accepts the answer; a non-empty string is the text the model must
-  read to correct itself, driving a real retry inside the engine's own run,
-  bounded by `policies.retries`. It is a predicate, not a transformer: a
-  mapping the check builds and returns is discarded, never substituted for
-  the answer, which loom always decodes independently from the model's own
-  bytes. Declaring `output_check` changes how a run streams: loom withholds
-  the answer's deltas until they pass the check, then emits them, instead of
-  relaying them token by token as an artifact with no check does — the
-  trade-off is no partial text on the wire until the check accepts, in
-  exchange for never streaming an answer the check goes on to reject. See
-  `docs/ai/artifacts.md#output_check--demanding-the-shape-of-the-answer`.
 - **ai:** `AgentDescription.policies` is now typed
   `Mapping[str, int | float | str | None]`, widened from `Mapping[str, int]`
   to carry `max_usd` (as a JSON number, matching the published schema's

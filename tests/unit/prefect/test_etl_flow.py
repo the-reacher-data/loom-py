@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import textwrap
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,7 @@ from loom.prefect._meta import LOOM_ETL_META_ATTR as _LOOM_ETL_META_ATTR
 from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect.flow._assemble import flow_attribute_name, flow_settings_from_mapping
 from loom.prefect.flow._factory import build_etl_flow
+from loom.prefect.flow._run_name import compute_correlation_id
 from loom.prefect.flow._signature import (
     normalize_datetime_fields as _normalize_datetime_fields,
 )
@@ -252,6 +253,10 @@ def test_etl_flow_rejects_non_string_tags(tmp_path: Path) -> None:
         )
 
 
+class _DateParams(ETLParams, frozen=True):  # type: ignore[misc]
+    day: date
+
+
 class _OptionalDtParams(ETLParams, frozen=True):  # type: ignore[misc]
     updated_at_from: datetime | None = None
     label: str = "x"
@@ -278,6 +283,20 @@ def test_naive_datetime_object_is_normalized_to_utc() -> None:
     assert out["updated_at_from"].replace(tzinfo=None) == naive
 
 
+def test_offset_bearing_datetime_string_is_parsed_keeping_its_instant() -> None:
+    out = _normalize_datetime_fields(
+        {
+            "updated_at_from": "2026-06-03T00:00:00+02:00",
+            "updated_at_to": "2026-06-04T00:00:00Z",
+        },
+        _SampleParams,
+    )
+    assert isinstance(out["updated_at_from"], datetime)
+    assert out["updated_at_from"].utcoffset() == timedelta(hours=2)
+    assert out["updated_at_from"].astimezone(UTC) == datetime(2026, 6, 2, 22, 0, tzinfo=UTC)
+    assert isinstance(out["updated_at_to"], datetime)
+
+
 def test_aware_datetime_passes_through() -> None:
     aware = datetime(2026, 6, 3, 0, 0, 0, tzinfo=UTC)
     out = _normalize_datetime_fields(
@@ -296,6 +315,32 @@ def test_aware_datetime_with_offset_passes_through() -> None:
     )
     assert out["updated_at_from"].tzinfo is offset
     assert out["updated_at_from"].utcoffset() == timedelta(hours=2)
+
+
+def test_correlation_id_of_an_offset_bearing_string_uses_the_compact_form() -> None:
+    # The coercion feeds the correlation id as well as the params struct, so an
+    # offset-bearing string now keys the manifest store the way a naive one
+    # always did.
+    resolved = _normalize_datetime_fields(
+        {"updated_at_from": "2026-06-03T00:00:00+02:00"},
+        _SampleParams,
+    )
+    assert compute_correlation_id("etl", "updated_at_from", resolved) == "etl-20260603T000000"
+
+
+def test_a_date_on_a_datetime_field_becomes_its_midnight_in_utc() -> None:
+    out = _normalize_datetime_fields(
+        {"updated_at_from": date(2026, 6, 3), "updated_at_to": date(2026, 6, 4)},
+        _SampleParams,
+    )
+    assert out["updated_at_from"] == datetime(2026, 6, 3, tzinfo=UTC)
+    assert out["updated_at_to"] == datetime(2026, 6, 4, tzinfo=UTC)
+
+
+def test_a_date_field_keeps_its_date(tmp_path: Path) -> None:
+    # is_datetime_annotation rejects date, so a date-declared field is untouched.
+    out = _normalize_datetime_fields({"day": date(2026, 6, 3)}, _DateParams)
+    assert out["day"] == date(2026, 6, 3)
 
 
 def test_non_datetime_fields_untouched() -> None:

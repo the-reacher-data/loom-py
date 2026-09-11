@@ -31,7 +31,7 @@ The sub-modules here split the factory's concerns:
 - ``_stages`` — process/step name validation against the compiled plan.
 - ``_common`` — small helpers shared by the factories (tag coercion, …).
 - ``_signature`` — synthesising the flow's parameter signature from a
-  ``msgspec.Struct`` plus naive-datetime → UTC coercion.
+  ``msgspec.Struct`` plus the submitted-datetime coercion to tz-aware.
 - ``_run_name`` — computing each run's display name (cron slot vs.
   correlation id vs. fallback timestamp).
 - ``_hooks`` — Prefect ``on_failure`` hook (deactivate the deployment's
