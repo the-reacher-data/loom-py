@@ -171,6 +171,42 @@ output:
 The reference is `module:Symbol`. Filesystem paths are not representable by the
 pattern.
 
+### `output_check` — demanding the shape of the answer
+
+`output_check` names an `OutputCheck` (`loom.ai.OutputCheck`): a pure,
+synchronous predicate over the mapping the engine parsed from the model's
+answer. It returns `None` to accept, or the text the model must read to
+correct itself:
+
+```yaml
+output_check: "myapp.agents.checks:incident_answer_complete"
+```
+
+```python
+from typing import Any
+from collections.abc import Mapping
+
+def incident_answer_complete(answer: Mapping[str, Any]) -> str | None:
+    if not answer.get("root_cause"):
+        return "The answer is missing a root cause; consult the incident timeline."
+    return None
+```
+
+A rejection drives a real retry, bounded by `policies.retries`, inside the
+engine's own run — loom's outer retry loop is not involved, so the check
+still works for an agent holding a capability.
+
+The check receives the mapping the engine parsed, not loom's decoded output,
+and its return value is never substituted for the answer: loom decodes the
+model's own bytes independently, so a check that builds and returns a
+different mapping has that mapping discarded. Work that needs to read data
+belongs in `on_output`, which runs outside the engine.
+
+Declaring `output_check` changes how the run streams: loom withholds the
+answer's deltas until it passes the check, then emits them, rather than
+relaying them token by token. An artifact with no check streams exactly as
+it does today; the change is per artifact, never a deployment-wide switch.
+
 ## `on_output` — a use case run once per completed run
 
 ```yaml

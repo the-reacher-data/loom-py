@@ -29,7 +29,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
-from loom.ai.abc import AgentEngine, DepsFactory, StateShape
+from loom.ai.abc import AgentEngine, DepsFactory, OutputCheck, StateShape
 from loom.ai.compiler._plan import AgentPlan, CompiledInstruction, CompiledOutput
 from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._output import compile_output
@@ -95,6 +95,7 @@ def make_plan(
     policies: PolicySpec | None = None,
     inference: InferenceTarget | None = None,
     state: StateShape | None = None,
+    output_check: OutputCheck | None = None,
 ) -> AgentPlan:
     """Build a compiled plan for a pure-language agent.
 
@@ -106,6 +107,9 @@ def make_plan(
     so the override is not load-bearing for building the engine, only for
     inspecting the notice. ``state`` declares the artefact's state shape;
     absent, this plan declares none, matching ``NullDeps``' own "no state".
+    ``output_check`` is carried unresolved from the artefact's own field name,
+    matching how the compiler resolves it (``compile_output_check``); absent,
+    this plan declares no check.
     """
     return AgentPlan(
         name="contract",
@@ -115,6 +119,7 @@ def make_plan(
         spec_version=1,
         inference=inference or InferenceTarget(provider="openai", model="gpt-5.2"),
         output=compiled_output(schema),
+        output_check=output_check,
         policies=policies if policies is not None else PolicySpec(retries=retries),
         metadata={},
     )

@@ -22,7 +22,7 @@ from typing import Any, ClassVar, Final
 
 import msgspec
 
-from loom.ai.abc import StateShape
+from loom.ai.abc import OutputCheck, StateShape
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
@@ -379,6 +379,8 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
         spec_version: Artifact format version, retained for self-description.
         inference: Resolved model binding; one binding, no fallback (FR-019a).
         output: Structured-output contract with its built decoder.
+        output_check: Resolved predicate over the answer the engine parsed,
+            when the artifact declares ``output_check``; ``None`` otherwise.
         capabilities: Compiled capabilities with resolved handles.
         policies: Validated execution limits.
         on_output: Output hook, when the artifact declares one.
@@ -394,6 +396,7 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
     spec_version: int
     inference: InferenceTarget
     output: CompiledOutput
+    output_check: OutputCheck | None = None
     capabilities: tuple[CompiledCapability, ...] = ()
     policies: PolicySpec
     on_output: CompiledOutputHook | None = None

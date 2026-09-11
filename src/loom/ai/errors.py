@@ -69,6 +69,7 @@ class AgentErrorCode(StrEnum):
     OUTPUT_SCHEMA_INVALID = "OUTPUT_SCHEMA_INVALID"
     OUTPUT_TYPE_REF_UNRESOLVABLE = "OUTPUT_TYPE_REF_UNRESOLVABLE"
     OUTPUT_TYPE_REF_UNSUPPORTED = "OUTPUT_TYPE_REF_UNSUPPORTED"
+    OUTPUT_CHECK_UNRESOLVABLE = "OUTPUT_CHECK_UNRESOLVABLE"
     ON_OUTPUT_USECASE_UNKNOWN = "ON_OUTPUT_USECASE_UNKNOWN"
     ON_OUTPUT_INPUT_UNSATISFIED = "ON_OUTPUT_INPUT_UNSATISFIED"
     ON_OUTPUT_USECASE_ALSO_GRANTED = "ON_OUTPUT_USECASE_ALSO_GRANTED"
@@ -322,6 +323,16 @@ def output_type_ref_unsupported(component: str, ref: str, reason: str) -> AgentC
         message=f"{component}: output type reference '{ref}' is unsupported: {reason}",
         component=component,
         field="output.ref",
+    )
+
+
+def output_check_unresolvable(component: str, ref: str) -> AgentCompilationIssue:
+    """The ``module:symbol`` output check reference cannot be imported."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.OUTPUT_CHECK_UNRESOLVABLE,
+        message=f"{component}: output check '{ref}' cannot be imported",
+        component=component,
+        field="output_check",
     )
 
 
