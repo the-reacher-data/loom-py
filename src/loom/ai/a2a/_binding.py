@@ -25,7 +25,11 @@ from starlette.middleware import Middleware
 from loom.ai.a2a.card import build_agent_card, card_path
 from loom.ai.compiler import AgentPlan
 from loom.ai.config import AgentEndpointConfig, AiConfig
-from loom.ai.errors import AgentCompilationError, auth_exclusion_overlaps_agents
+from loom.ai.errors import (
+    AgentCompilationError,
+    auth_exclusion_overlaps_agents,
+    state_surface_unsupported,
+)
 from loom.ai.fastapi.response import ENCODER
 from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
@@ -64,6 +68,22 @@ def published_agents(
 
     ``expose`` is authoritative and never empty (``A2A_EXPOSE_EMPTY``): an empty
     list means no agent, never all of them (FR-041a).
+
+    A plan declaring ``deps_type`` or ``deps_schema`` (``plan.state is not
+    None``) is refused rather than published: the A2A handler runs an agent
+    with no state (``a2a/_handlers.py:235``), and the message shape it reads
+    carries a prompt and a ``contextId``, with no field for one
+    (``a2a/_handlers.py:175-186``). Rendering a declared state that never
+    arrives degrades silently rather than failing — measured,
+    ``render({})`` returns a sentence with its placeholders empty. Choosing a
+    place in the A2A envelope to carry state would publish a protocol
+    convention, which is a decision for whoever owns loom's A2A surface, not
+    one this pass makes on its behalf.
+
+    Raises:
+        AgentCompilationError: With ``STATE_SURFACE_UNSUPPORTED``, naming the
+            first stateful agent found in ``expose`` and the ``a2a`` surface
+            it conflicts with.
     """
     a2a = config.a2a
     assert a2a is not None  # noqa: S101 - guarded by the caller's early return
@@ -77,6 +97,8 @@ def published_agents(
                 name,
             )
             continue
+        if plan.state is not None:
+            raise AgentCompilationError([state_surface_unsupported(name, "a2a")])
         card = ENCODER.encode(build_agent_card(plan, a2a, mechanism=mechanism, prefix=prefix))
         published.append(
             PublishedAgent(

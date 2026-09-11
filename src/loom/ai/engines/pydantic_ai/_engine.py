@@ -37,7 +37,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import fields
 from time import perf_counter
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import ModelResponse
@@ -156,6 +156,7 @@ class PydanticAIEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AgentResult:
         """Run the agent to completion.
 
@@ -164,6 +165,9 @@ class PydanticAIEngine:
             identity: Verified caller; every capability call runs as them.
             conversation: The conversation this run continues, or ``None``
                 for a single shot.
+            state: This run's state, already resolved against the plan's
+                declared shape by :class:`~loom.ai.runtime.AgentRuntime`;
+                forwarded to :attr:`_deps` unchanged.
 
         Returns:
             The validated output, the run's usage and — when the run carried a
@@ -180,7 +184,7 @@ class PydanticAIEngine:
         started = perf_counter()
         spend = RunUsage()
         try:
-            result = await self._run_with_retries(prompt, identity, spend, decoded)
+            result = await self._run_with_retries(prompt, identity, spend, decoded, state)
             unpriced = self._apply_unpriced_spend_policy(result)
             output = decode_output(self._plan.output, result)
         except AgentRunError as error:
@@ -199,6 +203,7 @@ class PydanticAIEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Run the agent, streaming events.
 
@@ -207,12 +212,13 @@ class PydanticAIEngine:
             identity: Verified caller; every capability call runs as them.
             conversation: The conversation this run continues, or ``None``
                 for a single shot.
+            state: This run's state; see :meth:`run`'s own ``state``.
 
         Returns:
             An async context manager yielding the event stream and closing it
             — and the provider connection behind it — on exit.
         """
-        return self._stream(prompt, identity, conversation, output_type=None)
+        return self._stream(prompt, identity, conversation, output_type=None, state=state)
 
     def run_stream_shaped(
         self,
@@ -221,18 +227,20 @@ class PydanticAIEngine:
         identity: Identity,
         conversation: Conversation | None = None,
         output_type: type[Any],
+        state: object | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Run the agent, streaming events decoded into *output_type* for this call only.
 
         The counterpart of :meth:`run_stream` that
         :class:`~loom.ai.runtime._handle._BoundAgentHandle` reaches for
         ``AgentHandle.run(expect=...)`` and ``AgentHandle.run_text`` (T304).
-        Deliberately not a parameter of :meth:`run_stream` itself: that
-        signature is pinned to exactly ``prompt``, ``identity`` and
-        ``conversation`` by the shared engine contract, so a shape override is
-        a separate, optional capability an engine opts into — read with
-        ``getattr`` by :func:`~loom.ai.runtime._lifecycle._open_engine_stream`
-        — rather than a fourth parameter every engine must carry.
+        ``output_type`` is deliberately not a parameter of :meth:`run_stream`
+        itself: that signature is pinned to exactly ``prompt``, ``identity``,
+        ``conversation`` and ``state`` by the shared engine contract, so a
+        shape override is a separate, optional capability an engine opts
+        into — read with ``getattr`` by
+        :func:`~loom.ai.runtime._lifecycle._open_engine_stream` — rather than
+        a parameter every engine must carry.
 
         pydantic-ai validates the run's answer against *output_type* on its
         own, exactly as it validates against the plan's declared shape for an
@@ -247,13 +255,14 @@ class PydanticAIEngine:
             conversation: The conversation this run continues, or ``None``.
             output_type: Type this run's answer is decoded into, overriding
                 the plan's own declared output for this call only.
+            state: This run's state; see :meth:`run`'s own ``state``.
 
         Returns:
             An async context manager yielding the event stream; its
             ``final`` event carries an already-decoded ``output_type``
             instance rather than the plan's declared shape.
         """
-        return self._stream(prompt, identity, conversation, output_type=output_type)
+        return self._stream(prompt, identity, conversation, output_type=output_type, state=state)
 
     async def health(self) -> HealthStatus:
         """Report health from the last observed outcome, with no network I/O.
@@ -281,6 +290,7 @@ class PydanticAIEngine:
         identity: Identity,
         spend: RunUsage,
         conversation: RunConversation | None,
+        state: object | None,
     ) -> AgentRunResult[Any]:
         """Call the provider, retrying only infrastructure failures.
 
@@ -288,8 +298,15 @@ class PydanticAIEngine:
         run cost even when the call raises — and it accumulates across retried
         attempts, because a retry spends the provider's tokens again. The
         decoded history, by contrast, is the same list on every attempt.
+
+        *state* is already resolved by
+        :class:`~loom.ai.runtime.AgentRuntime` against the plan's declared
+        shape; it is cast, never re-validated, into the mapping
+        :class:`~loom.ai.abc.DepsFactory` declares (FR-009).
         """
-        deps = self._deps.build(identity, self._container)
+        deps = self._deps.build(
+            identity, self._container, state=cast("Mapping[str, Any] | None", state)
+        )
         for attempt in range(self._attempts):
             try:
                 result = await self._agent.run(
@@ -421,8 +438,9 @@ class PydanticAIEngine:
         conversation: Conversation | None,
         *,
         output_type: type[Any] | None,
+        state: object | None,
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
-        events = self._events(prompt, identity, conversation, output_type)
+        events = self._events(prompt, identity, conversation, output_type, state)
         try:
             yield events
         finally:
@@ -434,6 +452,7 @@ class PydanticAIEngine:
         identity: Identity,
         conversation: Conversation | None,
         output_type: type[Any] | None,
+        state: object | None,
     ) -> AsyncGenerator[AgentEvent]:
         """Replay one run as loom events, ending in exactly one terminal.
 
@@ -451,7 +470,9 @@ class PydanticAIEngine:
         except AgentRunError as rejected:
             yield ErrorEvent(code=rejected.code, message=str(rejected))
             return
-        deps = self._deps.build(identity, self._container)
+        deps = self._deps.build(
+            identity, self._container, state=cast("Mapping[str, Any] | None", state)
+        )
         spend = RunUsage()
         started = perf_counter()
         for attempt in range(self._attempts):

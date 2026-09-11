@@ -98,9 +98,14 @@ class _PingEngine:
         self.executor: RuntimeExecutor | None = None
 
     def run_stream(
-        self, prompt: str, *, identity: Identity, conversation: Conversation | None = None
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> Any:
-        del prompt, conversation
+        del prompt, conversation, state
 
         @asynccontextmanager
         async def _stream() -> AsyncIterator[AsyncIterator[AgentEvent]]:

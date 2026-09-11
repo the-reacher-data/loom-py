@@ -2,7 +2,7 @@
 
 Pins the shape the marker factory relies on before any resolution exists:
 ``AgentAnswer`` is a frozen, per-run carrier; ``AgentHandle.run`` exposes
-exactly the three per-run arguments the spec allows, split across two
+exactly the four per-run arguments the spec allows, split across two
 overloads; ``McpHandle`` offers a typed and an untyped call rather than one
 call with an optional type; ``SqlGrantHandle`` exposes one bounded query.
 """
@@ -45,21 +45,23 @@ class TestAgentHandleRun:
     def _signature_of(self, nombre: str) -> inspect.Signature:
         return inspect.signature(getattr(AgentHandle, nombre))
 
-    def test_run_exposes_exactly_the_three_per_run_parameters(self) -> None:
+    def test_run_exposes_exactly_the_four_per_run_parameters(self) -> None:
         parametros = set(self._signature_of("run").parameters) - {"self"}
 
-        assert parametros == {"prompt", "expect", "conversation_id"}
+        assert parametros == {"prompt", "expect", "conversation_id", "state"}
 
     def test_run_text_does_not_accept_expect(self) -> None:
         parametros = set(self._signature_of("run_text").parameters) - {"self"}
 
-        assert parametros == {"prompt", "conversation_id"}
+        assert parametros == {"prompt", "conversation_id", "state"}
 
     def test_expect_and_conversation_id_are_keyword_only(self) -> None:
         firma = self._signature_of("run")
 
         assert firma.parameters["expect"].kind is inspect.Parameter.KEYWORD_ONLY
         assert firma.parameters["conversation_id"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert firma.parameters["state"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert firma.parameters["state"].default is None
 
     def test_run_has_two_declared_overloads(self) -> None:
         """``typing.overload`` registers both variants under the same name."""

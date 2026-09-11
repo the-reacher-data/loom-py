@@ -23,8 +23,10 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
-from typing import Any, Self
+from typing import Any, Self, cast
 from uuid import uuid4
+
+import msgspec
 
 from loom.ai._filters import select_names
 from loom.ai.abc import (
@@ -40,6 +42,7 @@ from loom.ai.abc import (
     HealthState,
     McpSession,
     McpToolInfo,
+    StateShape,
 )
 from loom.ai.compiler._plan import (
     HOOK_OUTPUT_FIELD,
@@ -389,6 +392,7 @@ class AgentRuntime:
         identity: Identity,
         conversation_id: str | None = None,
         output_type: type[Any] | None = None,
+        state: object | None = None,
     ) -> AgentResult:
         """Run one agent to completion.
 
@@ -410,6 +414,13 @@ class AgentRuntime:
                 into shape overrides through the separate, optional
                 ``run_stream_shaped`` capability instead (see
                 :mod:`~loom.ai.runtime._grants`).
+            state: This run's state, already decoded by whichever boundary
+                received it and passed as a normalised mapping, or ``None``.
+                Resolved against *name*'s declared shape before this call
+                reaches the engine (FR-009, FR-010): ``None`` on a stateful
+                artefact carries the shape's own declared defaults; a
+                non-``None`` value against an artefact declaring no shape
+                fails the call.
 
         Returns:
             The decoded output, the run's usage, its ``interaction_id``, the
@@ -421,8 +432,9 @@ class AgentRuntime:
                 :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
             AgentRunError: When the run is refused (``TOO_MANY_RUNS``), the
                 conversation cannot be loaded (``CONVERSATION_LOAD_FAILED``,
-                ``CONVERSATION_LOAD_TIMEOUT``), breaches a declared limit, or
-                ends in a failure event.
+                ``CONVERSATION_LOAD_TIMEOUT``), ``state`` is given against an
+                artefact declaring none (``STATE_UNDECLARED``), breaches a
+                declared limit, or ends in a failure event.
         """
         result: AgentResult | None = None
         stream = self._run_stream(
@@ -431,6 +443,7 @@ class AgentRuntime:
             identity=identity,
             conversation_id=conversation_id,
             output_type=output_type,
+            state=state,
         )
         async with stream as events:
             async for event in events:
@@ -462,6 +475,7 @@ class AgentRuntime:
         *,
         identity: Identity,
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Run one agent, streaming its supervised events.
 
@@ -476,6 +490,9 @@ class AgentRuntime:
                 the conversation the loader use case receives, when the
                 artifact declares one, and is copied verbatim into the output
                 hook's command.  Never read by loom.
+            state: This run's state; see :meth:`run`'s own ``state`` for what
+                it carries and how it is resolved against *name*'s declared
+                shape.
 
         Returns:
             An async context manager yielding the limit-supervised events; the
@@ -486,11 +503,14 @@ class AgentRuntime:
             ValueError: On entry, when ``conversation_id`` is empty or longer
                 than :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
             AgentRunError: On entry, when the worker's ``max_concurrent_runs``
-                is already taken (``TOO_MANY_RUNS``) or the conversation
-                cannot be loaded (``CONVERSATION_LOAD_FAILED``,
-                ``CONVERSATION_LOAD_TIMEOUT``).
+                is already taken (``TOO_MANY_RUNS``), the conversation cannot
+                be loaded (``CONVERSATION_LOAD_FAILED``,
+                ``CONVERSATION_LOAD_TIMEOUT``), or ``state`` is given against
+                an artefact declaring none (``STATE_UNDECLARED``).
         """
-        return self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
+        return self._run_stream(
+            name, prompt, identity=identity, conversation_id=conversation_id, state=state
+        )
 
     async def health(self, name: str) -> AgentHealth:
         """Return the cached health of one agent — never network I/O per call.
@@ -870,9 +890,11 @@ class AgentRuntime:
         identity: Identity,
         conversation_id: str | None,
         output_type: type[Any] | None = None,
+        state: object | None = None,
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
         slot = self._require_slot(name)
         _check_conversation_id(conversation_id)
+        resolved_state = _resolve_state(name, slot.plan.state, state)
         async with self._chain_bound(name), self._admitted(name):
             run = RunContext(
                 plan=slot.plan,
@@ -887,6 +909,7 @@ class AgentRuntime:
                 identity=identity,
                 conversation=conversation,
                 output_type=output_type,
+                state=resolved_state,
             )
             async with engine_stream as events:
                 supervised = supervised_events(events, slot.plan.policies)
@@ -945,6 +968,27 @@ class AgentRuntime:
     # run reads ``grants(name)`` once instead of repeating a linear scan over
     # ``plan.capabilities`` — once per grant lookup, once per policy read —
     # on every call a use case makes through its handle.
+
+    def state_shape(self, name: str) -> StateShape | None:
+        """Return one agent's declared state shape.
+
+        Read by :func:`~loom.ai.fastapi.endpoints._decode_state` to parse a
+        request's raw ``state`` bytes against the artefact's own shape
+        (FR-008), and available before this runtime is entered — a compiled
+        plan already carries its shape, unlike a grant, which is resolved
+        only once the runtime opens its clients.
+
+        Args:
+            name: Agent whose declared shape is read.
+
+        Returns:
+            The plan's :class:`~loom.ai.abc.StateShape`, or ``None`` for an
+            artefact declaring neither ``deps_type`` nor ``deps_schema``.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        return self._require_plan(name).state
 
     def grants(self, name: str) -> AgentGrants:
         """Return one agent's own resolved grants, built once at start-up.
@@ -1093,12 +1137,13 @@ def _open_engine_stream(
     identity: Identity,
     conversation: Conversation | None,
     output_type: type[Any] | None,
+    state: Mapping[str, Any] | None,
 ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
     """Open the engine's event stream, shaped for this call when asked.
 
     :class:`~loom.ai.abc.AgentEngine` itself takes no ``output_type``: its
     ``run``/``run_stream`` signature is pinned to exactly ``prompt``,
-    ``identity`` and ``conversation`` (T304, and see the public-surface test
+    ``identity``, ``conversation`` and ``state`` (see the public-surface test
     that enforces it). An engine that wants to serve
     :meth:`~loom.ai.abc.AgentHandle.run`'s ``expect`` and ``run_text`` opts in
     through the separate, optional ``run_stream_shaped`` method instead, read
@@ -1110,7 +1155,7 @@ def _open_engine_stream(
             running the pydantic-ai engine, which implements it.
     """
     if output_type is None:
-        return engine.run_stream(prompt, identity=identity, conversation=conversation)
+        return engine.run_stream(prompt, identity=identity, conversation=conversation, state=state)
     shaped = getattr(engine, "run_stream_shaped", None)
     if shaped is None:
         raise NotImplementedError(
@@ -1118,8 +1163,51 @@ def _open_engine_stream(
             "it declares no 'run_stream_shaped'"
         )
     return shaped(  # type: ignore[no-any-return]
-        prompt, identity=identity, conversation=conversation, output_type=output_type
+        prompt,
+        identity=identity,
+        conversation=conversation,
+        output_type=output_type,
+        state=state,
     )
+
+
+def _resolve_state(
+    name: str, shape: StateShape | None, state: object | None
+) -> Mapping[str, Any] | None:
+    """Resolve one run's ``state`` against *shape*, before any engine call (FR-009, FR-010).
+
+    *state* is already decoded and normalised by whichever boundary received
+    it — this never parses bytes, it only checks the value against the
+    artefact's declared shape.
+
+    Args:
+        name: Agent this run targets, named in a raised error.
+        shape: The agent's declared state shape, or ``None``.
+        state: Caller-supplied state, or ``None``.
+
+    Returns:
+        *state* unchanged when given. When *state* is ``None`` and *shape*
+        declares a decoder, the shape's own defaults — ``msgspec.to_builtins``
+        of decoding an empty object — so a stateful artefact renders its
+        declared defaults rather than empty markers. ``None`` when *shape* is
+        ``None``, or declares the open ``deps_type: dict`` form, which has no
+        defaults to supply.
+
+    Raises:
+        AgentRunError: ``STATE_UNDECLARED`` when *state* is given and *shape*
+            is ``None``.
+    """
+    if state is not None:
+        if shape is None:
+            raise AgentRunError(
+                AgentRunErrorCode.STATE_UNDECLARED,
+                f"agent {name!r} declares no state (no 'deps_type' or 'deps_schema'); "
+                "remove 'state' from this call or declare a state shape on the artefact",
+            )
+        return cast(Mapping[str, Any], state)
+    if shape is None or shape.decoder is None:
+        return None
+    return cast(Mapping[str, Any], msgspec.to_builtins(shape.decoder.decode(b"{}")))
 
 
 def _check_conversation_id(conversation_id: str | None) -> None:

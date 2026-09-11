@@ -49,8 +49,9 @@ class _CallbackEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
-        del prompt, identity, conversation
+        del prompt, identity, conversation, state
 
         async def _events() -> AsyncIterator[AgentEvent]:
             if self._callback is not None:
@@ -69,9 +70,12 @@ class _CallbackEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AgentResult:
         last: AgentEvent | None = None
-        async with self.run_stream(prompt, identity=identity, conversation=conversation) as events:
+        async with self.run_stream(
+            prompt, identity=identity, conversation=conversation, state=state
+        ) as events:
             async for event in events:
                 last = event
         assert isinstance(last, FinalEvent)

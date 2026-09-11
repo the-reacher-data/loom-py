@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from types import MappingProxyType
-from typing import Annotated, Final
+from typing import Annotated, Any, Final, cast
 
 import msgspec
 from fastapi import FastAPI
@@ -46,6 +46,7 @@ from loom.ai.abc import (
     AgentResult,
     ErrorEvent,
     FinalEvent,
+    StateShape,
 )
 from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
@@ -73,6 +74,11 @@ _STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = MappingProxyType(
         AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION: 422,
         AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED: 422,
         AgentRunErrorCode.USAGE_LIMIT_EXCEEDED: 422,
+        # Unreachable through this surface: _decode_state raises a
+        # TransportError 422 (STATE_NOT_DECLARED) before the runtime is ever
+        # called. Mapped anyway, for a marker-driven caller that reaches
+        # AgentRuntime.run directly and for the totality test.
+        AgentRunErrorCode.STATE_UNDECLARED: 422,
         AgentRunErrorCode.PROVIDER_UNAVAILABLE: 503,
         AgentRunErrorCode.PROVIDER_RATE_LIMITED: 503,
         AgentRunErrorCode.TOOL_UNAVAILABLE: 503,
@@ -99,18 +105,33 @@ _STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = MappingProxyType(
 
 
 class _AgentRunRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):
-    """Body accepted by ``/run`` and ``/stream``: one prompt and an optional thread.
+    """Body accepted by ``/run`` and ``/stream``: a prompt, an optional thread and state.
 
     ``conversation_id`` is opaque to the runtime: it selects the conversation the
     loader use case receives, when the artifact declares one, and is copied
     verbatim into the output hook's command. Its bounds are enforced here, at decode, so an
     out-of-range value is a ``422`` and never reaches the runtime.
+
+    ``state`` is ``msgspec.Raw`` rather than a decoded value: this struct is
+    decoded by the one module-level :data:`_REQUEST_DECODER` shared by every
+    agent, which cannot know any one artefact's declared state shape.
+    ``Raw`` stops decoding at this field, so :func:`_decode_state` can parse
+    those bytes exactly once, against the artefact's own shape (FR-008).
+
+    Typed plain ``msgspec.Raw``, not ``Raw | None``: measured against
+    ``msgspec`` 0.20.0, a ``Raw``-bearing union accepts a JSON ``null`` for
+    the field but rejects any other value with ``ValidationError``, which
+    would refuse every caller who actually sends ``state``. The default is
+    an empty ``Raw`` — indistinguishable, once decoded, from an explicit
+    JSON ``null`` — and :func:`_decode_state` treats both as "no state
+    given", which is what every caller of this field means by either.
     """
 
     prompt: str
     conversation_id: (
         Annotated[str, msgspec.Meta(min_length=1, max_length=CONVERSATION_ID_MAX_LENGTH)] | None
     ) = None
+    state: msgspec.Raw = msgspec.field(default_factory=msgspec.Raw)
 
 
 _REQUEST_DECODER = msgspec.json.Decoder(_AgentRunRequest)
@@ -126,14 +147,90 @@ def _run_error_response(error: AgentRunError) -> Response:
     )
 
 
-async def _read_request(request: Request, *, max_prompt_bytes: int) -> _AgentRunRequest:
-    """Read and validate the body of one invocation.
+_ABSENT_STATE: Final[frozenset[bytes]] = frozenset({b"", b"null"})
+"""Raw bytes meaning "the caller sent no ``state``": the field's own default
+(an empty ``Raw``) and an explicit JSON ``null`` decode to these, and
+:class:`_AgentRunRequest` cannot tell them apart (see its own docstring)."""
+
+
+def _decode_state(
+    name: str, state_shape: StateShape | None, raw: msgspec.Raw
+) -> Mapping[str, Any] | None:
+    """Decode one request's ``state`` bytes exactly once, against its declared shape (FR-008).
+
+    Args:
+        name: Agent this request targets, named in a raised error.
+        state_shape: The agent's declared state shape
+            (:meth:`~loom.ai.runtime.AgentRuntime.state_shape`), or ``None``
+            when it declares neither ``deps_type`` nor ``deps_schema``.
+        raw: Undecoded ``state`` bytes from the request body; :data:`_ABSENT_STATE`
+            when the caller sent none.
+
+    Returns:
+        ``None`` when *raw* is absent. Otherwise the decoded value converted
+        to builtins (:func:`msgspec.to_builtins`) — the normalised mapping
+        the bundle carries (FR-009) — decoded against *state_shape*'s own
+        decoder when it has one, or as a plain JSON value under the open
+        ``deps_type: dict`` form.
 
     Raises:
-        TransportError: 413 when the body or the prompt exceeds its cap, 422
-            when the body is not the documented ``{"prompt": ...}`` shape.
+        TransportError: 422 ``STATE_NOT_DECLARED`` when *raw* is given and
+            *state_shape* is ``None``; 422 ``INVALID_STATE`` when *raw* does
+            not fit the declared shape.
     """
-    body = await read_body_capped(request, max_bytes=max_prompt_bytes + BODY_OVERHEAD_BYTES)
+    if bytes(raw) in _ABSENT_STATE:
+        return None
+    if state_shape is None:
+        raise TransportError(
+            422,
+            "STATE_NOT_DECLARED",
+            f"agent {name!r} declares no state (no 'deps_type' or 'deps_schema'); "
+            "remove 'state' from the request or declare a state shape on the artefact",
+        )
+    body = bytes(raw)
+    try:
+        decoded = (
+            state_shape.decoder.decode(body)
+            if state_shape.decoder is not None
+            else msgspec.json.decode(body)
+        )
+    except msgspec.DecodeError as exc:
+        raise TransportError(422, "INVALID_STATE", str(exc)) from exc
+    return cast(Mapping[str, Any], msgspec.to_builtins(decoded))
+
+
+async def _read_request(
+    request: Request,
+    *,
+    name: str,
+    max_prompt_bytes: int,
+    max_state_bytes: int,
+    state_shape: StateShape | None,
+) -> tuple[_AgentRunRequest, Mapping[str, Any] | None]:
+    """Read and validate the body of one invocation, decoding ``state`` once.
+
+    Args:
+        request: Incoming HTTP request.
+        name: Agent this request targets.
+        max_prompt_bytes: Cap on the ``prompt`` field alone.
+        max_state_bytes: Cap on the raw ``state`` bytes alone, measured
+            before decode — cheap, and independent of the prompt's own cap
+            (FR-015).
+        state_shape: The agent's declared state shape, read once by the
+            caller through :meth:`~loom.ai.runtime.AgentRuntime.state_shape`.
+
+    Returns:
+        The decoded request, and its ``state`` normalised against
+        *state_shape* — the mapping the dependency bundle carries.
+
+    Raises:
+        TransportError: 413 when the body, the prompt or ``state`` exceeds
+            its own cap; 422 when the body is not the documented shape, or
+            ``state`` does not fit the artefact's declared shape.
+    """
+    body = await read_body_capped(
+        request, max_bytes=max_prompt_bytes + max_state_bytes + BODY_OVERHEAD_BYTES
+    )
     try:
         parsed = _REQUEST_DECODER.decode(body)
     except msgspec.DecodeError as exc:
@@ -144,7 +241,14 @@ async def _read_request(request: Request, *, max_prompt_bytes: int) -> _AgentRun
             "PROMPT_TOO_LARGE",
             f"Request body exceeds the maximum accepted size ({max_prompt_bytes} bytes)",
         )
-    return parsed
+    if len(bytes(parsed.state)) > max_state_bytes:
+        raise TransportError(
+            413,
+            "STATE_TOO_LARGE",
+            f"'state' exceeds the maximum accepted size ({max_state_bytes} bytes)",
+        )
+    state = _decode_state(name, state_shape, parsed.state)
+    return parsed, state
 
 
 def _require_agent(
@@ -166,6 +270,7 @@ async def _annotated_run(
     name: str,
     body: _AgentRunRequest,
     identity: Identity,
+    state: Mapping[str, Any] | None,
 ) -> AgentResult:
     """Run one agent, publishing what it spent however it ends.
 
@@ -180,16 +285,22 @@ async def _annotated_run(
         name: Agent to run.
         body: Decoded request.
         identity: Verified caller.
+        state: This run's state, already normalised by :func:`_decode_state`.
 
     Returns:
-        The completed run's result.
+        The completed run's result. Never echoes ``state`` back: it carries
+        only what the artefact's own run produced.
 
     Raises:
         AgentRunError: Whatever the run failed with, unchanged.
     """
     try:
         result = await runtime.run(
-            name, body.prompt, identity=identity, conversation_id=body.conversation_id
+            name,
+            body.prompt,
+            identity=identity,
+            conversation_id=body.conversation_id,
+            state=state,
         )
     except AgentRunError as exc:
         annotate_usage(span, exc.usage)
@@ -212,7 +323,13 @@ def _make_run_handler(
         try:
             identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
-            body = await _read_request(request, max_prompt_bytes=config.max_prompt_bytes)
+            body, state = await _read_request(
+                request,
+                name=name,
+                max_prompt_bytes=config.max_prompt_bytes,
+                max_state_bytes=config.max_state_bytes,
+                state_shape=runtime.state_shape(name),
+            )
             span = observability_runtime.open_span(
                 Scope.AGENT,
                 "agent_run",
@@ -228,7 +345,7 @@ def _make_run_handler(
             # the run's usage is only known once the run is over, and the
             # closing attributes are where an operator reads what it spent.
             with always_closed(span), span.as_current():
-                result = await _annotated_run(runtime, span, name, body, identity)
+                result = await _annotated_run(runtime, span, name, body, identity, state)
             return AgentJSONResponse(content=result_payload(result))
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
@@ -270,6 +387,7 @@ def _stream_frames(
     name: str,
     body: _AgentRunRequest,
     identity: Identity,
+    state: Mapping[str, Any] | None,
     *,
     path: str,
     observability_runtime: ObservabilityRuntime,
@@ -303,7 +421,11 @@ def _stream_frames(
         with always_closed(span):
             try:
                 async with runtime.run_stream(
-                    name, body.prompt, identity=identity, conversation_id=body.conversation_id
+                    name,
+                    body.prompt,
+                    identity=identity,
+                    conversation_id=body.conversation_id,
+                    state=state,
                 ) as events:
                     async for frame in stream_sse(
                         _annotating_usage(events, span), heartbeat_ms=HEARTBEAT_MS
@@ -334,7 +456,13 @@ def _make_stream_handler(
         try:
             identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
-            body = await _read_request(request, max_prompt_bytes=config.max_prompt_bytes)
+            body, state = await _read_request(
+                request,
+                name=name,
+                max_prompt_bytes=config.max_prompt_bytes,
+                max_state_bytes=config.max_state_bytes,
+                state_shape=runtime.state_shape(name),
+            )
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
         return StreamingResponse(
@@ -343,6 +471,7 @@ def _make_stream_handler(
                 name,
                 body,
                 identity,
+                state,
                 path=path,
                 observability_runtime=observability_runtime,
             ),

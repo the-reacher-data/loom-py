@@ -357,7 +357,14 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             start-up, and no client becomes lazy — one that never opened is
             not reconnected later.
         max_concurrent_runs: Per-worker run limit (FR-033a).
-        max_prompt_bytes: Enforced while reading the request body.
+        max_prompt_bytes: Enforced while reading the request body, against
+            the ``prompt`` field alone (FR-015).
+        max_state_bytes: Enforced while reading the request body, against the
+            raw ``state`` bytes alone and before they are decoded — measuring
+            the wire size is what keeps the check cheap. Joins
+            ``max_prompt_bytes`` in the body's own cap (FR-015); a caller's
+            ``state`` over this limit is refused with a ``413`` naming
+            ``state``, independently of the prompt's own cap.
         health_cache_ttl_ms: Refresh period of the health probe.
         max_agent_depth: Longest chain of nested agent runs one task may
             open, counting the top-level run itself. A use case reaches a
@@ -392,6 +399,7 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     remote_clients: str = "required"
     max_concurrent_runs: int = 8
     max_prompt_bytes: int = 65536
+    max_state_bytes: int = 65536
     health_cache_ttl_ms: int = 5000
     max_agent_depth: int = 1
 

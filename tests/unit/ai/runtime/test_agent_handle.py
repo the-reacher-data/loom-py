@@ -113,8 +113,9 @@ class _OneShotEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> object:
-        del prompt, conversation
+        del prompt, conversation, state
         self.run_stream_calls += 1
         self.identities.append(identity)
 
@@ -128,9 +129,14 @@ class _OneShotEngine:
         return _stream()
 
     async def run(
-        self, prompt: str, *, identity: Identity, conversation: Conversation | None = None
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AgentResult:
-        del prompt, identity, conversation
+        del prompt, identity, conversation, state
         return AgentResult(output={"ok": True}, usage=DEFAULT_USAGE)
 
     async def health(self) -> HealthStatus:
@@ -334,8 +340,9 @@ class _ShapedEngine(_OneShotEngine):
         identity: Identity,
         conversation: Conversation | None = None,
         output_type: type[Any],
+        state: object | None = None,
     ) -> object:
-        del prompt
+        del prompt, state
         self.shaped_calls.append(output_type)
         self.identities.append(identity)
 

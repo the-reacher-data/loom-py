@@ -29,7 +29,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
-from loom.ai.abc import AgentEngine
+from loom.ai.abc import AgentEngine, DepsFactory, StateShape
 from loom.ai.compiler._plan import AgentPlan, CompiledInstruction, CompiledOutput
 from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._output import compile_output
@@ -56,7 +56,12 @@ STRICT_SCHEMA: Mapping[str, Any] = {
 class NullDeps:
     """Dependency factory the contract plans need: no service, no state."""
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the empty dependency bundle.
 
         Args:
@@ -89,6 +94,7 @@ def make_plan(
     retries: int = 0,
     policies: PolicySpec | None = None,
     inference: InferenceTarget | None = None,
+    state: StateShape | None = None,
 ) -> AgentPlan:
     """Build a compiled plan for a pure-language agent.
 
@@ -98,12 +104,14 @@ def make_plan(
     about what the *build-time* probe (``_limits.py:warn_if_model_not_priceable``)
     logs for a given model or provider name — it no longer refuses to boot,
     so the override is not load-bearing for building the engine, only for
-    inspecting the notice.
+    inspecting the notice. ``state`` declares the artefact's state shape;
+    absent, this plan declares none, matching ``NullDeps``' own "no state".
     """
     return AgentPlan(
         name="contract",
         description="contract agent",
         instructions=compiled_instructions("answer the question"),
+        state=state,
         spec_version=1,
         inference=inference or InferenceTarget(provider="openai", model="gpt-5.2"),
         output=compiled_output(schema),
@@ -318,10 +326,20 @@ class ScriptedUsageModel(Model):
         )
 
 
-def build_engine(plan: AgentPlan, model: Model) -> AgentEngine:
-    """Build the real adapter over a scripted model."""
+def build_engine(plan: AgentPlan, model: Model, *, deps: DepsFactory | None = None) -> AgentEngine:
+    """Build the real adapter over a scripted model.
+
+    Args:
+        plan: Compiled plan the engine serves.
+        model: Scripted model the engine talks to.
+        deps: Dependency factory the engine builds its bundle from; defaults
+            to :class:`NullDeps` — no service, no state — matching every
+            caller that does not care what the bundle carries.
+    """
     provider = PydanticAIEngineProvider(model_resolver=lambda target: model)
-    return provider.create_engine(plan, deps=NullDeps(), container=LoomContainer())
+    return provider.create_engine(
+        plan, deps=deps if deps is not None else NullDeps(), container=LoomContainer()
+    )
 
 
 def encode(payload: Mapping[str, Any]) -> bytes:

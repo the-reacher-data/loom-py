@@ -120,6 +120,7 @@ class FakeAgentEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AgentResult:
         """Replay the script to completion.
 
@@ -127,6 +128,7 @@ class FakeAgentEngine:
             prompt: Caller prompt; ignored, the script is fixed.
             identity: Verified caller; ignored, the script is fixed.
             conversation: Conversation to continue; ignored, the script is fixed.
+            state: This run's state; ignored, the script is fixed.
 
         Returns:
             The terminal ``FinalEvent``'s output, usage and messages.
@@ -134,7 +136,7 @@ class FakeAgentEngine:
         Raises:
             FakeAgentRunError: If the script ends in an ``ErrorEvent``.
         """
-        del prompt, identity, conversation
+        del prompt, identity, conversation, state
         if isinstance(self._terminal, ErrorEvent):
             raise FakeAgentRunError(self._terminal.code, self._terminal.message)
         return AgentResult(
@@ -149,6 +151,7 @@ class FakeAgentEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Replay the script as an event stream.
 
@@ -161,11 +164,12 @@ class FakeAgentEngine:
             prompt: Caller prompt; ignored, the script is fixed.
             identity: Verified caller; ignored, the script is fixed.
             conversation: Conversation to continue; ignored, the script is fixed.
+            state: This run's state; ignored, the script is fixed.
 
         Returns:
             An async context manager yielding the scripted event stream.
         """
-        del prompt, identity, conversation
+        del prompt, identity, conversation, state
         return self._stream()
 
     async def health(self) -> HealthStatus:

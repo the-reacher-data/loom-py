@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import msgspec
 
 from loom.ai._filters import select_names
-from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, McpHandle, SqlGrantHandle
+from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, DepsFactory, McpHandle, SqlGrantHandle
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
+from loom.core.di import LoomContainer
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.plan import ExecutionPlan
@@ -30,6 +31,7 @@ class RecordedRun:
     prompt: str
     expect: type[Any] | None
     conversation_id: str | None
+    state: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,7 @@ class RecordedRunText:
 
     prompt: str
     conversation_id: str | None
+    state: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +287,55 @@ class SqlGrantHandleDouble:
         return self._rows
 
 
+@dataclass(frozen=True, slots=True)
+class DepsFactoryBundleDouble:
+    """Dependency bundle :class:`DepsFactoryDouble` builds for one invocation.
+
+    Args:
+        identity: Verified caller of the invocation.
+        container: Application container holding the singleton services.
+        state: The invocation's state, a mapping normalised against the
+            artefact's declared shape, or ``None`` for an artefact that
+            declares no state or a call that supplies none.
+    """
+
+    identity: Identity
+    container: LoomContainer
+    state: Mapping[str, Any] | None = None
+
+
+class DepsFactoryDouble:
+    """In-memory double for :class:`~loom.ai.abc.DepsFactory`.
+
+    Builds a :class:`DepsFactoryBundleDouble` exposing ``identity``,
+    ``container`` and ``state`` in the same shape the composition root's own
+    factory builds, so a test exercising a capability call directly against
+    an engine sees the caller and the container exactly where a guard reads
+    them structurally.
+    """
+
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
+        """Return the dependency bundle for one invocation.
+
+        Args:
+            identity: Verified caller of this invocation.
+            container: Application container holding the singleton services.
+            state: The invocation's state, a mapping normalised against the
+                artefact's declared shape, or ``None`` for an artefact that
+                declares no state or a call that supplies none.
+
+        Returns:
+            The bundle a capability call reads ``identity``, ``container``
+            and ``state`` off of.
+        """
+        return DepsFactoryBundleDouble(identity=identity, container=container, state=state)
+
+
 class AgentHandleDouble:
     """In-memory double for :class:`~loom.ai.abc.AgentHandle`.
 
@@ -369,6 +421,7 @@ class AgentHandleDouble:
         *,
         expect: type[Any] | None = None,
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[Any]:
         """Record the call and return the answer scripted through :meth:`on_run`.
 
@@ -376,7 +429,7 @@ class AgentHandleDouble:
             AssertionError: If no answer was scheduled through :meth:`on_run`.
         """
         self.run_calls.append(
-            RecordedRun(prompt=prompt, expect=expect, conversation_id=conversation_id)
+            RecordedRun(prompt=prompt, expect=expect, conversation_id=conversation_id, state=state)
         )
         return _next_scripted(
             self._run_answers,
@@ -389,13 +442,16 @@ class AgentHandleDouble:
         prompt: str,
         *,
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[str]:
         """Record the call and return the answer scripted through :meth:`on_run_text`.
 
         Raises:
             AssertionError: If no answer was scheduled through :meth:`on_run_text`.
         """
-        self.run_text_calls.append(RecordedRunText(prompt=prompt, conversation_id=conversation_id))
+        self.run_text_calls.append(
+            RecordedRunText(prompt=prompt, conversation_id=conversation_id, state=state)
+        )
         return _next_scripted(
             self._run_text_answers,
             f"agent {self._name!r} double received run_text(...) but no answer was scheduled; "
@@ -456,6 +512,9 @@ if TYPE_CHECKING:  # the doubles stand in for the published protocols
         return double
 
     def _sql_contract(double: SqlGrantHandleDouble) -> SqlGrantHandle:
+        return double
+
+    def _deps_contract(double: DepsFactoryDouble) -> DepsFactory:
         return double
 
     def _agent_contract(double: AgentHandleDouble) -> AgentHandle[Any]:

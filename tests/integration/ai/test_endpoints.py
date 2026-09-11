@@ -29,7 +29,14 @@ from fastapi import FastAPI
 
 from loom.ai.a2a.card import card_path
 from loom.ai.a2a.server import bind_a2a_endpoints
-from loom.ai.abc import AgentEvent, DepsFactory, ErrorEvent, FinalEvent, TextDeltaEvent
+from loom.ai.abc import (
+    AgentEvent,
+    DepsFactory,
+    ErrorEvent,
+    FinalEvent,
+    StateShape,
+    TextDeltaEvent,
+)
 from loom.ai.compiler._plan import AgentPlan
 from loom.ai.config import A2AConfig, AgentEndpointConfig
 from loom.ai.errors import (
@@ -57,6 +64,7 @@ from tests.integration.ai.conftest import (
     RecordingDepsFactory,
     RecordingMcpSession,
     RecordingObserver,
+    RecordingScriptedEngine,
     ScriptedEngine,
     StubDepsFactory,
     StubMcpClient,
@@ -122,6 +130,7 @@ async def _serving(
     identity: Identity | None = None,
     authenticator: object | None = None,
     max_prompt_bytes: int = 65536,
+    max_state_bytes: int = 65536,
     health_cache_ttl_ms: int = 20,
     max_concurrent_runs: int = 8,
     observability_runtime: ObservabilityRuntime | None = None,
@@ -131,6 +140,7 @@ async def _serving(
         endpoints=dict(endpoints if endpoints is not None else {_AGENT: make_endpoint()}),
         mcp_servers=make_mcp_servers(_MCP_SERVER),
         max_prompt_bytes=max_prompt_bytes,
+        max_state_bytes=max_state_bytes,
         health_cache_ttl_ms=health_cache_ttl_ms,
         max_concurrent_runs=max_concurrent_runs,
     )
@@ -943,6 +953,133 @@ class TestBodyCap:
             )
 
             assert status == 413
+
+
+class _StateWithDefault(msgspec.Struct, forbid_unknown_fields=True):
+    """A state shape with one required field and one declared default."""
+
+    marca: str
+    km: int = 0
+
+
+_SCHEMA_STATE = StateShape(
+    schema={"type": "object"}, decoder=msgspec.json.Decoder(_StateWithDefault)
+)
+_OPEN_STATE = StateShape(schema=None, decoder=None)
+
+
+class TestState:
+    """``state``'s single decode, its own cap and the normalised mapping (T304)."""
+
+    async def test_omitted_defaults_reach_the_engine_normalised_and_never_echo_back(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        engine = RecordingScriptedEngine()
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=[make_plan(_AGENT, state=_SCHEMA_STATE)],
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run",
+                json={"prompt": "assess", "state": {"marca": "civic"}},
+            )
+
+        assert response.status_code == 200
+        assert "state" not in response.json()
+        assert engine.states == [{"marca": "civic", "km": 0}]
+
+    async def test_state_against_no_declared_shape_is_422_naming_the_field(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        async with _serving(
+            deps=deps, container=container, identity=identity, plans=[make_plan(_AGENT)]
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run",
+                json={"prompt": "assess", "state": {"marca": "civic"}},
+            )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "STATE_NOT_DECLARED"
+
+    async def test_a_state_missing_a_required_field_is_422(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=[make_plan(_AGENT, state=_SCHEMA_STATE)],
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "assess", "state": {}}
+            )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "INVALID_STATE"
+
+    async def test_a_large_state_is_413_naming_state_with_a_legal_prompt(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        # Small enough to stay under the *total* body cap
+        # (max_prompt_bytes + max_state_bytes + BODY_OVERHEAD_BYTES), so the
+        # generic body-size guard never fires first — only 'state''s own cap.
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=[make_plan(_AGENT, state=_OPEN_STATE)],
+            max_state_bytes=32,
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run",
+                json={"prompt": "assess", "state": {"marca": "x" * 5_000}},
+            )
+
+        assert response.status_code == 413
+        assert response.json()["code"] == "STATE_TOO_LARGE"
+
+    async def test_a_large_prompt_still_gives_its_own_413_with_a_legal_state(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """``max_prompt_bytes`` keeps measuring the prompt alone (FR-015)."""
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=[make_plan(_AGENT, state=_OPEN_STATE)],
+            max_prompt_bytes=32,
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run",
+                json={"prompt": "x" * 200_000, "state": {"marca": "civic"}},
+            )
+
+        assert response.status_code == 413
+        assert response.json()["code"] == "PROMPT_TOO_LARGE"
+
+    async def test_stream_resolves_state_the_same_way_as_run(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        engine = RecordingScriptedEngine()
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=[make_plan(_AGENT, state=_SCHEMA_STATE)],
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/stream",
+                json={"prompt": "assess", "state": {"marca": "civic"}},
+            )
+
+        assert response.status_code == 200
+        assert "state" not in _final_frame(response.text)
+        assert engine.states == [{"marca": "civic", "km": 0}]
 
 
 class TestErrorMapping:
