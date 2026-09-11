@@ -75,13 +75,19 @@ def backfill_flow(
     Returns:
         A ``@prefect.flow``-decorated callable with ``__loom_etl_meta__``
         attached for the deployer. It accepts ``start_from`` to resume the
-        backfill from a given chunk (earlier chunks are skipped), plus ``env``
+        backfill from a given chunk (earlier chunks are skipped). Its
+        published annotation is ``datetime | None``, which is what the
+        Prefect form renders as a date picker; because Prefect does not
+        validate run parameters, the body also accepts a ``date``, an ISO
+        string and a placeholder. Plus ``env``
         for deploy parity with :func:`~loom.prefect.etl_flow` (logged, not
         used for routing).
 
     Raises:
         TypeError: When a process list is not ``list[str]``.
-        ValueError: When a process/step name does not exist in *pipeline*.
+        ValueError: When a process/step name does not exist in *pipeline*, and
+            at run time when ``start_from`` resolves to neither a datetime nor
+            a date.
     """
     settings = load_flow_settings(config_path)
 

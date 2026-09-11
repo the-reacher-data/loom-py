@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -320,3 +320,138 @@ def test_factory_accepts_step_names(tmp_path: Path) -> None:
     # include= accepts step names too, so the factory validation must as well.
     flow = _build_flow(tmp_path, per_chunk_processes=["_StageStep"])
     assert flow.name == "backfill"
+
+
+def test_start_from_accepts_a_naive_iso_string(tmp_path: Path, runner: MagicMock) -> None:
+    # Prefect submits run parameters unvalidated, so start_from arrives as the
+    # operator typed it.
+    flow = _build_flow(tmp_path)
+    flow.fn(
+        updated_at_from=datetime(2024, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2024, 1, 5, tzinfo=UTC),
+        start_from="2024-01-03T09:00:00",
+    )
+    assert [w[0] for w in _windows(runner)] == [
+        datetime(2024, 1, 3, tzinfo=UTC),
+        datetime(2024, 1, 4, tzinfo=UTC),
+    ]
+
+
+def test_start_from_resumes_at_the_chunk_of_the_instant_not_of_the_local_date(
+    tmp_path: Path, runner: MagicMock
+) -> None:
+    # 00:30 at +02:00 is 22:30 UTC of the previous day: the resume chunk is the
+    # 2nd, not the 3rd.
+    flow = _build_flow(tmp_path)
+    flow.fn(
+        updated_at_from=datetime(2024, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2024, 1, 5, tzinfo=UTC),
+        start_from="2024-01-03T00:30:00+02:00",
+    )
+    assert [w[0] for w in _windows(runner)] == [
+        datetime(2024, 1, 2, tzinfo=UTC),
+        datetime(2024, 1, 3, tzinfo=UTC),
+        datetime(2024, 1, 4, tzinfo=UTC),
+    ]
+
+
+def test_start_from_resolves_a_placeholder_in_the_past(tmp_path: Path, runner: MagicMock) -> None:
+    # Clock-independent: a placeholder far enough in the past skips no chunk,
+    # and an unresolved one would not be a datetime at all.
+    flow = _build_flow(tmp_path)
+    flow.fn(
+        updated_at_from=datetime(2024, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2024, 1, 3, tzinfo=UTC),
+        start_from="${now-100000d}",
+    )
+    assert [w[0] for w in _windows(runner)] == [
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 1, 2, tzinfo=UTC),
+    ]
+
+
+def test_start_from_resolves_a_placeholder_in_the_future(tmp_path: Path, runner: MagicMock) -> None:
+    flow = _build_flow(tmp_path)
+    flow.fn(
+        updated_at_from=datetime(2024, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2024, 1, 3, tzinfo=UTC),
+        start_from="${now+100000d}",
+    )
+    assert _windows(runner) == []
+
+
+def test_start_from_rejects_a_value_that_is_not_a_datetime(
+    tmp_path: Path, runner: MagicMock
+) -> None:
+    flow = _build_flow(tmp_path)
+    with pytest.raises(ValueError, match="start_from"):
+        flow.fn(
+            updated_at_from=datetime(2024, 1, 1, tzinfo=UTC),
+            updated_at_to=datetime(2024, 1, 3, tzinfo=UTC),
+            start_from="yesterday",
+        )
+
+
+def test_start_from_rejects_an_invalid_placeholder_naming_the_parameter(
+    tmp_path: Path, runner: MagicMock
+) -> None:
+    flow = _build_flow(tmp_path)
+    with pytest.raises(ValueError, match="start_from: invalid placeholder"):
+        flow.fn(
+            updated_at_from=datetime(2024, 1, 1, tzinfo=UTC),
+            updated_at_to=datetime(2024, 1, 3, tzinfo=UTC),
+            start_from="${nope}",
+        )
+
+
+def test_start_from_as_a_date_resumes_at_the_first_hour_of_that_day(
+    tmp_path: Path, runner: MagicMock
+) -> None:
+    flow = _build_flow(tmp_path, chunk="hour")
+    flow.fn(
+        updated_at_from=datetime(2024, 1, 3, tzinfo=UTC),
+        updated_at_to=datetime(2024, 1, 3, 3, tzinfo=UTC),
+        start_from=date(2024, 1, 3),
+    )
+    assert [w[0] for w in _windows(runner)] == [
+        datetime(2024, 1, 3, 0, tzinfo=UTC),
+        datetime(2024, 1, 3, 1, tzinfo=UTC),
+        datetime(2024, 1, 3, 2, tzinfo=UTC),
+    ]
+
+
+def test_start_from_resolves_a_today_placeholder(tmp_path: Path, runner: MagicMock) -> None:
+    flow = _build_flow(tmp_path)
+    flow.fn(
+        updated_at_from=datetime(2024, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2024, 1, 3, tzinfo=UTC),
+        start_from="${today+100000d}",
+    )
+    assert _windows(runner) == []
+
+
+def test_start_from_floors_a_year_chunk_after_converting_to_utc(
+    tmp_path: Path, runner: MagicMock
+) -> None:
+    # 2024-01-01T00:30+02:00 is 2023-12-31T22:30 UTC: the resume year is 2023.
+    flow = _build_flow(tmp_path, chunk="year")
+    flow.fn(
+        updated_at_from=datetime(2023, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2025, 1, 1, tzinfo=UTC),
+        start_from="2024-01-01T00:30:00+02:00",
+    )
+    assert [w[0] for w in _windows(runner)] == [
+        datetime(2023, 1, 1, tzinfo=UTC),
+        datetime(2024, 1, 1, tzinfo=UTC),
+    ]
+
+
+def test_a_today_placeholder_reaches_the_window_fields(tmp_path: Path, runner: MagicMock) -> None:
+    # Clock-independent: yesterday to today is exactly one day chunk.
+    flow = _build_flow(tmp_path)
+    flow.fn(updated_at_from="${today-1d}", updated_at_to="${today}")
+    windows = _windows(runner)
+    assert len(windows) == 1
+    start, end = windows[0]
+    assert start.tzinfo is UTC
+    assert end - start == timedelta(days=1)

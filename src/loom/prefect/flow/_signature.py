@@ -5,17 +5,16 @@ For loom ETLs the parameter set is described by the pipeline's
 ``ParamsT`` ``msgspec.Struct``, so the factory synthesises an
 ``inspect.Signature`` that mirrors its fields.
 
-This module also handles the naive→UTC datetime coercion needed when
-Prefect (or a CLI/UI user) submits a parameter as a naive ISO string
-that has to be compared against UTC-aware Polars columns inside the
-runner.
+This module also handles the datetime coercion needed when Prefect (or a
+CLI/UI user) submits a parameter as an ISO string that has to be compared
+against UTC-aware Polars columns inside the runner.
 """
 
 from __future__ import annotations
 
 import inspect
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -89,20 +88,24 @@ def is_datetime_annotation(annotation: Any) -> bool:
 
 
 def coerce_to_utc(value: Any) -> Any:
-    """Promote a naive ``datetime`` (or naive ISO string) to UTC-aware.
+    """Promote a ``datetime``, a ``date`` or an ISO string to a tz-aware ``datetime``.
 
-    Returns *value* unchanged when it is already tz-aware, when it is
-    ``None``, or when it is a string that cannot be parsed as a naive
-    ISO datetime.
+    A naive value is read as UTC and a ``date`` as its midnight there; an
+    offset-bearing value keeps its offset, and therefore its instant.
+    Returns *value* unchanged when it is already a tz-aware ``datetime``,
+    when it is a string that does not parse as an ISO datetime, and when it
+    is any other value.
     """
     if isinstance(value, datetime):
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min, tzinfo=UTC)
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value)
         except ValueError:
             return value
-        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else value
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
     return value
 
 
@@ -110,15 +113,15 @@ def normalize_datetime_fields(
     resolved: dict[str, Any],
     params_type: type[msgspec.Struct],
 ) -> dict[str, Any]:
-    """Promote naive datetime values to UTC-aware where the schema expects it.
+    """Coerce the fields *params_type* declares as ``datetime`` into tz-aware values.
 
     Args:
         resolved: Parameter mapping with placeholders already resolved.
         params_type: ``msgspec.Struct`` describing the expected field types.
 
     Returns:
-        A new dict with naive datetime values promoted to UTC-aware; all
-        other values pass through unchanged.
+        A new dict whose datetime-typed entries went through
+        :func:`coerce_to_utc`; every other value passes through unchanged.
     """
     hints = get_type_hints(params_type)
     datetime_fields = {

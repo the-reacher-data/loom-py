@@ -23,7 +23,7 @@ from loom.prefect.flow._runtime import (
     load_or_init_manifest,
     maybe_delete_manifest,
 )
-from loom.prefect.flow._signature import normalize_datetime_fields
+from loom.prefect.flow._signature import coerce_to_utc, normalize_datetime_fields
 from loom.prefect.manifest import ManifestStore
 from loom.prefect.observer._logging_bridge import install_log_bridge, uninstall_log_bridge
 
@@ -119,7 +119,7 @@ def build_backfill_body(
 
     def _flow_body(**kwargs: Any) -> None:
         env = kwargs.pop("env", "prod")
-        start_from = kwargs.pop("start_from", None)
+        start_from = _resolve_start_from(kwargs.pop("start_from", None))
         resolved = {k: resolve_placeholder(v) for k, v in kwargs.items()}
         resolved = normalize_datetime_fields(resolved, params_type)
         params = msgspec.convert(resolved, type=params_type)
@@ -231,6 +231,35 @@ def _chunk_windows(
         windows.append((cursor, nxt))
         cursor = nxt
     return windows
+
+
+def _resolve_start_from(value: Any) -> datetime | None:
+    """Coerce a submitted ``start_from`` into a tz-aware datetime.
+
+    Args:
+        value: ``None``, a ``datetime``, a ``date``, an ISO string, or a
+            placeholder.
+
+    Returns:
+        The resume instant, or ``None`` when none was given.
+
+    Raises:
+        ValueError: When *value* resolves to something other than a datetime
+            or a date.
+    """
+    if value is None:
+        return None
+    try:
+        resolved = resolve_placeholder(value)
+    except ValueError as exc:
+        raise ValueError(f"start_from: {exc}") from exc
+    coerced = coerce_to_utc(resolved)
+    if not isinstance(coerced, datetime):
+        raise ValueError(
+            "start_from: expected a datetime, a date, an ISO string or a placeholder, "
+            f"got {value!r}"
+        )
+    return coerced
 
 
 def _floor_chunk(value: datetime, chunk: BackfillChunk) -> datetime:
