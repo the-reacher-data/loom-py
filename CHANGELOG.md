@@ -4,6 +4,46 @@
 
 ### ai
 
+- **ai:** `instructions` and `description` no longer travel through
+  `AgentSpec.instructions`/`AgentSpec.description`. Those fields compile any
+  string containing `{{` into a Handlebars template and render it against the
+  agent's whole dependency bundle — the caller's identity, the application
+  container and the bound invoker included. An artifact whose prose happened
+  to contain `{{` used to fail every request once the templating extra was
+  installed (`PydanticSchemaGenerationError` from the engine's own render
+  path), or, for `description`, could render a real leak — the caller's
+  subject on the `gen_ai.agent.description` span attribute. Both are closed
+  by the same change: `instructions` and `description` reach `Agent.from_spec`
+  as keywords instead, and a literal `{{` in either one now reaches the model
+  and the span **verbatim**, exactly as authored. This is the one place an
+  operator can observe a change in the text a model receives — see
+  `docs/ai/artifacts.md#instructions--a-literal-string-or-named-blocks`.
+- **ai:** `instructions` accepts a non-empty sequence of named blocks, each
+  literal or explicitly templated (`template: handlebars`), alongside the
+  string form it already accepted. A block's `{{` is never inferred as a
+  template: `template:` opts in explicitly, or the text reaches the model
+  unchanged. See `docs/ai/artifacts.md#instructions--a-literal-string-or-named-blocks`.
+- **ai:** an agent may declare a state shape a caller supplies per invocation
+  (`deps_type` or `deps_schema`), rendered into templated instruction blocks.
+  New request field `state` on `/run` and `/stream`; new configuration field
+  `ai.max_state_bytes`. `DepsFactory.build` (`loom.ai.abc`) gains a third,
+  optional parameter, `state: Mapping[str, Any] | None = None`, passed only
+  when an artifact declares a shape — any third-party implementation that
+  never declares one keeps working unchanged, so the break is theoretical
+  rather than effective; no implementors outside this tree's own production
+  implementer (`loom.rest.fastapi.auto._AgentDepsFactory`) and its test
+  doubles (`loom.testing.runner`) are known. Filed as a minor per OD-2. This
+  parameter addition is itself a signature change to a published Protocol, so
+  it is recorded here alongside the release-pipeline gap tracked in #222: the
+  pipeline computes the version bump from the branch prefix, not from a
+  commit's `!` marker, so a real contract break can ship as a minor without
+  the marker forcing a major — as it did for v1.17.0. See
+  `docs/ai/artifacts.md#the-artifacts-state--deps_type-and-deps_schema`.
+- **ai:** a stateful artifact (`deps_type` or `deps_schema` declared) cannot
+  be published over A2A; a deployment listing one in `ai.a2a.expose` fails
+  start-up naming both the artifact and the conflict. See
+  `docs/ai/artifacts.md#the-artifacts-state--deps_type-and-deps_schema`.
+
 - **ai:** the MCP handshake deadline is now `ai.startup_timeout_ms` instead of
   the engine's own undocumented five seconds. Two consequences ship silently
   unless you read this: a server whose `initialize` takes between five

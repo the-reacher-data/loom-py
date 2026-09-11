@@ -110,7 +110,9 @@ metadata:
 | `spec_version` | yes | — | Always `1`. Read first, before any other field. |
 | `name` | yes | — | `^[a-z][a-z0-9_-]{0,62}$`. Unique in the application. **Published** in the A2A card. |
 | `description` | yes | — | Non-empty. **Published** in the A2A card. |
-| `instructions` | yes | — | Non-empty. **Never published.** Never a place to encode authorization. |
+| `instructions` | yes | — | A literal string, or a non-empty sequence of named blocks. **Never published.** Never a place to encode authorization. See below. |
+| `deps_type` | no | — | Declares the agent's state shape: `dict`, or a `module:Symbol` reference. Sugar over `deps_schema`. Mutually exclusive with `deps_schema`. See below. |
+| `deps_schema` | no | — | Declares the agent's state shape directly, as a JSON Schema object. Mutually exclusive with `deps_type`. See below. |
 | `model_role` | no | `default` | `^[a-z][a-z0-9_-]{0,31}$`. A logical role, never a vendor name or a model id. |
 | `output` | yes | — | The declared answer shape. See below. |
 | `on_output` | no | — | Use case executed once per completed run with the validated output; see below. |
@@ -127,6 +129,114 @@ its **capability grants** and the **caller's identity** — never what its promp
 says. A prompt that says "only read the orders table" is a hint to a model that
 may ignore it; a `sql` grant on a read-only connection is enforced by the
 database.
+
+### `instructions` — a literal string, or named blocks
+
+The short form is one literal block with no name:
+
+```yaml
+instructions: "Investigate the reported incident and propose the next step."
+```
+
+The long form is an ordered, non-empty sequence of blocks, each with its own
+`text`, an optional `name` and an optional `template`:
+
+```yaml
+instructions:
+  - name: tone
+    text: "You are the appraiser. Never invent a figure."
+  - name: context
+    text: "Appraising a {{marca}}, {{anios}} years old, {{km}} km."
+    template: handlebars
+```
+
+A block reaches the model in authored order. `name` is optional; it never
+contains `:` and is never the literal `agent`, because the engine reserves
+both. With `template` absent, `{{` is **literal text** and reaches the model
+unchanged — it is never inferred from the presence of `{{` in the prose.
+`template: handlebars` is the only value accepted today, and it renders the
+block against the run's state (see below): declaring it on a block while the
+artifact declares no state is a compilation error, because there is nothing
+to render against.
+
+A templated block's `name` never becomes an addressable id on the engine's
+own side — it names the block in compilation issues and start-up
+diagnostics only. The engine can name a callable through its own
+`@agent.instructions(name=...)` route, but that route appends after every
+block passed at construction, which would push every templated block behind
+every literal one and destroy the order an artifact authored. loom takes the
+order and accepts the nameless template.
+
+### The artifact's state — `deps_type` and `deps_schema`
+
+An artifact may declare a **state** a caller supplies per invocation, so a
+templated instruction block can render facts specific to one call rather than
+only the agent's fixed prose. Declaring neither field means the agent has no
+state, which is what every artifact means today.
+
+There is exactly **one mechanism**, spelled three ways:
+
+```yaml
+deps_schema:                            # canonical: JSON Schema, directly
+  type: object
+  properties:
+    marca: {type: string}
+    km:    {type: integer}
+  required: [marca]
+```
+
+```yaml
+deps_type: myapp.agents:AppraisalDeps   # sugar over the schema above
+```
+
+```yaml
+deps_type: dict                         # open: an explicit waiver of validation
+```
+
+`deps_type: <symbol>` resolves the reference at compile time and calls
+`msgspec.json.schema()` on it; from that point the artifact is
+indistinguishable from one that wrote the schema by hand. Declaring both
+`deps_type` and `deps_schema` is a compilation error.
+
+The consequences an author needs, stated rather than left implicit:
+
+* **`deps_type: <symbol>` buys validation at start-up — every templated
+  marker is checked against the derived schema before the artifact ever
+  serves a request — and validation plus normalisation at the request
+  boundary. It does not buy a typed object in `ctx.deps`: a capability
+  reading the run's dependencies (`RunContext.deps.state`) always sees a
+  plain mapping, never an instance of the declared symbol.
+* **`deps_type: dict` waives marker validation.** No schema exists to check
+  a template against, so a misspelt marker survives the build and renders as
+  the empty string on every request — the documented cost of the open form.
+* **A templated block's `name` is not an addressable engine id** — see
+  above. It exists for diagnostics only.
+* **A stateful artifact cannot be published over A2A.** The A2A handler runs
+  an agent with no state and the message shape it reads carries a prompt and
+  a conversation id, nothing else; rendering a declared state that never
+  arrives would degrade silently. An artifact declaring `deps_type` or
+  `deps_schema` and listed in `ai.a2a.expose` fails **start-up**, naming both
+  halves of the conflict. Resolve it by removing the state declaration or by
+  removing the artifact from `expose`.
+* **`ai.max_state_bytes`** bounds the raw `state` a caller may send in one
+  request body, the same way `ai.max_prompt_bytes` bounds the prompt — a
+  `state` over its cap is refused with its own `413`, naming `state`. State
+  is spent as tokens on every request of a run, since it is rendered into
+  the instructions, so this cap matters even for a deployment that never
+  worried about request size before.
+
+```{admonition} Security: caller-supplied state renders into instructions
+:class: danger
+The `state` a caller sends is rendered into the agent's instructions with
+**no escaping**. Declaring a template is an explicit opt-in by the artifact's
+author, and it is prompt-injection surface: whatever the caller puts in
+`state` can shape the prose the model reads. What loom guarantees instead is
+that **`identity`, the application container and the caller-bound invoker are
+unreachable from a template** — a template renders against the state mapping
+alone, never against the wider dependency bundle a capability call runs
+with, so injected text can shape a prompt and can never reach a credential
+or an application service.
+```
 
 ### `model_role`
 

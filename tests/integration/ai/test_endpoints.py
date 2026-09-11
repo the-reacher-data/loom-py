@@ -994,6 +994,7 @@ class TestState:
     async def test_state_against_no_declared_shape_is_422_naming_the_field(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
+        """AC-009: a stateless artefact refuses a non-empty ``state``, naming itself."""
         async with _serving(
             deps=deps, container=container, identity=identity, plans=[make_plan(_AGENT)]
         ) as (_app, client):
@@ -1002,28 +1003,36 @@ class TestState:
                 json={"prompt": "assess", "state": {"marca": "civic"}},
             )
 
+        body = response.json()
         assert response.status_code == 422
-        assert response.json()["code"] == "STATE_NOT_DECLARED"
+        assert body["code"] == "STATE_NOT_DECLARED"
+        assert _AGENT in body["message"]
 
     async def test_a_state_missing_a_required_field_is_422(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
+        """AC-008: a malformed state never reaches the engine — no run, no usage."""
+        engine = RecordingScriptedEngine()
         async with _serving(
             deps=deps,
             container=container,
             identity=identity,
             plans=[make_plan(_AGENT, state=_SCHEMA_STATE)],
+            engines={_AGENT: engine},
         ) as (_app, client):
             response = await client.post(
                 f"{_PREFIX}/{_AGENT}/run", json={"prompt": "assess", "state": {}}
             )
 
         assert response.status_code == 422
+        assert engine.states == []
+        assert engine.stream_count == 0
         assert response.json()["code"] == "INVALID_STATE"
 
     async def test_a_large_state_is_413_naming_state_with_a_legal_prompt(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
+        """AC-013: ``state``'s own cap, distinct from the prompt's."""
         # Small enough to stay under the *total* body cap
         # (max_prompt_bytes + max_state_bytes + BODY_OVERHEAD_BYTES), so the
         # generic body-size guard never fires first — only 'state''s own cap.
@@ -1045,7 +1054,7 @@ class TestState:
     async def test_a_large_prompt_still_gives_its_own_413_with_a_legal_state(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
-        """``max_prompt_bytes`` keeps measuring the prompt alone (FR-015)."""
+        """AC-013: ``max_prompt_bytes`` keeps measuring the prompt alone (FR-015)."""
         async with _serving(
             deps=deps,
             container=container,

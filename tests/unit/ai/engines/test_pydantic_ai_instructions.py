@@ -143,7 +143,7 @@ class TestBlockDispatch:
         assert callable(items[2])
 
     def test_the_real_engine_marks_the_literals_static_and_the_template_dynamic(self) -> None:
-        """Applies pydantic-ai's own ``sourced_instruction`` to what was built.
+        """AC-005, AC-006: applies pydantic-ai's own ``sourced_instruction`` to what was built.
 
         This asserts the *consequence* the engine draws from each item's
         shape (FR-025, FR-026), using the engine's real rule rather than a
