@@ -182,8 +182,8 @@ class PydanticAIEngine:
                 forwarded to :attr:`_deps` unchanged.
 
         Returns:
-            The validated output, the run's usage and — when the run carried a
-            conversation — the messages it added.
+            The validated output, the run's usage and the messages it added,
+            bounded by ``policies.max_history_bytes`` (``None`` above it).
 
         Raises:
             AgentRunError: Carrying the coded, classified failure and what the
@@ -206,7 +206,11 @@ class PydanticAIEngine:
         return AgentResult(
             output=output,
             usage=self._usage(spend, started, unpriced_requests=unpriced),
-            messages=new_messages(result, decoded),
+            messages=new_messages(
+                result,
+                agent=self._plan.name,
+                max_history_bytes=self._plan.policies.max_history_bytes,
+            ),
         )
 
     def run_stream(
@@ -518,7 +522,7 @@ class PydanticAIEngine:
                     "trailing AgentRunResultEvent"
                 )
             try:
-                final = self._conclude(outcome[0], spend, started, decoded, output_type)
+                final = self._conclude(outcome[0], spend, started, output_type)
             except Exception as exc:
                 error, _ = self._record_attempt_failure(exc, attempt, emitted=True)
                 yield ErrorEvent(
@@ -592,7 +596,6 @@ class PydanticAIEngine:
         result: AgentRunResult[Any],
         spend: RunUsage,
         started: float,
-        conversation: RunConversation | None,
         output_type: type[Any] | None,
     ) -> FinalEvent:
         """Apply ``on_unpriced_spend`` to a finished attempt and build its ``final`` event.
@@ -604,16 +607,13 @@ class PydanticAIEngine:
                 excludes it.
         """
         unpriced = self._apply_unpriced_spend_policy(result)
-        return self._final(
-            result, spend, started, conversation, output_type, unpriced_requests=unpriced
-        )
+        return self._final(result, spend, started, output_type, unpriced_requests=unpriced)
 
     def _final(
         self,
         result: AgentRunResult[Any],
         spend: RunUsage,
         started: float,
-        conversation: RunConversation | None,
         output_type: type[Any] | None,
         *,
         unpriced_requests: int = 0,
@@ -629,7 +629,11 @@ class PydanticAIEngine:
         return FinalEvent(
             output=output,
             usage=self._usage(spend, started, unpriced_requests=unpriced_requests),
-            messages=new_messages(result, conversation),
+            messages=new_messages(
+                result,
+                agent=self._plan.name,
+                max_history_bytes=self._plan.policies.max_history_bytes,
+            ),
         )
 
 

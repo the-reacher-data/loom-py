@@ -8,6 +8,8 @@ not validate fails before the model is called, with nothing spent.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from pydantic_ai.messages import (
     ModelMessage,
@@ -19,6 +21,8 @@ from pydantic_ai.messages import (
 )
 
 from loom.ai.abc import AgentEngine, AgentEvent, Conversation, ErrorEvent, FinalEvent
+from loom.ai.declarative import PolicySpec
+from loom.ai.declarative._v1 import MAX_HISTORY_BYTES_MIN
 from loom.ai.errors import CONVERSATION_LOAD_FAILED_MESSAGE, AgentRunError, AgentRunErrorCode
 from loom.core.identity import Identity
 from tests.helpers.pydantic_ai_engine import (
@@ -150,22 +154,61 @@ class TestHistory:
 
 
 class TestSingleShot:
-    async def test_serialises_no_messages_when_run_carries_no_conversation(self) -> None:
+    async def test_serialises_this_turns_messages_when_run_carries_no_conversation(self) -> None:
+        """L19: the hook can see the tool traffic of a single-shot run (T901)."""
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen)
 
         result = await engine.run(_PROMPT, identity=_IDENTITY, conversation=None)
 
         assert _prompts(seen[0]) == [_PROMPT]
-        assert result.messages is None
+        assert result.messages is not None
+        assert _prompts(_decode(result.messages)) == [_PROMPT]
 
-    async def test_serialises_no_messages_when_the_stream_carries_no_conversation(self) -> None:
+    async def test_serialises_this_turns_messages_when_the_stream_carries_no_conversation(
+        self,
+    ) -> None:
+        """L19: a streamed single-shot run's terminal event carries the same traffic."""
         seen: list[list[ModelMessage]] = []
         engine = _engine(seen)
 
         events = await _collect(engine, None)
 
         assert len(seen) == 1
+        messages = _final(events).messages
+        assert messages is not None
+        assert _prompts(_decode(messages)) == [_PROMPT]
+
+
+class TestOverBound:
+    async def test_gives_none_and_logs_the_agent_size_and_bound_when_messages_exceed_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """L19: over ``max_history_bytes`` the hook gets ``None`` and the run logs why (T901)."""
+        oversized = encode({"answer": "x" * MAX_HISTORY_BYTES_MIN})
+        engine = build_engine(
+            make_plan(policies=PolicySpec(max_history_bytes=MAX_HISTORY_BYTES_MIN)),
+            recording_model(oversized, []),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="loom.ai.engines.pydantic_ai._history"):
+            result = await engine.run(_PROMPT, identity=_IDENTITY, conversation=None)
+
+        assert result.messages is None
+        [record] = caplog.records
+        assert "contract" in record.message
+        assert str(MAX_HISTORY_BYTES_MIN) in record.message
+
+    async def test_gives_none_when_the_stream_carries_messages_over_the_bound(self) -> None:
+        """The streamed terminal event is bounded the same way as the non-streaming run."""
+        oversized = encode({"answer": "x" * MAX_HISTORY_BYTES_MIN})
+        engine = build_engine(
+            make_plan(policies=PolicySpec(max_history_bytes=MAX_HISTORY_BYTES_MIN)),
+            recording_model(oversized, []),
+        )
+
+        events = await _collect(engine, None)
+
         assert _final(events).messages is None
 
 

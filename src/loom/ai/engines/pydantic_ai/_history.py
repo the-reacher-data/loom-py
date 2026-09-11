@@ -83,8 +83,29 @@ def run_kwargs(conversation: RunConversation | None) -> dict[str, Any]:
     }
 
 
-def new_messages(result: AgentRunResult[Any], conversation: RunConversation | None) -> bytes | None:
-    """Return this run's messages, serialised; ``None`` for a single shot."""
-    if conversation is None:
+def new_messages(
+    result: AgentRunResult[Any], *, agent: str, max_history_bytes: int
+) -> bytes | None:
+    """Return this run's messages, serialised, bounded by ``policies.max_history_bytes``.
+
+    Args:
+        result: A completed attempt's result.
+        agent: Name of the plan this run served, for the over-bound log line.
+        max_history_bytes: ``policies.max_history_bytes`` of the plan.
+
+    Returns:
+        This run's messages, whether or not it carried a conversation;
+        ``None`` when they are longer than *max_history_bytes* — logged with
+        *agent*, the measured size and the bound.
+    """
+    encoded = result.new_messages_json()
+    if len(encoded) > max_history_bytes:
+        _logger.warning(
+            "agent %r produced %d bytes of new messages, above max_history_bytes "
+            "(%d); the run's hook receives none",
+            agent,
+            len(encoded),
+            max_history_bytes,
+        )
         return None
-    return result.new_messages_json()
+    return encoded

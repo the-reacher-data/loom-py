@@ -81,6 +81,15 @@ RETRIES_DEFAULT: Final[int] = 2
 RETRIES_MIN: Final[int] = 0
 RETRIES_MAX: Final[int] = 10
 
+RETRIES_DESCRIPTION: Final[str] = (
+    "Retries a failed tool call, and an answer output_check rejects, inside "
+    "one run, always. Retries a failed provider call across runs, only when "
+    "the plan holds no capability; see 'retries' in docs/ai/artifacts.md."
+)
+"""Single source of the ``retries`` field's published description; also cited
+by :class:`PolicySpec`'s own docstring so the two never retype the same
+sentence."""
+
 TOOL_TIMEOUT_MS_DEFAULT: Final[int] = 20000
 TOOL_TIMEOUT_MS_MIN: Final[int] = 100
 TOOL_TIMEOUT_MS_MAX: Final[int] = 600000
@@ -451,7 +460,11 @@ class PolicySpec(
     behind the fields below.
 
     Args:
-        retries:         Attempts the engine makes before a failure is final.
+        retries:         Retries a failed tool call, and an answer
+            ``output_check`` rejects, inside one run, always. Retries a
+            failed provider call across runs, only when the plan holds no
+            capability. See :data:`RETRIES_DESCRIPTION` and "``retries``" in
+            ``docs/ai/artifacts.md``.
         tool_timeout_ms: Deadline of a single tool call.
         max_iterations:  Maximum ``ToolCallEvent``\\ s loom's own supervisor
             observes over the event stream in one run; see "``max_iterations``

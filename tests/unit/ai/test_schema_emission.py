@@ -27,7 +27,11 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from loom.ai.declarative import agent_spec_json_schema, agent_spec_schema_path
-from loom.ai.declarative._v1 import DEPS_TYPE_PATTERN, INSTRUCTION_NAME_PATTERN
+from loom.ai.declarative._v1 import (
+    DEPS_TYPE_PATTERN,
+    INSTRUCTION_NAME_PATTERN,
+    RETRIES_DESCRIPTION,
+)
 
 _CONTRACT_PATH: Path = agent_spec_schema_path(1)
 
@@ -298,6 +302,11 @@ def test_emitted_instruction_block_name_pattern_is_the_struct_constant_not_a_cop
     """NFR-005: the pattern is derived from the struct constant, never re-typed (T101)."""
     pattern = _emitted()["$defs"]["instruction_block"]["properties"]["name"]["pattern"]
     assert pattern == INSTRUCTION_NAME_PATTERN
+
+
+def test_emitted_retries_description_is_the_struct_constant_not_a_copy() -> None:
+    """L20: the schema names both axes from the constant the docstring cites, never re-typed."""
+    assert _policy_properties(_emitted())["retries"]["description"] == RETRIES_DESCRIPTION
 
 
 def test_emitted_deps_type_description_states_the_dict_waiver() -> None:

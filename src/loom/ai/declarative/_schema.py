@@ -55,6 +55,7 @@ from ._v1 import (
     ON_UNPRICED_SPEND_POLICIES,
     RESERVED_INSTRUCTION_NAME,
     RETRIES_DEFAULT,
+    RETRIES_DESCRIPTION,
     RETRIES_MAX,
     RETRIES_MIN,
     RUN_TIMEOUT_MS_DEFAULT,
@@ -417,6 +418,7 @@ def _policy_properties() -> dict[str, Any]:
             "minimum": RETRIES_MIN,
             "maximum": RETRIES_MAX,
             "default": RETRIES_DEFAULT,
+            "description": RETRIES_DESCRIPTION,
         },
         "tool_timeout_ms": {
             "type": "integer",

@@ -402,7 +402,8 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 10,
-          "default": 2
+          "default": 2,
+          "description": "Retries a failed tool call, and an answer output_check rejects, inside one run, always. Retries a failed provider call across runs, only when the plan holds no capability; see 'retries' in docs/ai/artifacts.md."
         },
         "tool_timeout_ms": {
           "type": "integer",
