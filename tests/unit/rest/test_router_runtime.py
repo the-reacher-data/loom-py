@@ -796,11 +796,12 @@ class TestDeprecatedInterfacesKeyword:
             routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
 
         result = _bootstrap(PingUseCase)
+        observability_runtime = ObservabilityRuntime.noop()
         with pytest.warns(DeprecationWarning, match="routes=RouteSources"):
             create_fastapi_app(
                 result,
                 interfaces=[IFace],
-                observability_runtime=ObservabilityRuntime.noop(),
+                observability_runtime=observability_runtime,
             )
 
     def test_interfaces_keyword_warning_points_at_the_caller_not_this_module(self) -> None:
@@ -811,19 +812,21 @@ class TestDeprecatedInterfacesKeyword:
             routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
 
         result = _bootstrap(PingUseCase)
+        observability_runtime = ObservabilityRuntime.noop()
         with pytest.warns(DeprecationWarning) as record:
             create_fastapi_app(
                 result,
                 interfaces=[IFace],
-                observability_runtime=ObservabilityRuntime.noop(),
+                observability_runtime=observability_runtime,
             )
 
         assert record[0].filename == __file__
 
     def test_neither_routes_nor_interfaces_raises_type_error(self) -> None:
         result = _bootstrap(PingUseCase)
+        observability_runtime = ObservabilityRuntime.noop()
         with pytest.raises(TypeError, match="requires 'routes'"):
-            create_fastapi_app(result, observability_runtime=ObservabilityRuntime.noop())
+            create_fastapi_app(result, observability_runtime=observability_runtime)
 
     def test_the_old_positional_sequence_names_its_replacement(self) -> None:
         class IFace(RestInterface[str]):
@@ -831,11 +834,12 @@ class TestDeprecatedInterfacesKeyword:
             routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
 
         result = _bootstrap(PingUseCase)
+        observability_runtime = ObservabilityRuntime.noop()
         with pytest.raises(TypeError, match="RouteSources"):
             create_fastapi_app(
                 result,
                 [IFace],  # type: ignore[arg-type]
-                observability_runtime=ObservabilityRuntime.noop(),
+                observability_runtime=observability_runtime,
             )
 
     def test_both_routes_and_interfaces_raises_type_error(self) -> None:
@@ -844,12 +848,14 @@ class TestDeprecatedInterfacesKeyword:
             routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
 
         result = _bootstrap(PingUseCase)
+        route_sources = RouteSources(python=[IFace])
+        observability_runtime = ObservabilityRuntime.noop()
         with pytest.raises(TypeError, match="not both"):
             create_fastapi_app(
                 result,
-                routes=RouteSources(python=[IFace]),
+                routes=route_sources,
                 interfaces=[IFace],
-                observability_runtime=ObservabilityRuntime.noop(),
+                observability_runtime=observability_runtime,
             )
 
 
@@ -881,10 +887,11 @@ def test_create_fastapi_app_uncompiled_use_case_raises() -> None:
     # bootstrap with NO use cases — PingUseCase not compiled
     result = _bootstrap()
     observability_runtime = ObservabilityRuntime.noop()
+    route_sources = RouteSources(python=[IFace])
     with pytest.raises(InterfaceCompilationError, match="not been compiled"):
         create_fastapi_app(
             result,
-            routes=RouteSources(python=[IFace]),
+            routes=route_sources,
             observability_runtime=observability_runtime,
         )
 

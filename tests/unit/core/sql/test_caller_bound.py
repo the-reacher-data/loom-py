@@ -72,16 +72,18 @@ async def test_rejects_an_identity_holding_no_allowlisted_role_before_the_backen
 ) -> None:
     """The caller's own entitlements decide, and the refusal precedes execution."""
     sql = _caller_bound(fake_executor, make_connection_config())
+    identity = _identity("role_intruder")
     with pytest.raises(RolesNotBoundError):
-        await sql.execute("SELECT 1", connection="analytics", identity=_identity("role_intruder"))
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
     assert fake_executor.calls == []
 
 
 async def test_rejects_an_identity_carrying_no_role(fake_executor: FakeSqlExecutor) -> None:
     """An authenticated caller without roles cannot borrow any."""
     sql = _caller_bound(fake_executor, make_connection_config())
+    identity = _identity()
     with pytest.raises(RolesNotBoundError):
-        await sql.execute("SELECT 1", connection="analytics", identity=_identity())
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
     assert fake_executor.calls == []
 
 
@@ -101,8 +103,9 @@ async def test_never_falls_back_to_the_shared_default_role(
         allowed_roles=("role_viz_sales",), default_role="role_viz_reader"
     )
     sql = _caller_bound(fake_executor, connection)
+    identity = _identity("role_viz_reader")
     with pytest.raises(RolesNotBoundError):
-        await sql.execute("SELECT 1", connection="analytics", identity=_identity("role_viz_reader"))
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
     assert fake_executor.calls == []
 
 
@@ -112,8 +115,9 @@ async def test_refuses_a_connection_whose_allowlist_is_empty(
     """A single-role connection has nothing to bind to an identity, so it is refused."""
     connection = make_connection_config(allowed_roles=(), default_role="role_viz_reader")
     sql = _caller_bound(fake_executor, connection)
+    identity = _identity("role_viz_reader")
     with pytest.raises(RolesNotBoundError):
-        await sql.execute("SELECT 1", connection="analytics", identity=_identity("role_viz_reader"))
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
     assert fake_executor.calls == []
 
 
@@ -144,16 +148,18 @@ async def test_forwards_parameters_limit_and_offset(fake_executor: FakeSqlExecut
 async def test_unknown_connection_is_reported_as_such(fake_executor: FakeSqlExecutor) -> None:
     """An unconfigured connection name fails with the domain error of the pillar."""
     sql = _caller_bound(fake_executor, make_connection_config())
+    identity = _identity("role_viz_sales")
     with pytest.raises(UnknownConnectionError):
-        await sql.execute("SELECT 1", connection="unknown", identity=_identity("role_viz_sales"))
+        await sql.execute("SELECT 1", connection="unknown", identity=identity)
     assert fake_executor.calls == []
 
 
 async def test_without_a_sql_section_the_actionable_config_error_surfaces() -> None:
     """Wrapping the null service keeps its actionable error instead of hiding it."""
     sql = CallerBoundSql(NullSqlQueryService(), SqlConfig(connections={}))
+    identity = _identity("role_viz_sales")
     with pytest.raises(ConfigError, match="sql"):
-        await sql.execute("SELECT 1", connection="analytics", identity=_identity("role_viz_sales"))
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
 
 
 async def test_a_configured_connection_without_an_executor_refuses_on_the_roles(
@@ -163,8 +169,9 @@ async def test_a_configured_connection_without_an_executor_refuses_on_the_roles(
     config = make_sql_config(analytics=make_connection_config())
     service = SqlQueryService(executors={}, config=config)
     sql = CallerBoundSql(service, config)
+    identity = _identity("role_intruder")
     with pytest.raises(RolesNotBoundError):
-        await sql.execute("SELECT 1", connection="analytics", identity=_identity("role_intruder"))
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
     assert fake_executor.calls == []
 
 
@@ -213,8 +220,9 @@ async def test_a_refused_query_emits_no_span(fake_executor: FakeSqlExecutor) -> 
     sql = _caller_bound(
         fake_executor, make_connection_config(), observability=ObservabilityRuntime([observer])
     )
+    identity = _identity("role_intruder")
     with pytest.raises(RolesNotBoundError):
-        await sql.execute("SELECT 1", connection="analytics", identity=_identity("role_intruder"))
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
     assert observer.events == []
 
 

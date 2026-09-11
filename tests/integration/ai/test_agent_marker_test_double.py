@@ -149,10 +149,10 @@ class TestTheFullUseCaseRunsWithoutNetworkModelOrDatabase:
 
 class TestWithoutADoubleRegisteredStartupFailsClosed:
     async def test_declaring_the_marker_without_a_double_fails_with_a_clear_error(self) -> None:
+        runner = (
+            UseCaseTest(TriageIncidentUseCase())
+            .with_caller(_CALLER)
+            .with_params(incident_id="INC-104")
+        )
         with pytest.raises(RuntimeError, match=_AGENT_NAME):
-            await (
-                UseCaseTest(TriageIncidentUseCase())
-                .with_caller(_CALLER)
-                .with_params(incident_id="INC-104")
-                .run()
-            )
+            await runner.run()

@@ -126,10 +126,10 @@ def _make_rpc_handler(
     return serve_rpc
 
 
-def _make_card_handler(card: bytes) -> Callable[[], Awaitable[Response]]:
+def _make_card_handler(card: bytes) -> Callable[[], Response]:
     """Build the handler serving one agent's card, encoded once at bind time."""
 
-    async def serve_card() -> Response:
+    def serve_card() -> Response:
         return Response(content=card, media_type=_MEDIA_TYPE_JSON)
 
     return serve_card

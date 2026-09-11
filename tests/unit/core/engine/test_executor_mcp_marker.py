@@ -155,9 +155,10 @@ async def test_a_missing_identity_is_refused_instead_of_defaulted() -> None:
     compiler.compile(DocsSearchUseCase)
     executor = RuntimeExecutor(compiler)
     executor.bind_mcp_resolver(_resolver([]))
+    use_case = DocsSearchUseCase()
 
     with pytest.raises(Unauthenticated, match="DocsSearchUseCase"):
-        await executor.execute(DocsSearchUseCase())
+        await executor.execute(use_case)
 
 
 async def test_a_missing_identity_is_refused_by_bind_mcp_itself() -> None:
@@ -173,9 +174,10 @@ async def test_a_missing_identity_is_refused_by_bind_mcp_itself() -> None:
     executor = RuntimeExecutor(compiler)
     calls: list[tuple[str, tuple[str, ...], Identity]] = []
     executor.bind_mcp_resolver(_resolver(calls))
+    use_case = McpOnlyUseCase()
 
     with pytest.raises(Unauthenticated, match=r"McpOnlyUseCase.*Mcp\(\) parameter"):
-        await executor.execute(McpOnlyUseCase())
+        await executor.execute(use_case)
 
     assert calls == []
 
@@ -184,17 +186,19 @@ async def test_no_resolver_bound_fails_with_a_named_error() -> None:
     compiler = UseCaseCompiler()
     compiler.compile(DocsSearchUseCase)
     executor = RuntimeExecutor(compiler)
+    use_case = DocsSearchUseCase()
 
     with pytest.raises(RuntimeError, match="bind_mcp_resolver"):
-        await executor.execute(DocsSearchUseCase(), identity=_ALICE)
+        await executor.execute(use_case, identity=_ALICE)
 
 
 async def test_binding_a_resolver_twice_is_refused() -> None:
     executor = RuntimeExecutor(UseCaseCompiler())
     executor.bind_mcp_resolver(_resolver([]))
+    second_resolver = _resolver([])
 
     with pytest.raises(RuntimeError):
-        executor.bind_mcp_resolver(_resolver([]))
+        executor.bind_mcp_resolver(second_resolver)
 
 
 async def test_a_use_case_with_no_mcp_marker_never_calls_the_resolver() -> None:

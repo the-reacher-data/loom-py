@@ -266,9 +266,10 @@ class TestACallFilteredByTheGrant:
             mcp_clients={_MCP_SERVER: StubMcpClient(label=_MCP_SERVER, session=session, log=[])},
         )
 
+        use_case = RejectedToolUseCase()
         async with runtime:
             with pytest.raises(AgentRunError) as excinfo:
-                await executor.execute(RejectedToolUseCase(), identity=_ALICE)
+                await executor.execute(use_case, identity=_ALICE)
 
         assert excinfo.value.code is AgentRunErrorCode.TOOL_UNKNOWN
         assert session.calls == []
@@ -392,7 +393,8 @@ class TestAgentPathIncludeIsWiredToo:
                 runtime, sql_query_service=NullSqlQueryService(), observability=None
             )
             handle = resolver(MARKER_AGENT_NAME, _ALICE)
+            mcp_handle = handle.mcp(_MCP_SERVER)
             with pytest.raises(AgentRunError) as excinfo:
-                await handle.mcp(_MCP_SERVER).call_untyped("read_orders", {})
+                await mcp_handle.call_untyped("read_orders", {})
 
         assert excinfo.value.code is AgentRunErrorCode.TOOL_TIMEOUT
