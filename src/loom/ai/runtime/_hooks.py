@@ -63,7 +63,7 @@ def hook_command(
         run: Context of the admitted run.
         accepted: Internal names the Input declares.
         messages: The run's new messages in the engine's serialised form;
-            ``None`` on a run without a conversation.
+            ``None`` when they are longer than ``policies.max_history_bytes``.
 
     Returns:
         The payload ``from_payload`` will decode.

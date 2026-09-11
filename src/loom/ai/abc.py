@@ -152,7 +152,8 @@ class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
         hook_result: Return value of the ``on_output`` use case, when the plan
             declares one.
         messages: New messages of this run in the engine's own serialised
-            form; ``None`` unless the run carried a conversation.
+            form; ``None`` when they are longer than
+            ``policies.max_history_bytes``.
     """
 
     output: object
@@ -592,7 +593,8 @@ class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_f
         hook_result: Return value of the ``on_output`` use case, when the plan
             declares one.
         messages: New messages of this run in the engine's own serialised
-            form; ``None`` unless the run carried a conversation.
+            form; ``None`` when they are longer than
+            ``policies.max_history_bytes``.
     """
 
     output: object
@@ -646,8 +648,8 @@ class AgentEngine(Protocol):
                 own declared defaults instead of an empty value.
 
         Returns:
-            The validated output and the run's usage, plus ``messages`` when a
-            conversation was passed.
+            The validated output, the run's usage and this run's messages,
+            bounded by ``policies.max_history_bytes`` (``None`` above it).
         """
         ...
 

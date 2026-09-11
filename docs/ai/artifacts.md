@@ -1029,6 +1029,38 @@ never edits the history. An out-of-range value is reported as a
 coded issue (`POLICY_OUT_OF_RANGE`) rather than a decoding failure, so it
 accumulates with the other problems in the file instead of hiding them.
 
+### `retries` — two axes, one knob
+
+One authored number governs two independent retry loops, and honouring
+either loop's outcome for both would double-invoke a granted use case:
+
+- `AgentSpec.retries` (`loom.ai.engines.pydantic_ai._spec`) retries a failed
+  tool call, and an answer `output_check` rejects, inside one run — always,
+  regardless of what the plan grants.
+- `PydanticAIEngine`'s own attempt loop (`_engine.py`, `_may_retry`) retries a
+  failed **provider** call across runs — only when the plan holds no
+  capability at all.
+
+The second loop stops as soon as the plan grants any capability
+(`PydanticAIEngine._may_retry`): by the time a provider call fails, the model
+may already have invoked an application operation, and nothing about a
+granted use case is idempotent or keyed, so replaying the run would invoke it
+again. That is the behaviour `docs/ai/artifacts.md` and
+`engines/pydantic_ai/_spec.py`'s own module docstring already document; this
+section exists so the field an author reads says the same thing, not a
+different rule.
+
+Two things this field does **not** do, on purpose:
+
+- It does not raise a compile-time warning when a capability-bearing plan
+  keeps the default. `RETRIES_DEFAULT` is `2`, so every capability-bearing
+  artefact that never touched the field would warn — a warning firing on the
+  common case trains an operator to ignore warnings, which is worse than no
+  warning at all.
+- Loom does not "honour" the plan's `retries` for the provider loop once a
+  capability is granted. Doing so is exactly the double invocation the guard
+  above exists to prevent.
+
 ### Spend caps
 
 ```yaml

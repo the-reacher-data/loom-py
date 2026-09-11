@@ -723,7 +723,7 @@ class TestMessagesInTheHook:
         conversation_deps: RecordingDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """A single-shot run offers ``None`` and the result carries ``None``."""
+        """A run whose engine reports no messages offers ``None``; the result carries ``None``."""
         engine = ScriptedEngine(script=default_script({"answer": "42"}))
         plan = _plan(loader=None, hook=RecordTurn)
         runtime = _runtime(engine, plan, deps=conversation_deps, container=container)
