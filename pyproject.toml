@@ -122,6 +122,12 @@ ai-openai = [
 ai-anthropic = [
     "pydantic-ai-slim[anthropic]>=2,<3",
 ]
+# Only an artefact declaring `template:` on an instruction block needs this:
+# the engine compiles a Handlebars template and renders it per request. An
+# artefact whose instructions are literal never reaches the import.
+ai-templates = [
+    "pydantic-ai-slim[spec]>=2,<3",
+]
 ai-a2a = [
     "fasta2a>=0.6,<1",
     "a2a-sdk>=1.1,<2",
@@ -249,7 +255,7 @@ dev = [
     "httpx>=0.27",
     "types-pyyaml>=6.0.12.20260724",
     "jsonschema>=4.26.0",
-    "pydantic-ai-slim[anthropic,bedrock,openai]>=2,<3",
+    "pydantic-ai-slim[anthropic,bedrock,openai,spec]>=2,<3",
     "fasta2a>=0.6,<1",
     "a2a-sdk>=1.1,<2",
     "pydantic-ai-harness[skills]>=0.28,<1",

@@ -26,6 +26,10 @@ from loom.ai.engines.pydantic_ai._capabilities import (
     build_toolsets,
 )
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
+from loom.ai.engines.pydantic_ai._instructions import (
+    build_instructions,
+    ensure_templating_available,
+)
 from loom.ai.engines.pydantic_ai._limits import usage_limits, warn_if_model_not_priceable
 from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
@@ -122,6 +126,12 @@ class PydanticAIEngineProvider:
     ) -> AgentEngine:
         """Build the engine serving one compiled plan.
 
+        ``deps_type=object`` stays: this seam receives ``deps: DepsFactory``,
+        whose ``build`` returns ``object`` (``loom.ai.abc``), so the concrete
+        bundle type is not visible here to pass instead — and it still feeds
+        ``pydantic_ai.agent._validate_spec``'s template validation context,
+        which is what a templated block is checked against at compile time.
+
         Args:
             plan: The compiled :class:`~loom.ai.compiler.AgentPlan`.
             deps: Per-invocation dependency factory.
@@ -133,10 +143,13 @@ class PydanticAIEngineProvider:
         Raises:
             TypeError: When ``plan`` is not an ``AgentPlan``.
             AgentCompilationError: When the vendor SDK the binding needs is not
-                installed, or a required provider setting is missing.
+                installed, a required provider setting is missing, a
+                templated instruction block needs the templating extra and
+                it is not installed, or a templated block fails to compile.
         """
         if not isinstance(plan, AgentPlan):
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
+        ensure_templating_available(plan)
         model = self._resolve_model(plan.inference)
         provider_name = model.provider.name if model.provider is not None else None
         warn_if_model_not_priceable(
@@ -153,6 +166,8 @@ class PydanticAIEngineProvider:
             build_agent_spec(plan),
             model=model,
             deps_type=object,
+            instructions=build_instructions(plan),
+            description=plan.description,
             toolsets=toolsets or None,
             capabilities=capabilities or None,
             **pinned,
