@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import textwrap
+import time
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -317,15 +318,14 @@ def test_aware_datetime_with_offset_passes_through() -> None:
     assert out["updated_at_from"].utcoffset() == timedelta(hours=2)
 
 
-def test_correlation_id_of_an_offset_bearing_string_uses_the_compact_form() -> None:
-    # The coercion feeds the correlation id as well as the params struct, so an
-    # offset-bearing string now keys the manifest store the way a naive one
-    # always did.
+def test_correlation_id_of_an_offset_bearing_string_uses_its_utc_instant() -> None:
+    # The coercion feeds the correlation id as well as the params struct, so the
+    # string keys the manifest store by the instant it names, not by its wall clock.
     resolved = _normalize_datetime_fields(
         {"updated_at_from": "2026-06-03T00:00:00+02:00"},
         _SampleParams,
     )
-    assert compute_correlation_id("etl", "updated_at_from", resolved) == "etl-20260603T000000"
+    assert compute_correlation_id("etl", "updated_at_from", resolved) == "etl-20260602T220000"
 
 
 def test_a_date_on_a_datetime_field_becomes_its_midnight_in_utc() -> None:
@@ -341,6 +341,33 @@ def test_a_date_field_keeps_its_date(tmp_path: Path) -> None:
     # is_datetime_annotation rejects date, so a date-declared field is untouched.
     out = _normalize_datetime_fields({"day": date(2026, 6, 3)}, _DateParams)
     assert out["day"] == date(2026, 6, 3)
+
+
+def test_correlation_id_of_two_offsets_distinguishes_the_instants() -> None:
+    madrid = timezone(timedelta(hours=2))
+    at_madrid = {"updated_at_from": datetime(2026, 6, 3, 0, 0, tzinfo=madrid)}
+    at_utc = {"updated_at_from": datetime(2026, 6, 3, 0, 0, tzinfo=UTC)}
+    assert compute_correlation_id("etl", "updated_at_from", at_madrid) == "etl-20260602T220000"
+    assert compute_correlation_id("etl", "updated_at_from", at_utc) == "etl-20260603T000000"
+
+
+def test_correlation_id_of_a_date_keeps_its_day() -> None:
+    resolved = {"updated_at_from": date(2026, 6, 3)}
+    assert compute_correlation_id("etl", "updated_at_from", resolved) == "etl-20260603T000000"
+
+
+def test_correlation_id_of_a_naive_datetime_ignores_the_local_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A naive value means UTC here, so the machine's zone must not shift it.
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        resolved = {"updated_at_from": datetime(2026, 6, 3, 0, 0)}
+        assert compute_correlation_id("etl", "updated_at_from", resolved) == "etl-20260603T000000"
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_non_datetime_fields_untouched() -> None:

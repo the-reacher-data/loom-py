@@ -14,6 +14,8 @@ _COMPACT_TIMESTAMP_FMT = "%Y%m%dT%H%M%S"
 
 
 def _render_value(value: Any) -> str:
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.astimezone(UTC).strftime(_COMPACT_TIMESTAMP_FMT)
     if isinstance(value, datetime | date):
         return value.strftime(_COMPACT_TIMESTAMP_FMT)
     return str(value)
@@ -61,9 +63,10 @@ def compute_correlation_id(
     """Return a stable correlation id for a flow run.
 
     Falls back to ``"<flow_name>-<random>"`` when no ``correlation_field``
-    is configured. Datetimes are rendered compactly so the value remains
-    safe to use in S3 keys, filesystem paths and the manifest store's
-    correlation_id validator.
+    is configured. A datetime is rendered compactly, by its UTC instant, so
+    the value remains safe to use in S3 keys, filesystem paths and the
+    manifest store's correlation_id validator, and so two different instants
+    never share an id.
 
     Args:
         flow_name: Logical ETL name.
