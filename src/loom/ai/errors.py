@@ -1438,6 +1438,7 @@ class AgentRunErrorCode(StrEnum):
     CONVERSATION_LOAD_FAILED = "CONVERSATION_LOAD_FAILED"
     CONVERSATION_LOAD_TIMEOUT = "CONVERSATION_LOAD_TIMEOUT"
     STATE_UNDECLARED = "STATE_UNDECLARED"
+    STATE_REQUIRED = "STATE_REQUIRED"
 
     # Agent-handle grants and calls (model-as-actor)
     MCP_GRANT_UNKNOWN = "MCP_GRANT_UNKNOWN"
@@ -1517,6 +1518,10 @@ _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProx
         # A caller-supplied 'state' against an artefact declaring none is a
         # calling-code mistake, not a transient condition (FR-010).
         AgentRunErrorCode.STATE_UNDECLARED: AgentRunErrorClass.APPLICATION,
+        # An omitted 'state' against a shape with a field that has no
+        # declared default cannot be filled in with defaults that do not
+        # exist; this is a calling-code mistake, not a transient condition.
+        AgentRunErrorCode.STATE_REQUIRED: AgentRunErrorClass.APPLICATION,
         # An unknown grant or tool name is a caller-code mistake, not a
         # transient condition; a per-run type mismatch is not the model
         # misbehaving, it is the calling code's own bug (AUTHORIZATION and

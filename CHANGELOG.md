@@ -104,6 +104,21 @@
   consequence, turns `policies.on_unpriced_spend: serve` into `refuse` no
   matter what the artifact declares — see "Spend caps" in
   `docs/ai/artifacts.md` for the mechanism and the remedy.
+- **ai:** an artefact may declare `output_check`, a `module:Symbol` reference
+  to an `OutputCheck` — aliased publicly as `loom.ai.OutputCheck`
+  (`Callable[[Mapping[str, Any]], str | None]`) — a pure, synchronous
+  predicate over the mapping the engine parsed from the model's answer.
+  `None` accepts the answer; a non-empty string is the text the model must
+  read to correct itself, driving a real retry inside the engine's own run,
+  bounded by `policies.retries`. It is a predicate, not a transformer: a
+  mapping the check builds and returns is discarded, never substituted for
+  the answer, which loom always decodes independently from the model's own
+  bytes. Declaring `output_check` changes how a run streams: loom withholds
+  the answer's deltas until they pass the check, then emits them, instead of
+  relaying them token by token as an artifact with no check does — the
+  trade-off is no partial text on the wire until the check accepts, in
+  exchange for never streaming an answer the check goes on to reject. See
+  `docs/ai/artifacts.md#output_check--demanding-the-shape-of-the-answer`.
 - **ai:** `AgentDescription.policies` is now typed
   `Mapping[str, int | float | str | None]`, widened from `Mapping[str, int]`
   to carry `max_usd` (as a JSON number, matching the published schema's

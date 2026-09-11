@@ -83,6 +83,20 @@ class TestStateAgainstASchemaShape:
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"
 
+    def test_a_present_but_incomplete_payload_is_refused_not_a_raw_crash(self) -> None:
+        """A required field missing from a present payload is ``ValidationError``.
+
+        ``msgspec.ValidationError`` subclasses ``msgspec.DecodeError``, which
+        this function already catches, so a payload present but missing
+        ``marca`` is refused the same coded way as malformed bytes rather
+        than raising uncaught.
+        """
+        with pytest.raises(TransportError) as excinfo:
+            _decode_state(_AGENT, _SCHEMA_SHAPE, _raw(b"{}"))
+
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.code == "INVALID_STATE"
+
     def test_an_undeclared_field_is_refused_not_dropped(self) -> None:
         """The compiled decoder forbids unknown fields, matching the output side (FR-017)."""
         with pytest.raises(TransportError) as excinfo:

@@ -418,9 +418,11 @@ class AgentRuntime:
                 received it and passed as a normalised mapping, or ``None``.
                 Resolved against *name*'s declared shape before this call
                 reaches the engine (FR-009, FR-010): ``None`` on a stateful
-                artefact carries the shape's own declared defaults; a
-                non-``None`` value against an artefact declaring no shape
-                fails the call.
+                artefact whose every field carries a default carries the
+                shape's own declared defaults; ``None`` against a shape with
+                a field that has no default fails the call, since there is
+                no default to fill it with; a non-``None`` value against an
+                artefact declaring no shape fails the call.
 
         Returns:
             The decoded output, the run's usage, its ``interaction_id``, the
@@ -433,8 +435,10 @@ class AgentRuntime:
             AgentRunError: When the run is refused (``TOO_MANY_RUNS``), the
                 conversation cannot be loaded (``CONVERSATION_LOAD_FAILED``,
                 ``CONVERSATION_LOAD_TIMEOUT``), ``state`` is given against an
-                artefact declaring none (``STATE_UNDECLARED``), breaches a
-                declared limit, or ends in a failure event.
+                artefact declaring none (``STATE_UNDECLARED``), ``state`` is
+                omitted against a shape with a field that has no default
+                (``STATE_REQUIRED``), breaches a declared limit, or ends in a
+                failure event.
         """
         result: AgentResult | None = None
         stream = self._run_stream(
@@ -505,8 +509,10 @@ class AgentRuntime:
             AgentRunError: On entry, when the worker's ``max_concurrent_runs``
                 is already taken (``TOO_MANY_RUNS``), the conversation cannot
                 be loaded (``CONVERSATION_LOAD_FAILED``,
-                ``CONVERSATION_LOAD_TIMEOUT``), or ``state`` is given against
-                an artefact declaring none (``STATE_UNDECLARED``).
+                ``CONVERSATION_LOAD_TIMEOUT``), ``state`` is given against an
+                artefact declaring none (``STATE_UNDECLARED``), or ``state``
+                is omitted against a shape with a field that has no default
+                (``STATE_REQUIRED``).
         """
         return self._run_stream(
             name, prompt, identity=identity, conversation_id=conversation_id, state=state
@@ -1187,15 +1193,16 @@ def _resolve_state(
 
     Returns:
         *state* unchanged when given. When *state* is ``None`` and *shape*
-        declares a decoder, the shape's own defaults — ``msgspec.to_builtins``
-        of decoding an empty object — so a stateful artefact renders its
-        declared defaults rather than empty markers. ``None`` when *shape* is
-        ``None``, or declares the open ``deps_type: dict`` form, which has no
-        defaults to supply.
+        declares a decoder whose every field has a default, the shape's own
+        defaults — ``msgspec.to_builtins`` of decoding an empty object — so a
+        stateful artefact renders its declared defaults rather than empty
+        markers. ``None`` when *shape* is ``None``, or declares the open
+        ``deps_type: dict`` form, which has no defaults to supply.
 
     Raises:
         AgentRunError: ``STATE_UNDECLARED`` when *state* is given and *shape*
-            is ``None``.
+            is ``None``; ``STATE_REQUIRED`` when *state* is ``None`` and
+            *shape* declares a field with no default.
     """
     if state is not None:
         if shape is None:
@@ -1207,7 +1214,15 @@ def _resolve_state(
         return cast(Mapping[str, Any], state)
     if shape is None or shape.decoder is None:
         return None
-    return cast(Mapping[str, Any], msgspec.to_builtins(shape.decoder.decode(b"{}")))
+    try:
+        decoded = shape.decoder.decode(b"{}")
+    except msgspec.ValidationError as exc:
+        raise AgentRunError(
+            AgentRunErrorCode.STATE_REQUIRED,
+            f"agent {name!r} declares a state field with no default ({exc}); "
+            "pass 'state' explicitly for this run",
+        ) from exc
+    return cast(Mapping[str, Any], msgspec.to_builtins(decoded))
 
 
 def _check_conversation_id(conversation_id: str | None) -> None:

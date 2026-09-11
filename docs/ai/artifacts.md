@@ -218,6 +218,11 @@ The consequences an author needs, stated rather than left implicit:
   `deps_schema` and listed in `ai.a2a.expose` fails **start-up**, naming both
   halves of the conflict. Resolve it by removing the state declaration or by
   removing the artifact from `expose`.
+* **A required field with no default, like `marca` above, must be supplied.**
+  Omitting `state` on a call fills every other field with its own declared
+  default, but a field the schema marks `required` without one has no
+  default to fill in, so the call fails with `STATE_REQUIRED` instead of
+  silently rendering an incomplete state.
 * **`ai.max_state_bytes`** bounds the raw `state` a caller may send in one
   request body, the same way `ai.max_prompt_bytes` bounds the prompt — a
   `state` over its cap is refused with its own `413`, naming `state`. State
