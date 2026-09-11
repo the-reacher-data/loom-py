@@ -87,12 +87,12 @@ class TestTheMarkerExampleRunsWithoutNetworkOrMcpServer:
 class TestWithoutADoubleRegisteredStartupFailsClosed:
     async def test_declaring_the_marker_without_a_double_fails_with_a_clear_error(self) -> None:
         # The docs promise the refusal names both, so pin both.
+        runner = (
+            UseCaseTest(LookUpRunbookUseCase())
+            .with_caller(_CALLER)
+            .with_params(incident_id="INC-102")
+        )
         with pytest.raises(RuntimeError) as refusal:
-            await (
-                UseCaseTest(LookUpRunbookUseCase())
-                .with_caller(_CALLER)
-                .with_params(incident_id="INC-102")
-                .run()
-            )
+            await runner.run()
         assert "LookUpRunbookUseCase" in str(refusal.value)
         assert _SERVER in str(refusal.value)

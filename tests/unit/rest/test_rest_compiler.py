@@ -443,8 +443,9 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
 
+        sources = RouteSources(python=[PyIFace], config=[ConfigIFace])
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(RouteSources(python=[PyIFace], config=[ConfigIFace]))
+            rest_compiler.compile_sources(sources)
         message = str(excinfo.value)
         assert "Python interface" in message
         assert "app.rest.interfaces entry" in message
@@ -469,8 +470,9 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
 
+        sources = RouteSources(python=[FirstIFace, SecondIFace])
         with pytest.raises(InterfaceCompilationError, match="declared twice"):
-            rest_compiler.compile_sources(RouteSources(python=[FirstIFace, SecondIFace]))
+            rest_compiler.compile_sources(sources)
 
     def test_disable_routes_removes_the_named_route(
         self, rest_compiler: RestInterfaceCompiler
@@ -494,12 +496,11 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
 
+        sources = RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
         with pytest.raises(
             InterfaceCompilationError, match="matches no route declared by a Python interface"
         ):
-            rest_compiler.compile_sources(
-                RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
-            )
+            rest_compiler.compile_sources(sources)
 
     def test_disable_routes_matching_nothing_names_the_eligible_candidates(
         self, rest_compiler: RestInterfaceCompiler
@@ -513,10 +514,9 @@ class TestCompileSources:
                 RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),
             )
 
+        sources = RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(
-                RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
-            )
+            rest_compiler.compile_sources(sources)
         message = str(excinfo.value)
         assert "(POST, '/users/')" in message
         assert "(GET, '/users/{user_id}')" in message
@@ -530,13 +530,12 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
 
+        sources = RouteSources(
+            python=[PyIFace],
+            disabled=[("GET", "/users/missing"), ("DELETE", "/users/also-missing")],
+        )
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(
-                RouteSources(
-                    python=[PyIFace],
-                    disabled=[("GET", "/users/missing"), ("DELETE", "/users/also-missing")],
-                )
-            )
+            rest_compiler.compile_sources(sources)
         message = str(excinfo.value)
         assert "(DELETE, '/users/also-missing')" in message
         assert "(GET, '/users/missing')" in message
@@ -552,10 +551,9 @@ class TestCompileSources:
                 RestRoute(use_case=GetUserUseCase, method="GET", path=f"/{i}") for i in range(25)
             )
 
+        sources = RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(
-                RouteSources(python=[PyIFace], disabled=[("GET", "/users/missing")])
-            )
+            rest_compiler.compile_sources(sources)
         message = str(excinfo.value)
         assert "and 5 more" in message
 
@@ -568,10 +566,9 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),)
 
+        sources = RouteSources(config=[ConfigIFace], disabled=[("GET", "/users/{user_id}")])
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(
-                RouteSources(config=[ConfigIFace], disabled=[("GET", "/users/{user_id}")])
-            )
+            rest_compiler.compile_sources(sources)
         assert "no Python-declared route is eligible for disablement" in str(excinfo.value)
 
     def test_disabling_a_python_route_lets_config_redeclare_it(
@@ -610,12 +607,11 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=GetUserUseCase, method="GET", path="/{user_id}"),)
 
+        sources = RouteSources(config=[ConfigIFace], disabled=[("GET", "/users/{user_id}")])
         with pytest.raises(
             InterfaceCompilationError, match="matches no route declared by a Python interface"
         ):
-            rest_compiler.compile_sources(
-                RouteSources(config=[ConfigIFace], disabled=[("GET", "/users/{user_id}")])
-            )
+            rest_compiler.compile_sources(sources)
 
     def test_same_origin_collision_advice_has_no_python_disable_instruction(
         self, rest_compiler: RestInterfaceCompiler
@@ -630,8 +626,9 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
 
+        sources = RouteSources(python=[FirstIFace, SecondIFace])
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(RouteSources(python=[FirstIFace, SecondIFace]))
+            rest_compiler.compile_sources(sources)
         message = str(excinfo.value)
         assert "disable the Python route" not in message
         assert "remove the duplicate declaration" in message
@@ -649,10 +646,9 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
 
+        sources = RouteSources(config=[FirstConfigIFace, SecondConfigIFace])
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(
-                RouteSources(config=[FirstConfigIFace, SecondConfigIFace])
-            )
+            rest_compiler.compile_sources(sources)
         message = str(excinfo.value)
         assert "disable the Python route" not in message
         assert "remove the duplicate declaration" in message
@@ -670,6 +666,7 @@ class TestCompileSources:
             prefix = "/users"
             routes = (RestRoute(use_case=GetUserUseCase, method="POST", path="/"),)
 
+        sources = RouteSources(python=[PyIFace], config=[ConfigIFace])
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            rest_compiler.compile_sources(RouteSources(python=[PyIFace], config=[ConfigIFace]))
+            rest_compiler.compile_sources(sources)
         assert "disable the Python route" in str(excinfo.value)

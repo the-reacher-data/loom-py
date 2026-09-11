@@ -378,19 +378,18 @@ class TestTheDoubleAndTheRealPathAgreeOnTheRefusal:
             container=container,
         )
 
+        use_case = _NarrowGatewayUseCase()
         async with runtime:
             with pytest.raises(AgentRunError) as real_failure:
-                await executor.execute(_NarrowGatewayUseCase(), identity=identity)
+                await executor.execute(use_case, identity=identity)
 
         double = McpHandleDouble(_SERVER).with_tools("search", "delete")
         double.on_call_untyped("delete", {"ok": True})
+        runner = (
+            UseCaseTest(_NarrowGatewayUseCase()).with_caller(identity).with_mcp(_SERVER, double)
+        )
         with pytest.raises(AgentRunError) as double_failure:
-            await (
-                UseCaseTest(_NarrowGatewayUseCase())
-                .with_caller(identity)
-                .with_mcp(_SERVER, double)
-                .run()
-            )
+            await runner.run()
 
         assert real_failure.value.code is AgentRunErrorCode.TOOL_UNKNOWN
         assert double_failure.value.code is AgentRunErrorCode.TOOL_UNKNOWN

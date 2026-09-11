@@ -381,9 +381,10 @@ class TestStartupFactory:
     def test_the_card_is_rejected_when_exclude_leaves_the_filter_empty(self) -> None:
         """A filter selecting none of the advertised skills fails start-up."""
         card = _card_with_skills("pricing", "forecast")
+        capability = a2a_capability(exclude=("*",))
 
         with pytest.raises(ValueError, match="no skill matching the granted filter"):
-            _a2a._reject_ungranted_card(a2a_capability(exclude=("*",)), card)
+            _a2a._reject_ungranted_card(capability, card)
 
     def test_the_card_is_accepted_when_a_granted_glob_selects_a_subset(self) -> None:
         """A glob that selects part of the card passes; the rest is simply not granted."""

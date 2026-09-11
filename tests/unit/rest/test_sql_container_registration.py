@@ -54,12 +54,9 @@ async def test_the_registered_collaborator_binds_the_roles_to_the_identity() -> 
     container = LoomContainer()
     _register_sql_collaborators(container, _wiring(), ObservabilityRuntime.noop())
     sql = container.resolve(CallerBoundSql)
+    identity = Identity(subject="user-1", roles=("role_intruder",), mechanism="jwt")
     with pytest.raises(RolesNotBoundError):
-        await sql.execute(
-            "SELECT 1",
-            connection="analytics",
-            identity=Identity(subject="user-1", roles=("role_intruder",), mechanism="jwt"),
-        )
+        await sql.execute("SELECT 1", connection="analytics", identity=identity)
 
 
 async def test_the_registered_collaborator_audits_with_the_app_runtime() -> None:

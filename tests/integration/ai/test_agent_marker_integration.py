@@ -188,8 +188,9 @@ class TestCycleAndDepthThroughTheMarker:
         _, executor = compiler_and_executor
 
         async def _run_inner() -> None:
+            inner_use_case = InnerMarkerUseCase()
             with pytest.raises(AgentRunError) as excinfo:
-                await executor.execute(InnerMarkerUseCase(), identity=_ALICE)
+                await executor.execute(inner_use_case, identity=_ALICE)
             assert excinfo.value.code is AgentRunErrorCode.AGENT_CALL_TOO_DEEP
 
         outer_engine = _CallbackScriptedEngine(_run_inner)
@@ -253,8 +254,9 @@ class TestTheConcurrencyPermitIsRefusedInsteadOfQueued:
             first = asyncio.ensure_future(executor.execute(MarkerAgentUseCase(), identity=_ALICE))
             await held_engine.started.wait()
 
+            second_use_case = MarkerAgentUseCase()
             with pytest.raises(AgentRunError) as excinfo:
-                await executor.execute(MarkerAgentUseCase(), identity=_ALICE)
+                await executor.execute(second_use_case, identity=_ALICE)
             assert excinfo.value.code is AgentRunErrorCode.TOO_MANY_RUNS
 
             await first

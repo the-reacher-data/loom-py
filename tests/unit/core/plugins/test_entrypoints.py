@@ -348,13 +348,14 @@ class TestApiVersionHandshake:
         engine = _Engine("alpha")
         engine.LOOM_AI_ENGINE_API = 99  # type: ignore[attr-defined]
         self._install_target(monkeypatch, engine)
+        requirement = self._requirement()
 
         with pytest.raises(ApiVersionMismatchError) as excinfo:
             load_entry_point(
                 _GROUP,
                 _NAME,
                 on_duplicate="error",
-                api_version=self._requirement(),
+                api_version=requirement,
             )
 
         message = str(excinfo.value)

@@ -385,8 +385,9 @@ class TestGeneratedClassNamesAreDistinct:
         }
         first, second = build_interfaces_from_config(cfg)
 
+        sources = RouteSources(config=(first, second))
         with pytest.raises(InterfaceCompilationError) as excinfo:
-            compiler.compile_sources(RouteSources(config=(first, second)))
+            compiler.compile_sources(sources)
         message = str(excinfo.value)
         assert first.__qualname__ in message
         assert second.__qualname__ in message
