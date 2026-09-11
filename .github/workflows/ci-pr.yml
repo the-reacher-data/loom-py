@@ -206,7 +206,7 @@ jobs:
         with:
           src-dir: src
           test-dir: tests
-          coverage-threshold: "80"
+          coverage-threshold: "90"
           fail-on-quality: "any"
           fail-on-security: "high"
           include-security: "true"
