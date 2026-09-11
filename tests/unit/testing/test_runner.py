@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -16,7 +17,8 @@ from loom.core.model import LoomStruct
 from loom.core.use_case.markers import Agent, Caller, Input, LoadById, Mcp
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
-from loom.testing.runner import AgentHandleDouble, McpHandleDouble, UseCaseTest
+from loom.rest.fastapi.auto import _AgentDepsFactory
+from loom.testing.runner import AgentHandleDouble, DepsFactoryDouble, McpHandleDouble, UseCaseTest
 
 # ---------------------------------------------------------------------------
 # Domain fixtures
@@ -636,3 +638,17 @@ class TestMcpMarkerRoutesEachServerToItsOwnDouble:
             "runbook": {"title": "checkout runbook"},
             "doc": {"title": "checkout doc"},
         }
+
+
+class TestDepsFactoryDoubleMatchesProduction:
+    """R3: the double drifting from ``DepsFactory`` must be caught by a test,
+    not rediscovered at run time."""
+
+    def test_double_and_production_factory_accept_the_same_call(self) -> None:
+        double_signature = inspect.signature(DepsFactoryDouble.build)
+        production_signature = inspect.signature(_AgentDepsFactory.build)
+        assert double_signature.parameters.keys() == production_signature.parameters.keys()
+        for name in double_signature.parameters:
+            assert (
+                double_signature.parameters[name].kind == production_signature.parameters[name].kind
+            )

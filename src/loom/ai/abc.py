@@ -352,6 +352,7 @@ class AgentHandle(Protocol[AnswerT]):
         prompt: str,
         *,
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[AnswerT]: ...
 
     @overload
@@ -361,6 +362,7 @@ class AgentHandle(Protocol[AnswerT]):
         *,
         expect: type[ExpectedT],
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[ExpectedT]: ...
 
     async def run(
@@ -369,6 +371,7 @@ class AgentHandle(Protocol[AnswerT]):
         *,
         expect: type[ExpectedT] | None = None,
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[AnswerT] | AgentAnswer[ExpectedT]:
         """Run the agent once and decode its answer.
 
@@ -403,6 +406,11 @@ class AgentHandle(Protocol[AnswerT]):
                 run only.
             conversation_id: Identifier of the conversation this run
                 continues; ``None`` runs single-shot.
+            state: This run's state, or ``None``. Reaches the artefact's
+                dependency bundle normalised against its declared shape;
+                given against an artefact declaring no ``deps_type`` or
+                ``deps_schema``, the call is refused rather than dropped
+                silently (FR-010).
 
         Returns:
             The decoded answer, this run's own usage and its interaction id.
@@ -411,7 +419,9 @@ class AgentHandle(Protocol[AnswerT]):
             AgentRunError: With ``AGENT_RUN_SHAPE_WITH_HOOK`` when ``expect``
                 is given and the artefact's output hook command declares the
                 output field — refused before the model is called, since the
-                hook could not be handed an answer shaped by ``expect``.
+                hook could not be handed an answer shaped by ``expect``; with
+                ``STATE_UNDECLARED`` when ``state`` is given and the artefact
+                declares no state shape.
         """
         ...
 
@@ -420,6 +430,7 @@ class AgentHandle(Protocol[AnswerT]):
         prompt: str,
         *,
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[str]:
         """Run the agent for open prose, pinning this run's answer to ``str``.
 
@@ -439,6 +450,8 @@ class AgentHandle(Protocol[AnswerT]):
             prompt: Prompt for this run.
             conversation_id: Identifier of the conversation this run
                 continues; ``None`` runs single-shot.
+            state: This run's state, forwarded to :meth:`run` unchanged; see
+                its own ``state`` for what it does and how it can fail.
 
         Returns:
             The model's own prose, this run's usage and its interaction id.
@@ -447,7 +460,9 @@ class AgentHandle(Protocol[AnswerT]):
             AgentRunError: With ``AGENT_RUN_SHAPE_WITH_HOOK`` when the
                 artefact's output hook command declares the ``output``
                 field — refused before the model is called, for the same
-                reason :meth:`run` raises it with ``expect`` given.
+                reason :meth:`run` raises it with ``expect`` given; with
+                ``STATE_UNDECLARED`` for the same reason :meth:`run` raises
+                it.
         """
         ...
 
@@ -614,6 +629,7 @@ class AgentEngine(Protocol):
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AgentResult:
         """Run the agent to completion.
 
@@ -622,6 +638,12 @@ class AgentEngine(Protocol):
             identity: Verified caller; every capability call runs as them.
             conversation: The conversation this run continues; ``None`` runs
                 single-shot.
+            state: This run's state, already decoded by whichever boundary
+                received it and normalised against the artefact's declared
+                shape — never parsed again here (FR-008). ``None`` for an
+                artefact declaring no state, or for a stateful one whose
+                caller supplied none, in which case it carries the shape's
+                own declared defaults instead of an empty value.
 
         Returns:
             The validated output and the run's usage, plus ``messages`` when a
@@ -635,6 +657,7 @@ class AgentEngine(Protocol):
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Run the agent, streaming events.
 
@@ -647,6 +670,8 @@ class AgentEngine(Protocol):
             identity: Verified caller; every capability call runs as them.
             conversation: The conversation this run continues; ``None`` runs
                 single-shot.
+            state: This run's state; see :meth:`run`'s own ``state`` for what
+                it carries.
 
         Returns:
             An async context manager yielding the event stream.
@@ -837,15 +862,26 @@ class DepsFactory(Protocol):
 
     Singleton services are captured once at build; :class:`Identity` is
     supplied per invocation so every capability call runs as the caller
-    (FR-043).
+    (FR-043). The bundle also carries the invocation's ``state``, alongside
+    the verified caller and the container, never instead of them: a
+    capability call reads ``identity`` and ``container`` off the bundle the
+    same way regardless of whether ``state`` is present.
     """
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Build the dependency bundle for one invocation.
 
         Args:
             identity: Verified caller of this invocation.
             container: Application container holding the singleton services.
+            state: The invocation's state, a mapping normalised against the
+                artefact's declared shape, or ``None`` for an artefact that
+                declares no state or a call that supplies none.
 
         Returns:
             The engine-facing dependency bundle.

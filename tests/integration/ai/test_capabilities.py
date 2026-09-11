@@ -354,7 +354,12 @@ class CapabilityDeps:
 class CapabilityDepsFactory:
     """Per-invocation factory producing a well-formed :class:`CapabilityDeps`."""
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the bundle carrying the caller, the container and the invoker."""
         registered = container.is_registered(ApplicationInvoker)
         invoker = container.resolve(ApplicationInvoker) if registered else None
@@ -368,7 +373,12 @@ class IdentitylessDepsFactory:
     capability boundary must fail closed rather than substitute ``ANONYMOUS``.
     """
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return a bundle deliberately missing the contract's attributes."""
         del identity, container
         return object()

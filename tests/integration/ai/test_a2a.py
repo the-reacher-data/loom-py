@@ -66,6 +66,7 @@ from tests.integration.ai.conftest import (
     make_ai_config,
     make_endpoint,
     make_plan,
+    make_state_shape,
 )
 
 _AGENT = "analyst"
@@ -97,17 +98,27 @@ class ExplodingEngine:
     """
 
     def run_stream(
-        self, prompt: str, *, identity: Identity, conversation: Conversation | None = None
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> Any:
         """Return a stream whose entry raises before any event exists."""
-        del prompt, identity, conversation
+        del prompt, identity, conversation, state
         return _FailingStream()
 
     async def run(
-        self, prompt: str, *, identity: Identity, conversation: Conversation | None = None
+        self,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> object:
         """Fail the same way the stream does; the runtime drives the stream."""
-        del prompt, identity, conversation
+        del prompt, identity, conversation, state
         raise RuntimeError(_CATCH_ALL_CANARY)
 
     async def health(self) -> HealthStatus:
@@ -422,6 +433,51 @@ class TestOptionality:
             paths = _route_paths(app)
 
         assert f"{_PREFIX}/ghost" not in paths
+        assert f"{_PREFIX}/{_AGENT}" in paths
+
+
+class TestStateSurfaceRefusal:
+    """A stateful artifact and A2A exposure are refused together (T306, FR-014)."""
+
+    async def test_fails_to_start_when_a_stateful_artifact_is_exposed_over_a2a(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Both halves of the conflict are named: the artifact and the surface."""
+        plans = [make_plan(_AGENT, state=make_state_shape())]
+        with pytest.raises(AgentCompilationError) as raised:
+            async with _serving(deps=deps, container=container, plans=plans) as (
+                _app,
+                _client,
+            ):
+                pass  # pragma: no cover - binding fails before the body runs
+
+        issue = raised.value.issues[0]
+        assert issue.code is AgentErrorCode.STATE_SURFACE_UNSUPPORTED
+        assert _AGENT in issue.message
+        assert "a2a" in issue.message
+
+    async def test_starts_when_a_stateful_artifact_is_not_exposed_over_a2a(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """The same declared state boots when ``ai.a2a.expose`` does not name it."""
+        plans = [make_plan(_AGENT, state=make_state_shape())]
+        a2a = A2AConfig(base_url=_BASE_URL, expose=("other",))
+        async with _serving(deps=deps, container=container, plans=plans, a2a=a2a) as (
+            app,
+            _client,
+        ):
+            paths = _route_paths(app)
+
+        assert f"{_PREFIX}/{_AGENT}" not in paths
+
+    async def test_starts_when_a_stateless_artifact_is_exposed_over_a2a(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """An artifact declaring no state is published over A2A normally."""
+        plans = [make_plan(_AGENT)]
+        async with _serving(deps=deps, container=container, plans=plans) as (app, _client):
+            paths = _route_paths(app)
+
         assert f"{_PREFIX}/{_AGENT}" in paths
 
 

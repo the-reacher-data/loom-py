@@ -79,7 +79,12 @@ class CapabilityDeps:
 class CapabilityDepsFactory:
     """Per-invocation factory producing a well-formed :class:`CapabilityDeps`."""
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the bundle carrying the caller and the container."""
         return CapabilityDeps(identity=identity, container=container)
 

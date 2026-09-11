@@ -8,6 +8,7 @@ recording unit of work.  No network, no database, no model.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -262,7 +263,12 @@ class _UnboundDepsFactory:
 
     inner: RecordingDepsFactory
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the inner bundle with its invoker's identity stripped."""
         bundle = self.inner.build(identity, container)
         assert isinstance(bundle, RecordingDeps)

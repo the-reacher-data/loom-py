@@ -35,6 +35,7 @@ from loom.ai.abc import (
     HealthStatus,
     McpToolCallResult,
     McpToolInfo,
+    StateShape,
     TextDeltaEvent,
 )
 from loom.ai.compiler._plan import (
@@ -376,9 +377,10 @@ class ScriptedEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> Any:  # AbstractAsyncContextManager[AsyncIterator[AgentEvent]]
         """Replay the script as an event stream, recording the conversation."""
-        del prompt, identity
+        del prompt, identity, state
         self.stream_count += 1
         self.conversations.append(conversation)
 
@@ -398,9 +400,12 @@ class ScriptedEngine:
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> AgentResult:
         """Replay the script to completion and return its terminal outcome."""
-        async with self.run_stream(prompt, identity=identity, conversation=conversation) as stream:
+        async with self.run_stream(
+            prompt, identity=identity, conversation=conversation, state=state
+        ) as stream:
             last: AgentEvent | None = None
             async for event in stream:
                 last = event
@@ -460,7 +465,12 @@ class CountingEngineProvider:
 class StubDepsFactory:
     """Per-invocation dependency factory carrying only the caller identity."""
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the dependency bundle for one invocation."""
         del container
         return {"identity": identity}
@@ -558,7 +568,12 @@ class RecordingDepsFactory:
         self._registry = UseCaseRegistry.build(list(self.use_cases))
         self._executor = RuntimeExecutor(compiler, uow_factory=self.uow)
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the bundle for one invocation, its invoker bound to ``identity``."""
         invoker = AppInvoker(UseCaseFactory(container), self._executor, self._registry)
         return RecordingDeps(
@@ -594,12 +609,14 @@ def make_plan(
     *,
     capabilities: Sequence[CompiledCapability] = (),
     policies: PolicySpec | None = None,
+    state: StateShape | None = None,
 ) -> AgentPlan:
     """Build a compiled plan with a decodable output and no secret material."""
     return AgentPlan(
         name=name,
         description=f"{name} test agent",
         instructions=(CompiledInstruction(text="answer"),),
+        state=state,
         spec_version=1,
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(
@@ -610,6 +627,11 @@ def make_plan(
         policies=policies if policies is not None else make_policies(),
         metadata={},
     )
+
+
+def make_state_shape() -> StateShape:
+    """Build the ``deps_type: dict`` waiver shape: no schema, no decoder."""
+    return StateShape(schema=None, decoder=None)
 
 
 DEFAULT_MCP_SERVER = "tools"
@@ -679,6 +701,7 @@ def make_ai_config(
     startup_timeout_ms: int = 500,
     max_concurrent_runs: int = 8,
     max_prompt_bytes: int = 65536,
+    max_state_bytes: int = 65536,
     health_cache_ttl_ms: int = 20,
     remote_clients: str = "required",
     max_agent_depth: int = 1,
@@ -695,6 +718,7 @@ def make_ai_config(
         startup_timeout_ms=startup_timeout_ms,
         max_concurrent_runs=max_concurrent_runs,
         max_prompt_bytes=max_prompt_bytes,
+        max_state_bytes=max_state_bytes,
         health_cache_ttl_ms=health_cache_ttl_ms,
         remote_clients=remote_clients,
         max_agent_depth=max_agent_depth,
@@ -762,7 +786,12 @@ class CapabilityDeps:
 class CapabilityDepsFactory:
     """Per-invocation factory producing a well-formed :class:`CapabilityDeps`."""
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the bundle every MCP tool call is guarded against."""
         return CapabilityDeps(identity=identity, container=container)
 
@@ -1010,18 +1039,22 @@ def conversation_deps() -> RecordingDepsFactory:
 
 
 class RecordingScriptedEngine(ScriptedEngine):
-    """A :class:`ScriptedEngine` that also records the identity of every run.
+    """A :class:`ScriptedEngine` that also records the identity and state of every run.
 
     What a marker-driven run must prove is not merely that it returns an
     answer, but that the identity reaching the model is the one the executor
     bound the handle to — never a worker identity, never a value read back
     out of the caller-facing parameters. Recording it here, at the one seam
     between the handle and the "model", is what lets a test assert on it.
+    ``states`` is the corresponding record for T303's own channel: what the
+    runtime resolved *this* run's ``state`` to, after FR-010's check and
+    FR-009's defaults.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.identities: list[Identity] = []
+        self.states: list[object | None] = []
 
     def run_stream(
         self,
@@ -1029,9 +1062,11 @@ class RecordingScriptedEngine(ScriptedEngine):
         *,
         identity: Identity,
         conversation: Conversation | None = None,
+        state: object | None = None,
     ) -> Any:
         self.identities.append(identity)
-        return super().run_stream(prompt, identity=identity, conversation=conversation)
+        self.states.append(state)
+        return super().run_stream(prompt, identity=identity, conversation=conversation, state=state)
 
 
 class ShapedRecordingEngine(RecordingScriptedEngine):
@@ -1054,9 +1089,10 @@ class ShapedRecordingEngine(RecordingScriptedEngine):
         identity: Identity,
         conversation: Conversation | None = None,
         output_type: type[Any],
+        state: object | None = None,
     ) -> Any:
         self.shaped_calls.append(output_type)
-        return self.run_stream(prompt, identity=identity, conversation=conversation)
+        return self.run_stream(prompt, identity=identity, conversation=conversation, state=state)
 
 
 MARKER_AGENT_NAME = "triage"

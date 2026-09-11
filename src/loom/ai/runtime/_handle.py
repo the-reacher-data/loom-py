@@ -97,6 +97,7 @@ class _BoundAgentHandle:
         *,
         expect: type[Any] | None = None,
         conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[Any]:
         """Run the agent once, decoded into ``expect`` or its declared output.
 
@@ -107,6 +108,8 @@ class _BoundAgentHandle:
                 check does not run for this call.
             conversation_id: Identifier of the conversation this run
                 continues; ``None`` runs single-shot.
+            state: This run's state, forwarded to
+                :meth:`~loom.ai.runtime.AgentRuntime.run` unchanged.
 
         Returns:
             The decoded answer, this run's own usage and its interaction id.
@@ -116,8 +119,9 @@ class _BoundAgentHandle:
                 is anonymous — checked before the model is called; with
                 ``AGENT_RUN_SHAPE_WITH_HOOK`` when ``expect`` is given and the
                 artefact's output hook declares the ``output`` field — also
-                checked before the model is called; or with whatever code the
-                run itself failed with.
+                checked before the model is called; with ``STATE_UNDECLARED``
+                when ``state`` is given and the artefact declares no state
+                shape; or with whatever code the run itself failed with.
         """
         self._require_authenticated()
         if expect is not None:
@@ -130,6 +134,7 @@ class _BoundAgentHandle:
                 identity=self._identity,
                 conversation_id=conversation_id,
                 output_type=expect,
+                state=state,
             )
         except AgentRunError as exc:
             self._close_span_on_failure(span, exc)
@@ -142,7 +147,11 @@ class _BoundAgentHandle:
         )
 
     async def run_text(
-        self, prompt: str, *, conversation_id: str | None = None
+        self,
+        prompt: str,
+        *,
+        conversation_id: str | None = None,
+        state: object | None = None,
     ) -> AgentAnswer[str]:
         """Run the agent for open prose, with no declared or overridden shape.
 
@@ -150,15 +159,17 @@ class _BoundAgentHandle:
             prompt: Prompt for this run.
             conversation_id: Identifier of the conversation this run
                 continues; ``None`` runs single-shot.
+            state: This run's state, forwarded to :meth:`run` unchanged.
 
         Returns:
             The model's own prose, this run's usage and its interaction id.
 
         Raises:
-            AgentRunError: With ``UNAUTHORIZED`` or ``AGENT_RUN_SHAPE_WITH_HOOK``,
-                for the same reasons :meth:`run` raises them with ``expect``.
+            AgentRunError: With ``UNAUTHORIZED``, ``AGENT_RUN_SHAPE_WITH_HOOK``
+                or ``STATE_UNDECLARED``, for the same reasons :meth:`run`
+                raises them with ``expect`` and ``state``.
         """
-        answer = await self.run(prompt, expect=str, conversation_id=conversation_id)
+        answer = await self.run(prompt, expect=str, conversation_id=conversation_id, state=state)
         return answer
 
     def mcp(self, server: str) -> McpHandle:

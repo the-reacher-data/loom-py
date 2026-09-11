@@ -563,11 +563,15 @@ class _AgentDeps:
         identity: Verified caller of the invocation.
         container: Application container holding the singleton services.
         invoker: Application invoker already bound to ``identity``.
+        state: The invocation's state, a mapping normalised against the
+            artefact's declared shape, or ``None`` for an artefact that
+            declares no state or a call that supplies none.
     """
 
     identity: Identity
     container: LoomContainer
     invoker: AppInvoker
+    state: Mapping[str, Any] | None = None
 
 
 class _AgentDepsFactory:
@@ -589,12 +593,20 @@ class _AgentDepsFactory:
     def __init__(self, invoker: AppInvoker) -> None:
         self._invoker = invoker
 
-    def build(self, identity: Identity, container: LoomContainer) -> object:
+    def build(
+        self,
+        identity: Identity,
+        container: LoomContainer,
+        state: Mapping[str, Any] | None = None,
+    ) -> object:
         """Return the dependency bundle for one invocation.
 
         Args:
             identity: Verified caller of this invocation.
             container: Application container holding the singleton services.
+            state: The invocation's state, a mapping normalised against the
+                artefact's declared shape, or ``None`` for an artefact that
+                declares no state or a call that supplies none.
 
         Returns:
             The bundle the engine passes to its capability calls.
@@ -603,6 +615,7 @@ class _AgentDepsFactory:
             identity=identity,
             container=container,
             invoker=self._invoker.for_identity(identity),
+            state=state,
         )
 
 

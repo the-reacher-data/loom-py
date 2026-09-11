@@ -60,6 +60,10 @@ RUN_ERROR_DETAILS: Final[Mapping[AgentRunErrorCode, str]] = MappingProxyType(
         AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: (
             "the conversation loader exceeded its time limit"
         ),
+        # Unreachable over this surface: a stateful artefact never publishes
+        # here (STATE_SURFACE_UNSUPPORTED, start-up). Present for the
+        # catalogue's own totality test.
+        AgentRunErrorCode.STATE_UNDECLARED: "the run declares no state, so it accepts none",
         AgentRunErrorCode.MCP_GRANT_UNKNOWN: "the requested MCP grant is unknown",
         AgentRunErrorCode.SQL_GRANT_UNKNOWN: "the requested SQL grant is unknown",
         AgentRunErrorCode.TOOL_UNKNOWN: "the requested tool is unknown",

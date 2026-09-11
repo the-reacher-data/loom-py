@@ -5,9 +5,10 @@ Pins two properties of the pillar's public API:
 * ``loom.ai.__all__`` exposes exactly the engine-neutral surface — no private
   names, no engine or vendor types, and every listed name resolves.
 * The ``AgentEngine`` protocol takes a single prompt and, optionally, the
-  conversation the run continues as loom's opaque ``Conversation`` (FR-034):
-  runs take a ``prompt``, a keyword-only ``identity`` and a keyword-only
-  ``conversation`` defaulting to ``None``; no ``message``/``history``-style
+  conversation the run continues as loom's opaque ``Conversation`` (FR-034),
+  and the run's state: runs take a ``prompt``, a keyword-only ``identity``, a
+  keyword-only ``conversation`` defaulting to ``None`` and a keyword-only
+  ``state`` defaulting to ``None``; no ``message``/``history``-style
   parameter exists, and ``run_stream`` is an async context manager.
 """
 
@@ -65,7 +66,7 @@ _FORBIDDEN_RUN_PARAMS = frozenset(
     {"message", "messages", "history", "chat_history", "message_history"}
 )
 
-_RUN_PARAMS = frozenset({"self", "prompt", "identity", "conversation"})
+_RUN_PARAMS = frozenset({"self", "prompt", "identity", "conversation", "state"})
 
 
 def _run_signature(method_name: str) -> inspect.Signature:
@@ -139,7 +140,7 @@ class TestAgentEngineProtocol:
         self,
         method_name: str,
     ) -> None:
-        """The run contract is exactly prompt, identity and conversation (AC14)."""
+        """The run contract is exactly prompt, identity, conversation and state (AC14)."""
         parameters = set(_run_signature(method_name).parameters)
 
         assert parameters == _RUN_PARAMS
@@ -174,6 +175,17 @@ class TestAgentEngineProtocol:
         identity = _run_signature(method_name).parameters["identity"]
 
         assert identity.kind is inspect.Parameter.KEYWORD_ONLY
+
+    @pytest.mark.parametrize("method_name", ["run", "run_stream"])
+    def test_state_is_keyword_only_defaulting_to_none(
+        self,
+        method_name: str,
+    ) -> None:
+        """``state`` is optional and keyword-only: ``None`` means no invocation state."""
+        state = _run_signature(method_name).parameters["state"]
+
+        assert state.kind is inspect.Parameter.KEYWORD_ONLY
+        assert state.default is None
 
     def test_run_stream_is_annotated_as_an_async_context_manager(
         self,
