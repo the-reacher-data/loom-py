@@ -4,6 +4,17 @@
 
 ### prefect
 
+- **prefect:** a correlation id renders its datetime's UTC instant instead of
+  its wall clock. `strftime` printed the local reading and dropped the
+  offset, so `2026-06-03T00:00+02:00` and `2026-06-03T00:00Z` — two instants
+  two hours apart — produced the same id, and therefore the same manifest
+  store key: the second run opened the first one's manifest and could treat
+  processes it never ran as done. A naive value still means UTC and is
+  unaffected by the machine's zone. The id of a run whose `correlation_field`
+  carries a non-UTC offset changes (`2026-06-03T00:00+02:00` now keys
+  `20260602T220000`), so do not upgrade across a run you intend to resume
+  from its manifest.
+
 - **prefect:** `backfill_flow` resumes from a `start_from` submitted as a
   string. A flow's run parameters are not validated against its signature
   (`validate_parameters=False`), so `start_from` reached the chunk algebra
