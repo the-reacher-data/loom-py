@@ -15,6 +15,7 @@ except ImportError:
     _clickhouse_connect = None
 
 from loom.core.logger import get_logger
+from loom.etl.declarative.target import TargetSpec
 from loom.etl.declarative.target._client import ClientSpec
 
 _log = get_logger(__name__)
@@ -108,7 +109,7 @@ class ClickHouseTargetWriter:
     def write(
         self,
         frame: Any,
-        spec: ClickHouseTableSpec,
+        spec: ClickHouseTableSpec | TargetSpec,
         params: Any,
         /,
         *,
@@ -136,6 +137,12 @@ class ClickHouseTargetWriter:
                 "ClickHouseTargetWriter.write() does not handle ClientSpec. "
                 "ClientStep execution is routed by ETLExecutor before write() is called. "
                 "This is an internal error — ClientSpec should never reach write()."
+            )
+        if not isinstance(spec, ClickHouseTableSpec):
+            raise TypeError(
+                f"ClickHouseTargetWriter.write() does not handle {type(spec).__qualname__}. "
+                "The writer registry dispatches a spec to this writer by its 'clickhouse' "
+                "kind, so this is an internal error."
             )
         _ = write_ctx
         engine: Literal["streaming", "auto"] = "streaming" if streaming else "auto"

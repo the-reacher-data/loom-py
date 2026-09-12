@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
-from loom.etl.io._registry import ReaderRegistry, WriterRegistry
+from loom.etl.io._registry import WriterRegistry
 from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
 from loom.etl.io.sources._dynamodb import DynamoDbSourceReader
 from loom.etl.io.sources._mongo import MongoSourceReader
@@ -48,7 +48,6 @@ class PolarsProvider(BackendProvider):
             clickhouse_reader=clickhouse_reader,
             dynamodb_reader=dynamodb_reader,
         )
-        reader = ReaderRegistry(polars_reader)
         polars_writer = PolarsTargetWriter(
             locator,
             missing_table_policy=config.missing_table_policy,
@@ -63,7 +62,7 @@ class PolarsProvider(BackendProvider):
             )
         else:
             writer = polars_writer
-        return (reader, writer)
+        return (polars_reader, writer)
 
     def create_lineage_writer(
         self,

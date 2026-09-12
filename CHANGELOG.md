@@ -1,5 +1,26 @@
 # Unreleased
 
+## ♻️ Refactor
+
+### etl
+
+- **etl:** the reader registry is gone. Nothing registered a per-kind
+  reader: the Mongo, ClickHouse and DynamoDB readers are built from
+  configuration and injected into the Polars reader, so the registry wrapped
+  one reader and forwarded to it. `PolarsProvider.create_backends` now
+  returns that reader directly, as the Spark provider already did. The
+  executor's own `StreamingSourceReader` check consequently inspects the
+  reader instead of the wrapper, which satisfied the protocol whatever it
+  wrapped, and a step that asks for a streaming read its reader cannot serve
+  is now refused by that check, naming the reader.
+- **etl:** the writer registry names the `TargetWriter` protocol instead of
+  `Any`. That surfaced `ClickHouseTargetWriter.write` declaring a narrower
+  spec type than the protocol it is dispatched through; it now accepts the
+  protocol's type and refuses a spec of another kind with a `TypeError`,
+  which the registry's dispatch by kind already made unreachable.
+
+# 🚀 Release 2.1.2 ([#238](https://github.com/the-reacher-data/loom-py/pull/238))
+
 ## 🐛 Fixes
 
 ### prefect
@@ -14,6 +35,12 @@
   carries a non-UTC offset changes (`2026-06-03T00:00+02:00` now keys
   `20260602T220000`), so do not upgrade across a run you intend to resume
   from its manifest.
+
+# 🚀 Release 2.1.1 ([#236](https://github.com/the-reacher-data/loom-py/pull/236))
+
+## 🐛 Fixes
+
+### prefect
 
 - **prefect:** `backfill_flow` resumes from a `start_from` submitted as a
   string. A flow's run parameters are not validated against its signature

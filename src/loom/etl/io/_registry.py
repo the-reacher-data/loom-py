@@ -1,96 +1,54 @@
-"""Dispatch registries that route specs to per-kind readers and writers."""
+"""Dispatch registry that routes a target spec to the writer registered for its kind."""
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
-from loom.etl.runtime.contracts import StreamingSourceReader
+from loom.etl.declarative.target import TargetSpec
+from loom.etl.runtime.contracts import TargetWriter
 
-
-class ConfigurationError(Exception):
-    """Raised when a required connector dependency is absent at construction."""
-
-
-class ReaderRegistry:
-    def __init__(
-        self,
-        base: Any | None,
-        *,
-        extra: dict[str, Any] | None = None,
-    ) -> None:
-        self._base = base
-        self._extra: dict[str, Any] = extra or {}
-
-    def read(self, spec: Any, params: Any, /) -> Any:
-        handler = self._resolve_handler(spec)
-        return handler.read(spec, params)
-
-    def read_streaming(self, spec: Any, params: Any, /) -> Any:
-        """Dispatch a streaming read to the per-kind handler or base reader.
-
-        Args:
-            spec: Source specification with a ``.kind`` attribute.
-            params: Concrete params for current run.
-
-        Returns:
-            Backend frame produced by the matching reader's
-            ``read_streaming``.
-
-        Raises:
-            ConfigurationError: When no reader is registered for this kind.
-            TypeError: When the matching reader does not implement
-                :class:`StreamingSourceReader`.
-        """
-        handler = self._resolve_handler(spec)
-        if not isinstance(handler, StreamingSourceReader):
-            raise TypeError(
-                f"Reader for spec kind {spec.kind!r} "
-                f"({type(handler).__qualname__}) does not implement "
-                "StreamingSourceReader; cannot honor streaming=True."
-            )
-        return handler.read_streaming(spec, params)
-
-    def _resolve_handler(self, spec: Any) -> Any:
-        handler = self._extra.get(spec.kind)
-        if handler is not None:
-            return handler
-        if self._base is not None:
-            return self._base
-        raise ConfigurationError(
-            f"No reader registered for spec kind {spec.kind!r} and no base reader."
-        )
+if TYPE_CHECKING:
+    from loom.etl.lineage._records import WriteContext
 
 
 class WriterRegistry:
-    """Dispatch write() calls to a per-kind writer or fall back to the base writer.
+    """Dispatch a write to the writer registered for the spec's kind, or to the base writer.
 
-    The ``extra`` dict maps ``spec.kind`` strings to writer instances.  Specs
-    whose kind is not in ``extra`` are forwarded to ``base``.
+    Args:
+        base: Writer every spec whose kind is not in *extra* is written through.
+        extra: Writers by ``spec.kind``.
     """
 
     def __init__(
         self,
-        base: Any,
+        base: TargetWriter,
         *,
-        extra: dict[str, Any] | None = None,
+        extra: Mapping[str, TargetWriter] | None = None,
     ) -> None:
         self._base = base
-        self._extra: dict[str, Any] = extra or {}
+        self._extra: Mapping[str, TargetWriter] = extra or {}
 
     def write(
         self,
         frame: Any,
-        spec: Any,
+        spec: TargetSpec,
         params: Any,
         /,
         *,
         streaming: bool = False,
-        write_ctx: Any = None,
+        write_ctx: WriteContext | None = None,
     ) -> None:
-        """Dispatch write to the matching extra handler or fall back to base."""
+        """Write *frame* into *spec* through its kind's writer, or through the base writer.
+
+        Args:
+            frame: Frame returned by the step's ``execute()``.
+            spec: Compiled target specification.
+            params: Concrete params for current run.
+            streaming: Hint for lazy backends to use streaming materialization.
+            write_ctx: Execution context for audit-column injection.
+        """
         kind = getattr(spec, "kind", None)
         handler = self._extra.get(kind) if kind is not None else None
-        if handler is not None:
-            handler.write(frame, spec, params, streaming=streaming, write_ctx=write_ctx)
-            return
-        self._base.write(frame, spec, params, streaming=streaming, write_ctx=write_ctx)
+        writer = handler if handler is not None else self._base
+        writer.write(frame, spec, params, streaming=streaming, write_ctx=write_ctx)
