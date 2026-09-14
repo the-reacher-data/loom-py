@@ -28,9 +28,11 @@
   every write, stamping `valid_to` each time even though nothing changed.
   The same null-mismatch broke `overwrite` — the refreshed value silently
   never landed on the open row. The Polars and Spark join now treat two
-  nulls as equal (`nulls_equal`/`join_nulls` on Polars, `eqNullSafe` on
+  nulls as equal (`nulls_equal` on Polars, `eqNullSafe` on
   Spark) for both the SNAPSHOT classification joins and the overwrite join;
   LOG mode was already null-safe and is unaffected.
+  The `etl-polars` extra now requires `polars>=1.24`, the release that
+  named that join option `nulls_equal`.
 
 ## ♻️ Refactor
 
