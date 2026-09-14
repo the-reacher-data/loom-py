@@ -289,9 +289,6 @@ select = [
     "SIM",
 ]
 
-[tool.ruff.lint.per-file-ignores]
-"tests/unit/core/model/_later_defined_models.py" = ["F821"]
-
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = [
     "Agent",

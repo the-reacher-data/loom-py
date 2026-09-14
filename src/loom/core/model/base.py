@@ -1,6 +1,6 @@
 import sys
 import typing
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import msgspec
 from msgspec import UNSET, UnsetType
@@ -31,13 +31,16 @@ def _resolve_annotation(annotation: Any, namespace: dict[str, Any]) -> Any:
     return hints["annotation"]
 
 
-def _class_body_annotations(namespace: dict[str, Any]) -> dict[str, Any]:
+def _take_class_body_annotations(namespace: dict[str, Any]) -> dict[str, Any]:
     if "__annotations__" in namespace:
-        return cast(dict[str, Any], namespace["__annotations__"])
+        annotations: dict[str, Any] = namespace["__annotations__"]
+        return annotations
     if sys.version_info >= (3, 14):
         annotate = annotationlib.get_annotate_from_class_namespace(namespace)
         if annotate is not None:
-            return annotationlib.call_annotate_function(annotate, annotationlib.Format.FORWARDREF)
+            namespace.pop("__annotate__", None)
+            namespace.pop("__annotate_func__", None)
+            return annotationlib.call_annotate_function(annotate, annotationlib.Format.VALUE)
     return {}
 
 
@@ -99,7 +102,7 @@ class LoomStructMeta(_StructMeta):
         columns: dict[str, ColumnFieldSpec] = {}
         relations: dict[str, Relation] = {}
         projections: dict[str, Projection] = {}
-        annotations = _class_body_annotations(namespace)
+        annotations = _take_class_body_annotations(namespace)
 
         eval_ns = _build_eval_namespace(namespace)
 
@@ -122,8 +125,6 @@ class LoomStructMeta(_StructMeta):
 
         namespace.update(defaults)
         namespace["__annotations__"] = annotations
-        namespace.pop("__annotate__", None)
-        namespace.pop("__annotate_func__", None)
         struct_cls: Any = super().__new__(cls, name, bases, namespace, **kwargs)
         struct_cls.__loom_columns__ = columns
         struct_cls.__loom_relations__ = relations
