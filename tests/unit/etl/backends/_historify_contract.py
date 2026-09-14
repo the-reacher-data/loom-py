@@ -338,6 +338,94 @@ class HistorifyContractTests:
         assert rows[0]["valid_from"] == date(2024, 1, 1)
 
     # ------------------------------------------------------------------
+    # Null-safe track comparison (no-op when the tracked value is null)
+    # ------------------------------------------------------------------
+
+    def test_null_tracked_value_is_stable_across_runs(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A track column that is null in both existing and incoming rows must
+        compare equal, not "changed" — a null must not reopen the vector on
+        every run."""
+        frame = make_frame([{"player_id": 1, "team_id": None}, {"player_id": 2, "team_id": "RM"}])
+        writer.write(frame, _snapshot_spec(), _Params(run_date=date(2024, 1, 1)))
+        writer.write(frame, _snapshot_spec(), _Params(run_date=date(2024, 1, 2)))
+        rows = read_table(self._uri(root))
+        player_1 = [r for r in rows if r["player_id"] == 1]
+        assert len(player_1) == 1
+        assert player_1[0]["valid_from"] == date(2024, 1, 1)
+        assert player_1[0]["valid_to"] is None
+
+    def test_overwrite_refreshes_open_row_with_null_track(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Overwrite must still land on the open row when join_key includes a
+        null track value — the overwrite join must be null-safe too."""
+        spec = _snapshot_spec(track=("team_id",), overwrite=("email",))
+        writer.write(
+            make_frame(
+                [
+                    {"player_id": 1, "team_id": None, "email": "old@x.com"},
+                    {"player_id": 2, "team_id": "RM", "email": "rm@x.com"},
+                ]
+            ),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame(
+                [
+                    {"player_id": 1, "team_id": None, "email": "new@x.com"},
+                    {"player_id": 2, "team_id": "RM", "email": "rm@x.com"},
+                ]
+            ),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        rows = read_table(self._uri(root))
+        player_1 = [r for r in rows if r["player_id"] == 1]
+        assert len(player_1) == 1
+        assert player_1[0]["email"] == "new@x.com"
+        assert player_1[0]["valid_from"] == date(2024, 1, 1)
+
+    def test_null_to_value_transition_closes_and_opens(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A track column flipping null -> value is a real change: it must
+        close the old (null) vector and open a new one, same as any other
+        tracked change."""
+        spec = _snapshot_spec(track=("team_id",))
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": None}, {"player_id": 2, "team_id": "RM"}]),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "BCA"}, {"player_id": 2, "team_id": "RM"}]),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        rows = read_table(self._uri(root))
+        player_1 = sorted((r for r in rows if r["player_id"] == 1), key=lambda r: r["valid_from"])
+        assert len(player_1) == 2
+        assert player_1[0]["team_id"] is None
+        assert player_1[0]["valid_to"] == date(2024, 5, 31)
+        assert player_1[1]["team_id"] == "BCA"
+        assert player_1[1]["valid_to"] is None
+
+    # ------------------------------------------------------------------
     # New entity
     # ------------------------------------------------------------------
 

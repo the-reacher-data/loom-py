@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import polars as pl
@@ -14,6 +15,14 @@ from loom.etl.declarative.target._history import (
     HistorifySpec,
     HistoryDateType,
 )
+
+# `nulls_equal` (join treats two nulls as a match) was named `join_nulls` before
+# polars 1.24; the old name still works there but only as a deprecated alias.
+# Detect once so a null in a tracked column classifies as "equal to itself"
+# without warning noise on the currently supported (>=1.24) range or breaking
+# on the declared floor (polars>=1.0).
+_JOIN_PARAMS = inspect.signature(pl.DataFrame.join).parameters
+_NULL_SAFE_JOIN_KWARG = "nulls_equal" if "nulls_equal" in _JOIN_PARAMS else "join_nulls"
 
 
 def _history_boundary_dtype(spec: HistorifySpec) -> type[pl.Date] | pl.Datetime:
@@ -44,10 +53,14 @@ class PolarsHistorifyBackend:
         return frame.filter(pl.col(col) != expr)
 
     def anti_join(self, left: pl.DataFrame, right: pl.DataFrame, on: list[str]) -> pl.DataFrame:
-        return left.join(right, on=on, how="anti")
+        # Null-safe: a null in a tracked column must compare equal to itself,
+        # not act as SQL NULL (never matches). Otherwise a null-valued row is
+        # forever "changed" and reopened on every run. The kwarg name varies
+        # with the installed polars, so mypy cannot verify it statically.
+        return left.join(right, on=on, how="anti", **{_NULL_SAFE_JOIN_KWARG: True})  # type: ignore[arg-type]
 
     def semi_join(self, left: pl.DataFrame, right: pl.DataFrame, on: list[str]) -> pl.DataFrame:
-        return left.join(right, on=on, how="semi")
+        return left.join(right, on=on, how="semi", **{_NULL_SAFE_JOIN_KWARG: True})  # type: ignore[arg-type]
 
     def union(self, frames: list[pl.DataFrame]) -> pl.DataFrame:
         return pl.concat([self._utc_datetimes(f) for f in frames], how="diagonal_relaxed")
@@ -90,7 +103,15 @@ class PolarsHistorifyBackend:
         overwrite: tuple[str, ...],
     ) -> pl.DataFrame:
         overwrite_vals = incoming.select(join_key + list(overwrite))
-        return unchanged.drop(list(overwrite)).join(overwrite_vals, on=join_key, how="left")
+        # Null-safe: join_key can include a null track column (e.g. an entity
+        # whose tracked value is null); without it the overwrite never matches
+        # and the refreshed value silently fails to land on the open row.
+        return unchanged.drop(list(overwrite)).join(
+            overwrite_vals,
+            on=join_key,
+            how="left",
+            **{_NULL_SAFE_JOIN_KWARG: True},  # type: ignore[arg-type]
+        )
 
     def rewind_to(
         self,

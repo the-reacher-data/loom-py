@@ -46,10 +46,22 @@ class SparkHistorifyBackend:
         return frame.filter(F.col(col) != expr)
 
     def anti_join(self, left: DataFrame, right: DataFrame, on: list[str]) -> DataFrame:
-        return left.join(right, on=on, how="left_anti")
+        return left.join(right, on=self._null_safe_condition(left, right, on), how="left_anti")
 
     def semi_join(self, left: DataFrame, right: DataFrame, on: list[str]) -> DataFrame:
-        return left.join(right, on=on, how="left_semi")
+        return left.join(right, on=self._null_safe_condition(left, right, on), how="left_semi")
+
+    @staticmethod
+    def _null_safe_condition(left: DataFrame, right: DataFrame, on: list[str]) -> Any:
+        # eqNullSafe: a null in a tracked column must compare equal to itself,
+        # not act as SQL NULL (never matches). Otherwise a null-valued row is
+        # forever "changed" and reopened on every run. left_semi/left_anti only
+        # project the left side, so an explicit condition (vs. `on=list`) does
+        # not introduce duplicate key columns here.
+        condition = left[on[0]].eqNullSafe(right[on[0]])
+        for col in on[1:]:
+            condition = condition & left[col].eqNullSafe(right[col])
+        return condition
 
     def union(self, frames: list[DataFrame]) -> DataFrame:
         result = frames[0]
@@ -95,8 +107,21 @@ class SparkHistorifyBackend:
         join_key: list[str],
         overwrite: tuple[str, ...],
     ) -> DataFrame:
+        # eqNullSafe join_key: same null-safety as anti_join/semi_join, so an
+        # entity whose join_key includes a null track column still matches its
+        # own overwrite row. An explicit condition (vs. `on=list`) does not
+        # dedupe the key columns, so rename incoming's copy and drop it after.
+        key_rename = {k: f"__ov_key_{k}__" for k in join_key}
         overwrite_vals = incoming.select(join_key + list(overwrite))
-        return unchanged.drop(*overwrite).join(overwrite_vals, on=join_key, how="left")
+        for old, new in key_rename.items():
+            overwrite_vals = overwrite_vals.withColumnRenamed(old, new)
+
+        condition = F.col(join_key[0]).eqNullSafe(F.col(key_rename[join_key[0]]))
+        for k in join_key[1:]:
+            condition = condition & F.col(k).eqNullSafe(F.col(key_rename[k]))
+
+        joined = unchanged.drop(*overwrite).join(overwrite_vals, condition, how="left")
+        return joined.drop(*key_rename.values())
 
     def rewind_to(
         self,

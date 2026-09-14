@@ -18,6 +18,20 @@
   so an undefined name still fails at import; the model class carries the
   evaluated `__annotations__` and no `__annotate__` function.
 
+### etl
+
+- **etl:** `IntoHistory(..., mode="snapshot")` no longer reopens a row on
+  every run when a tracked column is null. Classification joined existing
+  and incoming rows on `keys + track`, and a plain equi-join never matches
+  two nulls (SQL semantics): an entity whose tracked value was null looked
+  "changed" forever, closed its open version and opened an identical one on
+  every write, stamping `valid_to` each time even though nothing changed.
+  The same null-mismatch broke `overwrite` — the refreshed value silently
+  never landed on the open row. The Polars and Spark join now treat two
+  nulls as equal (`nulls_equal`/`join_nulls` on Polars, `eqNullSafe` on
+  Spark) for both the SNAPSHOT classification joins and the overwrite join;
+  LOG mode was already null-safe and is unaffected.
+
 ## ♻️ Refactor
 
 ### etl
