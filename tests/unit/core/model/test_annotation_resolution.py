@@ -62,6 +62,13 @@ def test_subclass_keeps_inherited_fields() -> None:
     ]
 
 
+def test_subclass_without_annotations_keeps_inherited_fields() -> None:
+    class ArchivedShelf(_Shelf):
+        pass
+
+    assert _field_types(ArchivedShelf) == _field_types(_Shelf)
+
+
 def test_compiled_table_keeps_its_primary_key() -> None:
     table = compile_model(_Shelf).__table__
     assert [column.name for column in table.primary_key.columns] == ["id"]
