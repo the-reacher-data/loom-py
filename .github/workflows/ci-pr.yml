@@ -91,6 +91,35 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  model-python-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
+
+      - name: Run the model tests
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          uv run --frozen --python "${PYTHON_VERSION}" --no-default-groups --extra sqlalchemy \
+            --with "pytest==9.0.2" --with "pytest-asyncio==1.3.0" pytest tests/unit/core/model
+
   # Serial: each xdist worker starts its own JVM, which under coverage cancels
   # the parallelism out.
   tests-spark:
@@ -141,7 +170,7 @@ jobs:
   # The gate: cheap checks plus the merged results, so a failure in either lane
   # still blocks here.
   validate:
-    needs: [tests-fast, tests-spark]
+    needs: [tests-fast, tests-spark, model-python-compat]
     runs-on: ubuntu-latest
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
