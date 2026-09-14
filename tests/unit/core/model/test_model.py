@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 import msgspec
 import pytest
+from msgspec import UnsetType
 
 from loom.core.model import (
     BaseModel,
@@ -38,6 +41,12 @@ class _Product(BaseModel):
         depends_on=("reviews:product_id",),
         default=0,
     )
+    rating: Annotated[int, "stars"] = ProjectionField(loader=None, default=0)
+
+
+def test_annotated_projection_keeps_its_metadata() -> None:
+    types = {field.name: field.type for field in msgspec.structs.fields(_Product)}
+    assert types["rating"] == Annotated[int, "stars"] | UnsetType
 
 
 class TestModelIntrospection:

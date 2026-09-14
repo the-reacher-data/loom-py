@@ -1,5 +1,23 @@
 # Unreleased
 
+## 🐛 Fixes
+
+### core
+
+- **core:** a model with a relation or projection field imports again on
+  Python 3.12.4 and later when its module uses
+  `from __future__ import annotations`. It failed with
+  `TypeError: ForwardRef._evaluate() missing 1 required keyword-only argument: 'recursive_guard'`,
+  because the string annotation went through a private `typing` API whose
+  signature changed; it is now evaluated with `typing.get_type_hints`.
+- **core:** a model keeps its fields on Python 3.14. Class annotations are lazy
+  there, so the model metaclass found no `__annotations__` in the class body and
+  replaced them with an empty mapping: the struct had no fields and
+  `compile_model` failed with `could not assemble any primary key columns`. The
+  metaclass now evaluates them with `annotationlib` when the class is created,
+  so an undefined name still fails at import; the model class carries the
+  evaluated `__annotations__` and no `__annotate__` function.
+
 ## ♻️ Refactor
 
 ### etl

@@ -10,6 +10,9 @@ from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
 from loom.core.model.struct import LoomStruct
 
+if sys.version_info >= (3, 14):
+    import annotationlib
+
 if TYPE_CHECKING:
 
     class _StructMeta(type):
@@ -20,12 +23,25 @@ else:
 
 def _resolve_annotation(annotation: Any, namespace: dict[str, Any]) -> Any:
     """Resolve a stringified annotation to its actual type."""
-    if isinstance(annotation, str):
-        eval_ns: dict[str, Any] = {}
-        eval_ns.update(namespace)
-        eval_ns.setdefault("typing", typing)
-        return typing.ForwardRef(annotation)._evaluate(eval_ns, eval_ns, frozenset[str]())
-    return annotation
+    if not isinstance(annotation, str):
+        return annotation
+    holder = type("_AnnotationHolder", (), {"__annotations__": {"annotation": annotation}})
+    eval_ns = {"typing": typing, **namespace}
+    hints = typing.get_type_hints(holder, globalns=eval_ns, localns=eval_ns, include_extras=True)
+    return hints["annotation"]
+
+
+def _take_class_body_annotations(namespace: dict[str, Any]) -> dict[str, Any]:
+    if "__annotations__" in namespace:
+        annotations: dict[str, Any] = namespace["__annotations__"]
+        return annotations
+    if sys.version_info >= (3, 14):
+        annotate = annotationlib.get_annotate_from_class_namespace(namespace)
+        if annotate is not None:
+            namespace.pop("__annotate__", None)
+            namespace.pop("__annotate_func__", None)
+            return annotationlib.call_annotate_function(annotate, annotationlib.Format.VALUE)
+    return {}
 
 
 def _build_eval_namespace(namespace: dict[str, Any]) -> dict[str, Any]:
@@ -86,7 +102,7 @@ class LoomStructMeta(_StructMeta):
         columns: dict[str, ColumnFieldSpec] = {}
         relations: dict[str, Relation] = {}
         projections: dict[str, Projection] = {}
-        annotations: dict[str, Any] = namespace.get("__annotations__", {})
+        annotations = _take_class_body_annotations(namespace)
 
         eval_ns = _build_eval_namespace(namespace)
 
