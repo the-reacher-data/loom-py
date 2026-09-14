@@ -44,10 +44,12 @@ class PolarsHistorifyBackend:
         return frame.filter(pl.col(col) != expr)
 
     def anti_join(self, left: pl.DataFrame, right: pl.DataFrame, on: list[str]) -> pl.DataFrame:
-        return left.join(right, on=on, how="anti")
+        # `on` carries the tracked columns: a null must match itself or the row
+        # reads as changed and reopens on every run.
+        return left.join(right, on=on, how="anti", nulls_equal=True)
 
     def semi_join(self, left: pl.DataFrame, right: pl.DataFrame, on: list[str]) -> pl.DataFrame:
-        return left.join(right, on=on, how="semi")
+        return left.join(right, on=on, how="semi", nulls_equal=True)
 
     def union(self, frames: list[pl.DataFrame]) -> pl.DataFrame:
         return pl.concat([self._utc_datetimes(f) for f in frames], how="diagonal_relaxed")
@@ -90,7 +92,9 @@ class PolarsHistorifyBackend:
         overwrite: tuple[str, ...],
     ) -> pl.DataFrame:
         overwrite_vals = incoming.select(join_key + list(overwrite))
-        return unchanged.drop(list(overwrite)).join(overwrite_vals, on=join_key, how="left")
+        return unchanged.drop(list(overwrite)).join(
+            overwrite_vals, on=join_key, how="left", nulls_equal=True
+        )
 
     def rewind_to(
         self,
