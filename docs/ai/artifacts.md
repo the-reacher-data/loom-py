@@ -202,7 +202,10 @@ A strict `pydantic.BaseModel` subclass (`model_config["extra"] == "forbid"`)
 is accepted for `deps_type` exactly as a `msgspec.Struct` is: decoding is
 strict, the state a run renders when no `state` is sent comes from the
 model's own field defaults, and a request `state` with an undeclared field
-fails with `422 INVALID_STATE`, unchanged from the Struct path.
+fails with `422 INVALID_STATE`, unchanged from the Struct path. State is
+always decoded strictly regardless of library — `"5"` for a declared `int`
+is rejected, never coerced — whereas a pydantic `type_ref` *output* is
+validated with pydantic-ai's own coercion (see "Output" below).
 
 The consequences an author needs, stated rather than left implicit:
 

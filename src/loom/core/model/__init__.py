@@ -1,3 +1,10 @@
+from loom.core.model._loom_type import (
+    BoundaryValidationError,
+    LoomType,
+    UnsupportedBoundaryType,
+    loom_type,
+    msgspec_type,
+)
 from loom.core.model.base import BaseModel, LoomStructMeta
 from loom.core.model.enums import Cardinality, OnDelete, OnUpdate, ServerDefault, ServerOnUpdate
 from loom.core.model.field import ColumnField, ColumnType, Field
@@ -8,13 +15,6 @@ from loom.core.model.introspection import (
     get_projections,
     get_relations,
     get_table_name,
-)
-from loom.core.model.loom_type import (
-    BoundaryValidationError,
-    LoomType,
-    UnsupportedBoundaryType,
-    loom_type,
-    msgspec_type,
 )
 from loom.core.model.projection import (
     Projection,

@@ -42,7 +42,7 @@ from loom.ai.errors import (
     output_type_ref_unresolvable,
     output_type_ref_unsupported,
 )
-from loom.core.model import UnsupportedBoundaryType, loom_type, msgspec_type
+from loom.core.model import LoomType, UnsupportedBoundaryType, loom_type, msgspec_type
 from loom.core.symbols import import_symbol
 
 _CompileResult = tuple[CompiledOutput | None, list[AgentCompilationIssue]]
@@ -106,8 +106,8 @@ def _compile_json_schema(output: JsonSchemaOutput, component: str) -> _CompileRe
     )
     if compiled is None:
         return None, issues
-    schema, annotation = compiled
-    return CompiledOutput(schema=schema, loom_type=msgspec_type(annotation)), []
+    schema, lt = compiled
+    return CompiledOutput(schema=schema, loom_type=lt), []
 
 
 def _compile_type_ref(output: TypeRefOutput, component: str) -> _CompileResult:
@@ -136,22 +136,25 @@ def _resolve_symbol(
 
 def _schema_to_annotation(
     schema: Mapping[str, Any], model_name: str, component: str, invalid_issue: _IssueFactory
-) -> tuple[tuple[Mapping[str, Any], Any] | None, list[AgentCompilationIssue]]:
-    """Compile a hand-written JSON Schema object into a ``(schema, annotation)`` pair.
+) -> tuple[tuple[Mapping[str, Any], LoomType] | None, list[AgentCompilationIssue]]:
+    """Compile a hand-written JSON Schema object into a ``(schema, loom_type)`` pair.
 
     *model_name* names the generated struct type; *invalid_issue* reports a
-    structural fault or a build failure. The annotation is whatever
-    :func:`~loom.core.model.msgspec_type` accepts: a ``defstruct`` result,
-    ``dict[str, Any]``, ``list[...]`` or a scalar.
+    structural fault, a failure to map the schema to a runtime annotation, or
+    a failure of :func:`~loom.core.model.msgspec_type` to build a decoder over
+    it — the annotation mapping and the decoder build both run inside the same
+    guard, so either failure is a coded compilation issue and never an
+    unhandled exception.
     """
     fault = _schema_fault(schema)
     if fault is not None:
         return None, [invalid_issue(component, fault)]
     try:
         annotation = _annotation_for(schema, model_name)
+        lt = msgspec_type(annotation)
     except (TypeError, ValueError) as exc:
         return None, [invalid_issue(component, str(exc))]
-    return (MappingProxyType(dict(schema)), annotation), []
+    return (MappingProxyType(dict(schema)), lt), []
 
 
 def _schema_fault(schema: Mapping[str, Any]) -> str | None:

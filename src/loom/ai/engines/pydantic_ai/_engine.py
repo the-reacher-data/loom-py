@@ -32,7 +32,7 @@ carries the same gap forward once observed.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import fields
 from time import perf_counter
@@ -141,15 +141,14 @@ class PydanticAIEngine:
             (:func:`~loom.ai.engines.pydantic_ai._limits.usage_limits`) and
             passed on every run and every streamed attempt.
 
-    Two more handles are resolved once here, from the plan's output library
+    Two more flags are resolved once here, from the plan's output library
     (D7, FR-012), and reused by every run and every streamed attempt alike:
-    ``self._answer`` reads the answer off a finished
-    :class:`~pydantic_ai.AgentRunResult` — ``result.output`` for a pydantic
-    output, already validated and retried by pydantic-ai itself, or
-    :func:`~loom.ai.engines.pydantic_ai._output.decode_output` for a
-    ``msgspec.Struct`` output, which still decodes the model's own bytes —
-    and ``self._withhold`` decides whether a stream buffers its deltas until
-    the attempt's result is known, true whenever the plan declares
+    ``self._native_output`` is true for a pydantic output, whose answer
+    pydantic-ai already validated and retried as ``result.output`` — a
+    ``msgspec.Struct`` output still decodes the model's own bytes through
+    :func:`~loom.ai.engines.pydantic_ai._output.decode_output` — and
+    ``self._withhold`` decides whether a stream buffers its deltas until the
+    attempt's result is known, true whenever the plan declares
     ``output_check`` or the output is pydantic: both can replay the model
     request inside one attempt, so a delta already relayed could not be
     un-sent.
@@ -174,13 +173,8 @@ class PydanticAIEngine:
         self._attempts = max(plan.policies.retries, 0) + 1
         self._last_failure: AgentRunErrorCode | None = None
         self._unpriced_spend_observed = False
-        library = plan.output.loom_type.library
-        self._answer: Callable[[AgentRunResult[Any]], Any] = (
-            (lambda result: result.output)
-            if library == "pydantic"
-            else (lambda result: decode_output(plan.output, result))
-        )
-        self._withhold = plan.output_check is not None or library == "pydantic"
+        self._native_output = plan.output.loom_type.library == "pydantic"
+        self._withhold = plan.output_check is not None or self._native_output
 
     async def run(
         self,
@@ -218,7 +212,9 @@ class PydanticAIEngine:
         try:
             result = await self._run_with_retries(prompt, identity, spend, decoded, state)
             unpriced = self._apply_unpriced_spend_policy(result)
-            output = self._answer(result)
+            output = (
+                result.output if self._native_output else decode_output(self._plan.output, result)
+            )
         except AgentRunError as error:
             self._record(error.code)
             error.usage = self._usage(spend, started)
@@ -643,15 +639,19 @@ class PydanticAIEngine:
     ) -> FinalEvent:
         """Build this attempt's terminal event, resolving the answer once.
 
-        An overridden shape skips :attr:`_answer` on purpose (T304):
-        pydantic-ai has already validated ``result.output`` against
+        An overridden shape skips the plan's own output resolution on purpose
+        (T304): pydantic-ai has already validated ``result.output`` against
         *output_type* itself, whatever the plan's own output library, so the
-        raw result is the answer. Otherwise :attr:`_answer` resolves it —
+        raw result is the answer. Otherwise the plan's library decides —
         ``result.output`` for a pydantic plan, already validated and retried
         by pydantic-ai (D7, FR-012), or :func:`~loom.ai.engines.pydantic_ai._output.decode_output`
         for a ``msgspec.Struct`` plan, compiled against its declared schema.
         """
-        output = result.output if output_type is not None else self._answer(result)
+        output = (
+            result.output
+            if (output_type is not None or self._native_output)
+            else decode_output(self._plan.output, result)
+        )
         return FinalEvent(
             output=output,
             usage=self._usage(spend, started, unpriced_requests=unpriced_requests),

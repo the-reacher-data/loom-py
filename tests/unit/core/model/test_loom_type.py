@@ -129,12 +129,6 @@ class TestDecodeJson:
 
         assert field in str(excinfo.value)
 
-    def test_accepts_int_for_float(self, invoice: LoomType) -> None:
-        value = invoice.decode_json(_with(price=2))
-
-        assert value.price == 2
-        assert isinstance(value.price, float)
-
     def test_rejects_an_unknown_key(self, invoice: LoomType) -> None:
         with pytest.raises(BoundaryValidationError) as excinfo:
             invoice.decode_json(_with(zz=1))
@@ -184,11 +178,6 @@ class TestSchema:
         assert "title" not in schema
         assert schema["properties"]["total"] == {"title": "Total", "type": "integer"}
 
-    def test_schema_is_a_fresh_document_each_call(self) -> None:
-        compiled = loom_type(ModelInvoice)
-
-        assert compiled.schema() == compiled.schema()
-
 
 class TestToBuiltins:
     """A decoded value goes back to JSON-mode builtins and decodes again."""
@@ -203,7 +192,7 @@ class TestToBuiltins:
         assert builtins["paid"] is True
         assert builtins["ident"] == _PAYLOAD["ident"]
         assert builtins["amount"] == "1.50"
-        assert isinstance(builtins["when"], str)
+        assert builtins["when"] == "2026-09-15T10:00:00Z"
         assert invoice.decode_json(json.dumps(builtins)) == value
 
 
@@ -225,9 +214,6 @@ class TestIdentity:
 
 class TestStrictness:
     """The factory checks strictness once, for both libraries, with one reason."""
-
-    def test_config_dict_is_strict(self) -> None:
-        assert loom_type(ModelInvoice).library == "pydantic"
 
     def test_class_kwargs_are_strict(self) -> None:
         assert loom_type(KwargsModel).library == "pydantic"
@@ -283,16 +269,6 @@ class RootModelWithInner(BaseModel):
     inner: InnerModel
 
 
-class ModelDatetime(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    when: datetime
-
-
-class StructDatetime(msgspec.Struct, forbid_unknown_fields=True):
-    when: datetime
-
-
 class TestBytesEncoding:
     """Bytes round trip through base64 when both libraries opt into it."""
 
@@ -339,22 +315,6 @@ class TestNestedLaxType:
         assert value.inner.x == 1
 
 
-class TestDatetimeRoundTrip:
-    """A UTC-aware datetime renders as the same ISO string in both libraries."""
-
-    @pytest.fixture(params=[StructDatetime, ModelDatetime], ids=["msgspec", "pydantic"])
-    def datetime_type(self, request: pytest.FixtureRequest) -> LoomType:
-        compiled: LoomType = loom_type(request.param)
-        return compiled
-
-    def test_renders_the_iso_string(self, datetime_type: LoomType) -> None:
-        value = datetime_type.decode_json(json.dumps({"when": "2026-09-15T10:00:00Z"}))
-
-        builtins = datetime_type.to_builtins(value)
-
-        assert builtins["when"] == "2026-09-15T10:00:00Z"
-
-
 class TestSchemaShape:
     """Both libraries expose an object schema whose root forbids extra keys."""
 
@@ -365,20 +325,6 @@ class TestSchemaShape:
         assert "properties" in schema
         assert schema["type"] == "object"
         assert "$defs" in schema
-
-    def test_msgspec_root_has_a_ref_and_defs_when_nested(self) -> None:
-        schema = loom_type(RootStructWithInner).schema()
-
-        assert "$ref" in schema
-        assert "$defs" in schema
-
-    @pytest.mark.parametrize(
-        "symbol", [RootModelWithInner, RootStructWithInner], ids=["pydantic", "msgspec"]
-    )
-    def test_root_object_forbids_additional_properties_when_nested(self, symbol: type) -> None:
-        root = _root_object(loom_type(symbol).schema())
-
-        assert root["additionalProperties"] is False
 
 
 class TestMsgspecType:

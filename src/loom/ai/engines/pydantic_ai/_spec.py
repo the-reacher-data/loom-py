@@ -140,26 +140,17 @@ def build_output_type(plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | 
     """
     loom_type = plan.output.loom_type
     declared = plan.inference.output_mode
-    if loom_type.library == "pydantic":
-        cls = loom_type.type
-        if declared is None:
-            return cls
-        mode = cast("OutputMode", declared)
-        if mode == "tool":
-            return ToolOutput(cls)
-        if mode == "native":
-            return NativeOutput(cls)
-        assert_never(mode)
+    native = loom_type.library == "pydantic"
+    target: Any = loom_type.type if native else StructuredDict(dict(plan.output.schema))
     if declared is None:
-        return None
+        return target if native else None
     # The struct field is ``str`` (msgspec would reject a Literal during the
     # decode, before the config check could name the role), so the narrowing
     # happens here, where the dispatch below either handles the value or
     # refuses it.
     mode = cast("OutputMode", declared)
-    structured = StructuredDict(dict(plan.output.schema))
     if mode == "tool":
-        return ToolOutput(structured)
+        return ToolOutput(target)
     if mode == "native":
-        return NativeOutput(structured)
+        return NativeOutput(target)
     assert_never(mode)

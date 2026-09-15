@@ -129,5 +129,5 @@ def _compile_schema(schema: Mapping[str, Any], component: str) -> _CompileResult
     )
     if compiled is None:
         return None, issues
-    result_schema, annotation = compiled
-    return StateShape(schema=result_schema, loom_type=msgspec_type(annotation)), []
+    result_schema, lt = compiled
+    return StateShape(schema=result_schema, loom_type=lt), []

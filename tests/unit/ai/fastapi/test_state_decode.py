@@ -77,7 +77,13 @@ class TestStateAgainstNoDeclaredShape:
 
 
 class TestStateAgainstASchemaShape:
-    def test_decodes_and_normalises_the_declared_defaults(self) -> None:
+    """Shared behaviour of a declared schema shape, regardless of its library."""
+
+    @pytest.fixture(params=[_SCHEMA_SHAPE, _PYDANTIC_SCHEMA_SHAPE], ids=["msgspec", "pydantic"])
+    def shape(self, request: pytest.FixtureRequest) -> StateShape:
+        return request.param  # type: ignore[no-any-return]
+
+    def test_decodes_and_normalises_the_declared_defaults(self, shape: StateShape) -> None:
         """FR-009, AC-011: the omitted 'km' reaches the mapping as its declared default.
 
         The measurement this pins (from 'What the spike measured'): a payload
@@ -86,56 +92,37 @@ class TestStateAgainstASchemaShape:
         default from the normalised one ('marca=civic, km=0'). This is the
         test that would have caught the raw-mapping design.
         """
-        state = _decode_state(_AGENT, _SCHEMA_SHAPE, _raw(b'{"marca": "civic"}'))
+        state = _decode_state(_AGENT, shape, _raw(b'{"marca": "civic"}'))
 
         assert state == {"marca": "civic", "km": 0}
 
-    def test_malformed_bytes_are_refused_with_422_before_any_provider_call(self) -> None:
+    def test_malformed_bytes_are_refused_with_422_before_any_provider_call(
+        self, shape: StateShape
+    ) -> None:
         with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, _SCHEMA_SHAPE, _raw(b'{"marca": 5}'))
+            _decode_state(_AGENT, shape, _raw(b"not json"))
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"
 
-    def test_a_present_but_incomplete_payload_is_refused_not_a_raw_crash(self) -> None:
+    def test_an_undeclared_field_is_refused_not_dropped(self, shape: StateShape) -> None:
+        """The compiled decoder forbids unknown fields, matching the output side (FR-017)."""
+        with pytest.raises(TransportError) as excinfo:
+            _decode_state(_AGENT, shape, _raw(b'{"marca": "civic", "extra": 1}'))
+
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.code == "INVALID_STATE"
+
+    def test_a_present_but_incomplete_msgspec_payload_is_refused_not_a_raw_crash(self) -> None:
         """A required field missing from a present payload is ``ValidationError``.
 
-        ``msgspec.ValidationError`` subclasses ``msgspec.DecodeError``, which
-        this function already catches, so a payload present but missing
-        ``marca`` is refused the same coded way as malformed bytes rather
-        than raising uncaught.
+        msgspec-specific: ``msgspec.ValidationError`` subclasses
+        ``msgspec.DecodeError``, which this function already catches, so a
+        payload present but missing ``marca`` is refused the same coded way
+        as malformed bytes rather than raising uncaught.
         """
         with pytest.raises(TransportError) as excinfo:
             _decode_state(_AGENT, _SCHEMA_SHAPE, _raw(b"{}"))
-
-        assert excinfo.value.status_code == 422
-        assert excinfo.value.code == "INVALID_STATE"
-
-    def test_an_undeclared_field_is_refused_not_dropped(self) -> None:
-        """The compiled decoder forbids unknown fields, matching the output side (FR-017)."""
-        with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, _SCHEMA_SHAPE, _raw(b'{"marca": "civic", "extra": 1}'))
-
-        assert excinfo.value.status_code == 422
-        assert excinfo.value.code == "INVALID_STATE"
-
-
-class TestStateAgainstAPydanticSchemaShape:
-    def test_decodes_and_normalises_the_declared_defaults(self) -> None:
-        state = _decode_state(_AGENT, _PYDANTIC_SCHEMA_SHAPE, _raw(b'{"marca": "civic"}'))
-
-        assert state == {"marca": "civic", "km": 0}
-
-    def test_an_undeclared_field_is_refused_with_422(self) -> None:
-        with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, _PYDANTIC_SCHEMA_SHAPE, _raw(b'{"marca": "civic", "extra": 1}'))
-
-        assert excinfo.value.status_code == 422
-        assert excinfo.value.code == "INVALID_STATE"
-
-    def test_malformed_bytes_are_refused_with_422(self) -> None:
-        with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, _PYDANTIC_SCHEMA_SHAPE, _raw(b"not json"))
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"

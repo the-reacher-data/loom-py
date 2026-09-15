@@ -27,6 +27,7 @@ from loom.ai._transport import (
     annotate_usage,
     failure_event,
     project_output,
+    projecting_final,
     with_heartbeats,
 )
 from loom.ai.a2a._binding import PublishedAgent
@@ -291,17 +292,15 @@ def _run_frames(
 
     async def _frames() -> AsyncIterator[bytes]:
         projector = A2AEventProjector(
-            task_id=task_id,
-            context_id=context_id,
-            max_steps=call.agent.max_steps,
-            output_type=runtime.output_type(call.agent.name),
+            task_id=task_id, context_id=context_id, max_steps=call.agent.max_steps
         )
         yield _sse_frame(call.request_id, _task(task_id, context_id, {"state": "submitted"}))
         try:
             async with runtime.run_stream(
                 call.agent.name, prompt, identity=call.identity, conversation_id=context_id
             ) as events:
-                async for event in events:
+                projected_events = projecting_final(events, runtime.output_type(call.agent.name))
+                async for event in projected_events:
                     for projected in projector.project(event):
                         yield _sse_frame(call.request_id, projected)
         except Exception as exc:

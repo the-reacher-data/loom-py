@@ -27,7 +27,7 @@ from typing import Final, TypeVar
 import msgspec
 from starlette.requests import Request
 
-from loom.ai.abc import AgentResult, AgentUsage, ErrorEvent, FinalEvent
+from loom.ai.abc import AgentEvent, AgentResult, AgentUsage, ErrorEvent, FinalEvent
 from loom.ai.config import AgentEndpointConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.identity import Identity, current_identity
@@ -282,6 +282,31 @@ def project_output(value: _WireResultT, output_type: LoomType) -> _WireResultT:
         *value* with ``output`` replaced by its builtins projection.
     """
     return msgspec.structs.replace(value, output=output_type.to_builtins(value.output))
+
+
+async def projecting_final(
+    events: AsyncIterator[AgentEvent], output_type: LoomType
+) -> AsyncIterator[AgentEvent]:
+    """Relay *events*, projecting the terminal ``final`` event's ``output``.
+
+    Every event but ``final`` is yielded unchanged; ``final`` is passed
+    through :func:`project_output` first, so a consumer downstream — the SSE
+    encoder, the A2A projector — never sees the engine's validated instance
+    (FR-010). Both agent surfaces wrap their event stream with this generator
+    before their own projection consumes it.
+
+    Args:
+        events: Run events, terminal event last.
+        output_type: The run's compiled boundary type, read from
+            :meth:`~loom.ai.runtime.AgentRuntime.output_type`.
+
+    Yields:
+        Every event, in order; the ``final`` event's ``output`` projected.
+    """
+    async for event in events:
+        if isinstance(event, FinalEvent):
+            event = project_output(event, output_type)
+        yield event
 
 
 def failure_event(exc: BaseException) -> ErrorEvent:

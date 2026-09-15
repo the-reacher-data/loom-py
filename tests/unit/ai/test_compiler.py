@@ -326,12 +326,14 @@ class TestCompiledOutput:
 class TestTypeRefOutput:
     """``type_ref`` accepts a strict ``msgspec.Struct`` or ``pydantic.BaseModel``.
 
-    T053 fixed this to ``msgspec.Struct`` only; hotfix/type-ref-pydantic adds
-    the ``pydantic.BaseModel`` branch (``extra='forbid'`` standing in for
+    T053 fixed this to ``msgspec.Struct`` only; D7/FR-012 add the
+    ``pydantic.BaseModel`` branch (``extra='forbid'`` standing in for
     ``forbid_unknown_fields=True``), for callers who never decode a
     ``type_ref`` output back from the model — e.g. one built entirely by
     application code and only passed through loom for its shape and
-    ``AgentHandle[...]`` marker check (cuimo-agents' tasador, spec 015).
+    ``AgentHandle[...]`` marker check. The decode/coercion behaviour of the
+    compiled ``LoomType`` is pinned once, library-agnostically, in
+    ``tests/unit/core/model/test_loom_type.py``.
     """
 
     def test_compile_returns_plan_when_type_ref_resolves_to_msgspec_struct(
@@ -352,36 +354,14 @@ class TestTypeRefOutput:
         self, compiler: AgentCompiler
     ) -> None:
         """The marker check (``ai/_startup.py``) reads ``.type``, the engine
-        reads ``.decode_json``."""
+        reads ``.library`` to decide construction-time (D7)."""
         from myapp.domain.pydantic_invoices import InvoiceSummaryModel
 
         spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
         plan = compiler.compile(spec)
 
         assert plan.output.loom_type.type is InvoiceSummaryModel
-        decoded = plan.output.loom_type.decode_json(b'{"issuer": "ACME", "total": 12.5}')
-        assert decoded == InvoiceSummaryModel(issuer="ACME", total=12.5)
-
-    def test_pydantic_type_ref_loom_type_raises_boundary_validation_error_on_bad_bytes(
-        self, compiler: AgentCompiler
-    ) -> None:
-        """A bad answer must still classify as ``BoundaryValidationError`` (invariant 5's
-        exception contract at the engine boundary, ``ai/engines/pydantic_ai/_output.py``)."""
-        spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
-        plan = compiler.compile(spec)
-
-        with pytest.raises(BoundaryValidationError):
-            plan.output.loom_type.decode_json(b'{"issuer": "ACME", "extra": 1}')
-
-    def test_pydantic_type_ref_loom_type_rejects_coercion_on_bad_bytes(
-        self, compiler: AgentCompiler
-    ) -> None:
-        """Strict decode: a string in a ``float`` field is never silently coerced."""
-        spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
-        plan = compiler.compile(spec)
-
-        with pytest.raises(BoundaryValidationError):
-            plan.output.loom_type.decode_json(b'{"total": "12.5"}')
+        assert plan.output.loom_type.library == "pydantic"
 
     @pytest.mark.parametrize(
         "ref",

@@ -38,6 +38,7 @@ from loom.ai._transport import (
     always_closed,
     annotate_usage,
     project_output,
+    projecting_final,
     read_body_capped,
     require_caller,
 )
@@ -56,7 +57,7 @@ from loom.ai.fastapi.streaming import encode_sse_event, stream_sse
 from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
 from loom.core.identity import Identity, current_identity
-from loom.core.model import BoundaryValidationError, LoomFrozenStruct, LoomType
+from loom.core.model import BoundaryValidationError, LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.observability.span import LoomSpan
@@ -199,7 +200,7 @@ def _decode_state(
             raise TransportError(422, "INVALID_STATE", str(exc)) from exc
     try:
         decoded = state_shape.loom_type.decode_json(body)
-    except (BoundaryValidationError, msgspec.DecodeError) as exc:
+    except BoundaryValidationError as exc:
         raise TransportError(422, "INVALID_STATE", str(exc)) from exc
     return cast(Mapping[str, Any], state_shape.loom_type.to_builtins(decoded))
 
@@ -365,7 +366,7 @@ def _make_run_handler(
 
 
 async def _annotating_usage(
-    events: AsyncIterator[AgentEvent], span: LoomSpan, output_type: LoomType
+    events: AsyncIterator[AgentEvent], span: LoomSpan
 ) -> AsyncIterator[AgentEvent]:
     """Relay *events*, annotating *span* with the usage the final one carries.
 
@@ -374,23 +375,17 @@ async def _annotating_usage(
     event is still typed — and lands on the same closing attributes the
     non-streaming run publishes. A failed run publishes what it burned before
     it failed; a stream that never reaches a terminal event annotates nothing.
-    The terminal ``final`` event additionally has its ``output`` projected to
-    builtins before it is yielded, so the SSE encoder never sees the engine's
-    validated instance (FR-010).
 
     Args:
         events: Run events, terminal event last.
         span: Open span of the run, closed by its owner.
-        output_type: The run's compiled boundary type for its answer.
 
     Yields:
-        Every event, in order; the ``final`` event's ``output`` projected.
+        Every event, unchanged, in order.
     """
     async for event in events:
         if isinstance(event, FinalEvent | ErrorEvent):
             annotate_usage(span, event.usage)
-        if isinstance(event, FinalEvent):
-            event = project_output(event, output_type)
         yield event
 
 
@@ -439,8 +434,9 @@ def _stream_frames(
                     conversation_id=body.conversation_id,
                     state=state,
                 ) as events:
+                    projected_events = projecting_final(events, runtime.output_type(name))
                     async for frame in stream_sse(
-                        _annotating_usage(events, span, runtime.output_type(name)),
+                        _annotating_usage(projected_events, span),
                         heartbeat_ms=HEARTBEAT_MS,
                     ):
                         yield frame

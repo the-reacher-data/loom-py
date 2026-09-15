@@ -24,8 +24,6 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import httpx
-import msgspec
-import pydantic
 import pytest
 from a2a.compat.v0_3.types import AgentCard
 from fastapi import FastAPI
@@ -42,7 +40,7 @@ from loom.ai.abc import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from loom.ai.compiler._plan import AgentPlan, CompiledOutput
+from loom.ai.compiler._plan import AgentPlan
 from loom.ai.config import A2AConfig, AgentEndpointConfig
 from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunErrorCode
 from loom.ai.fastapi.endpoints import bind_agent_endpoints
@@ -58,6 +56,7 @@ from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
+    OUTPUT_TWINS,
     ConversationRecorder,
     CountingEngineProvider,
     RecordingDepsFactory,
@@ -70,6 +69,7 @@ from tests.integration.ai.conftest import (
     make_endpoint,
     make_plan,
     make_state_shape,
+    plan_with_output,
 )
 
 _AGENT = "analyst"
@@ -77,37 +77,6 @@ _PREFIX = "/a2a"
 _AGENTS_PREFIX = "/agents"
 _BASE_URL = "https://api.example.com"
 _TOKEN = "let-me-in"
-
-
-class _AppraisalStruct(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
-    """Msgspec twin of :class:`_AppraisalModel`, same shape, same builtins."""
-
-    issuer: str
-    total: float
-
-
-class _AppraisalModel(pydantic.BaseModel):
-    """Strict pydantic twin of :class:`_AppraisalStruct`, same shape, same builtins."""
-
-    model_config = pydantic.ConfigDict(extra="forbid")
-
-    issuer: str
-    total: float
-
-
-_OUTPUT_TWINS: tuple[tuple[str, type[Any], object], ...] = (
-    ("msgspec", _AppraisalStruct, _AppraisalStruct(issuer="Acme", total=42.5)),
-    ("pydantic", _AppraisalModel, _AppraisalModel(issuer="Acme", total=42.5)),
-)
-"""One boundary type per library, the answer built from it, and its id."""
-
-
-def _plan_with_output(cls: type[Any]) -> AgentPlan:
-    """A plan whose declared output is ``cls``, compiled through ``loom_type``."""
-    return msgspec.structs.replace(
-        make_plan(_AGENT),
-        output=CompiledOutput(schema={"type": "object"}, loom_type=loom_type(cls)),
-    )
 
 
 # Distinctive strings the redaction assertions look for: none of them may ever
@@ -612,7 +581,7 @@ def _output_artifact_data(results: list[dict[str, Any]]) -> object:
     raise AssertionError("no output artifact-update in the stream")
 
 
-@pytest.mark.parametrize(("library", "cls", "answer"), _OUTPUT_TWINS)
+@pytest.mark.parametrize(("library", "cls", "answer"), OUTPUT_TWINS)
 class TestOutputProjection:
     """Both A2A paths carry the answer as builtins (SC-001)."""
 
@@ -626,7 +595,7 @@ class TestOutputProjection:
     ) -> None:
         """``message/send``'s data part is a JSON object equal to the hook payload."""
         del library
-        plan = _plan_with_output(cls)
+        plan = plan_with_output(cls, name=_AGENT)
         engines = {_AGENT: ScriptedEngine(script=(FinalEvent(output=answer, usage=DEFAULT_USAGE),))}
         async with _serving(deps=deps, container=container, plans=(plan,), engines=engines) as (
             _app,
@@ -651,7 +620,7 @@ class TestOutputProjection:
     ) -> None:
         """``message/stream``'s output artifact is a JSON object equal to the hook payload."""
         del library
-        plan = _plan_with_output(cls)
+        plan = plan_with_output(cls, name=_AGENT)
         engines = {_AGENT: ScriptedEngine(script=(FinalEvent(output=answer, usage=DEFAULT_USAGE),))}
         async with _serving(deps=deps, container=container, plans=(plan,), engines=engines) as (
             _app,

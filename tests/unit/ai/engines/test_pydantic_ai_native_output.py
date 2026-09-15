@@ -22,26 +22,31 @@ Pins US5 items 1-6:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
+from functools import partial
 from typing import Any
 
 import msgspec
 import pytest
-from pydantic_ai import NativeOutput, ToolOutput
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
-from pydantic_ai.models import Model
-from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
+from pydantic_ai import NativeOutput
+from pydantic_ai.messages import ModelMessage
 
-from loom.ai.abc import OutputCheck, TextDeltaEvent
-from loom.ai.compiler import AgentPlan
-from loom.ai.compiler.phases._output import compile_output
-from loom.ai.declarative import TypeRefOutput
+from loom.ai.abc import TextDeltaEvent
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.engines.pydantic_ai._spec import build_output_type
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.identity import Identity
-from tests.helpers.pydantic_ai_engine import STRICT_SCHEMA, build_engine, encode, make_plan
+from tests.helpers.pydantic_ai_engine import (
+    STRICT_SCHEMA,
+    build_engine,
+    encode,
+    make_plan,
+    native_text_model,
+    plan_with_pydantic_type_ref_output,
+    prose_model,
+    tool_model,
+)
 
 pytestmark = pytest.mark.usefixtures("fake_myapp_path")
 
@@ -52,83 +57,15 @@ _BAD = encode({"issuer": "acme", "total": -5.0})
 _GOOD = encode({"issuer": "acme", "total": 5.0})
 _PROSE = "a plain sentence with no declared shape at all"
 
-
-def _pydantic_plan(
-    *,
-    mode: str | None = "tool",
-    retries: int = 0,
-    output_check: OutputCheck | None = None,
-) -> AgentPlan:
-    """A plan whose output is the strict pydantic ``StrictInvoiceModel`` type_ref."""
-    output, issues = compile_output(TypeRefOutput(ref=_REF), "contract")
-    assert output is not None, issues
-    plan = make_plan(schema=STRICT_SCHEMA, retries=retries, output_check=output_check)
-    plan = msgspec.structs.replace(plan, output=output)
-    inference = msgspec.structs.replace(plan.inference, output_mode=mode)
-    return msgspec.structs.replace(plan, inference=inference)
-
-
-def _tool_model(payloads: list[bytes], seen: list[list[ModelMessage]]) -> Model:
-    """A model answering one payload per call, by an output-tool call."""
-    calls = {"n": -1}
-
-    def _payload() -> bytes:
-        calls["n"] += 1
-        return payloads[min(calls["n"], len(payloads) - 1)]
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        seen.append(list(messages))
-        tool = info.output_tools[0].name
-        return ModelResponse(parts=[ToolCallPart(tool_name=tool, args=_payload().decode())])
-
-    async def stream(
-        messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[DeltaToolCalls]:
-        seen.append(list(messages))
-        tool = info.output_tools[0].name
-        yield {0: DeltaToolCall(name=tool, json_args=_payload().decode(), tool_call_id="call")}
-
-    return FunctionModel(respond, stream_function=stream)
-
-
-def _native_text_model(payloads: list[bytes]) -> Model:
-    """A model answering one payload per call, as a text part (native output)."""
-    calls = {"n": -1}
-
-    def _payload() -> str:
-        calls["n"] += 1
-        return payloads[min(calls["n"], len(payloads) - 1)].decode()
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages, info
-        return ModelResponse(parts=[TextPart(content=_payload())])
-
-    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
-        del messages, info
-        yield _payload()
-
-    return FunctionModel(respond, stream_function=stream)
-
-
-def _prose_model() -> Model:
-    """A model that answers free text, never a structured tool call."""
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages, info
-        return ModelResponse(parts=[TextPart(content=_PROSE)])
-
-    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
-        del messages, info
-        yield _PROSE
-
-    return FunctionModel(respond, stream_function=stream)
+_pydantic_plan = partial(plan_with_pydantic_type_ref_output, _REF)
+"""The strict pydantic ``StrictInvoiceModel`` type_ref, mode/retries/check overridable."""
 
 
 class TestARejectedAttemptIsRetriedByPydanticAiItself:
     async def test_the_second_answer_is_the_model_instance_and_two_requests_were_made(self) -> None:
         seen_by_model: list[list[ModelMessage]] = []
         plan = _pydantic_plan(retries=1)
-        engine = build_engine(plan, _tool_model([_BAD, _GOOD], seen_by_model))
+        engine = build_engine(plan, tool_model([_BAD, _GOOD], seen_by_model))
 
         result = await engine.run("hi", identity=_IDENTITY)
 
@@ -141,7 +78,7 @@ class TestARejectedAttemptIsRetriedByPydanticAiItself:
     async def test_the_stream_also_completes_with_the_model_instance(self) -> None:
         seen_by_model: list[list[ModelMessage]] = []
         plan = _pydantic_plan(retries=1)
-        engine = build_engine(plan, _tool_model([_BAD, _GOOD], seen_by_model))
+        engine = build_engine(plan, tool_model([_BAD, _GOOD], seen_by_model))
 
         async with engine.run_stream("hi", identity=_IDENTITY) as events:
             collected = [event async for event in events]
@@ -156,7 +93,7 @@ class TestExhaustionClassifiesAsOutputSchemaViolation:
     async def test_every_attempt_rejected_fails_once_retries_are_spent(self) -> None:
         seen_by_model: list[list[ModelMessage]] = []
         plan = _pydantic_plan(retries=1)
-        engine = build_engine(plan, _tool_model([_BAD], seen_by_model))
+        engine = build_engine(plan, tool_model([_BAD], seen_by_model))
 
         with pytest.raises(AgentRunError) as excinfo:
             await engine.run("hi", identity=_IDENTITY)
@@ -171,7 +108,7 @@ class TestExhaustionClassifiesAsOutputSchemaViolation:
         seen_by_model: list[list[ModelMessage]] = []
         plan = make_plan(schema=STRICT_SCHEMA, retries=1)
         bad = encode({"answer": 123})
-        engine = build_engine(plan, _tool_model([bad], seen_by_model))
+        engine = build_engine(plan, tool_model([bad], seen_by_model))
 
         with pytest.raises(AgentRunError) as excinfo:
             await engine.run("hi", identity=_IDENTITY)
@@ -189,7 +126,7 @@ class TestOutputCheckReceivesBuiltinsAndCannotSubstituteTheAnswer:
             return None
 
         plan = _pydantic_plan(output_check=check)
-        engine = build_engine(plan, _tool_model([_GOOD], []))
+        engine = build_engine(plan, tool_model([_GOOD], []))
 
         result = await engine.run("hi", identity=_IDENTITY)
 
@@ -203,7 +140,7 @@ class TestOutputCheckReceivesBuiltinsAndCannotSubstituteTheAnswer:
             return None
 
         plan = _pydantic_plan(output_check=mutate_and_accept)
-        engine = build_engine(plan, _tool_model([_GOOD], []))
+        engine = build_engine(plan, tool_model([_GOOD], []))
 
         result = await engine.run("hi", identity=_IDENTITY)
 
@@ -213,7 +150,7 @@ class TestOutputCheckReceivesBuiltinsAndCannotSubstituteTheAnswer:
 class TestARunLevelShapeOverrideStillWins:
     async def test_expect_wins_over_the_plans_own_pydantic_output(self) -> None:
         plan = _pydantic_plan(retries=1)
-        engine = build_engine(plan, _prose_model())
+        engine = build_engine(plan, prose_model())
         assert isinstance(engine, PydanticAIEngine)
 
         async with engine.run_stream_shaped("hi", identity=_IDENTITY, output_type=str) as events:
@@ -227,7 +164,7 @@ class TestNativeModeWithholdsARejectedAttempt:
         inference = InferenceTarget(provider="openai", model="gpt-5.2", output_mode="native")
         plan = _pydantic_plan(mode="native", retries=1)
         plan = msgspec.structs.replace(plan, inference=inference)
-        engine = build_engine(plan, _native_text_model([_BAD, _GOOD]))
+        engine = build_engine(plan, native_text_model([_BAD, _GOOD]))
 
         async with engine.run_stream("hi", identity=_IDENTITY) as events:
             collected = [event async for event in events]
@@ -238,13 +175,9 @@ class TestNativeModeWithholdsARejectedAttempt:
 
 
 class TestBuildOutputTypeWrapsPerModeForPydanticAndLeavesMsgspecUnchanged:
-    def test_tool_mode_wraps_the_model_class_in_tool_output(self) -> None:
-        plan = _pydantic_plan(mode="tool")
-
-        marker = build_output_type(plan)
-
-        assert isinstance(marker, ToolOutput)
-        assert marker.output.__name__ == "StrictInvoiceModel"
+    """The msgspec dispatch itself is pinned by ``TestOutputMode`` in
+    ``test_pydantic_ai_binding.py``; this class only pins what differs for a
+    pydantic output — the model class is wrapped instead of the schema."""
 
     def test_native_mode_wraps_the_model_class_in_native_output(self) -> None:
         plan = _pydantic_plan(mode="native")
@@ -261,31 +194,3 @@ class TestBuildOutputTypeWrapsPerModeForPydanticAndLeavesMsgspecUnchanged:
 
         assert marker is not None
         assert getattr(marker, "__name__", None) == "StrictInvoiceModel"
-
-    def test_a_msgspec_plan_still_wraps_a_structured_dict_class_not_the_schema_type(self) -> None:
-        plan = make_plan(schema=STRICT_SCHEMA)
-        inference = msgspec.structs.replace(plan.inference, output_mode="tool")
-        plan = msgspec.structs.replace(plan, inference=inference)
-
-        marker = build_output_type(plan)
-
-        assert isinstance(marker, ToolOutput)
-        assert issubclass(marker.output, dict)
-        assert marker.output.__name__ != "StrictInvoiceModel"
-
-    def test_a_msgspec_plan_with_no_mode_still_returns_none(self) -> None:
-        plan = make_plan(schema=STRICT_SCHEMA)
-        inference = msgspec.structs.replace(plan.inference, output_mode=None)
-        plan = msgspec.structs.replace(plan, inference=inference)
-
-        assert build_output_type(plan) is None
-
-    def test_a_msgspec_plan_still_builds_a_structured_dict_marker_under_native(self) -> None:
-        plan = make_plan(schema=STRICT_SCHEMA)
-        inference = msgspec.structs.replace(plan.inference, output_mode="native")
-        plan = msgspec.structs.replace(plan, inference=inference)
-
-        marker = build_output_type(plan)
-
-        assert isinstance(marker, NativeOutput)
-        assert issubclass(marker.outputs, dict)

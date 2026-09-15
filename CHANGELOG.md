@@ -4,7 +4,7 @@
 
 ### core
 
-- **core:** `loom.core.model.loom_type` is the one module that decides whether
+- **core:** `loom.core.model` (module `_loom_type`) is the one module that decides whether
   a boundary type is a `msgspec.Struct` or a strict `pydantic.BaseModel`.
   `loom_type(symbol)` resolves an authored symbol by `issubclass`,
   `msgspec_type(annotation)` wraps a compiler-generated annotation, and both
@@ -42,11 +42,14 @@
   `policies.retries` instead of failing the run on the first attempt; a
   `msgspec.Struct` output is unchanged (strict decode, fail fast). The root
   `title` is dropped from a pydantic output's `CompiledOutput.schema`, to
-  match the untitled document a Struct output always produced. Two
+  match the untitled document a Struct output always produced. Three
   residuals, documented rather than closed: `bytes` needs
   `ser_json_bytes`/`val_json_bytes = "base64"` set on the pydantic model to
-  reach parity with msgspec's default base64 rendering, and strictness is
-  still checked on the root type only, for either library.
+  reach parity with msgspec's default base64 rendering, strictness is still
+  checked on the root type only, for either library, and an artefact that
+  declares both a pydantic `type_ref` output and `output_check` serialises
+  an accepted answer twice per attempt — once for the check's own builtins
+  projection, once for the wire — accepted rather than optimised away.
 
 ## 🐛 Fixes
 

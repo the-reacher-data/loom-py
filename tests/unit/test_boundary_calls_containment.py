@@ -1,4 +1,4 @@
-"""FR-003 ratchet: outside ``loom_type.py`` no module of ``loom.ai``, ``loom.core.cache`` or
+"""FR-003 ratchet: outside ``_loom_type.py`` no module of ``loom.ai``, ``loom.core.cache`` or
 ``loom.rest`` calls a msgspec or pydantic conversion primitive on a boundary value; every
 remaining call site is allow-listed with its measured count until its slice removes it.
 """
@@ -15,10 +15,12 @@ _TARGETS = frozenset(
     {
         "msgspec.convert",
         "msgspec.json.Decoder",
+        "msgspec.json.Encoder",
         "msgspec.to_builtins",
         "msgspec.json.encode",
         "msgspec.json.decode",
         "pydantic.TypeAdapter",
+        "pydantic.type_adapter.TypeAdapter",
     }
 )
 
@@ -30,6 +32,7 @@ _ALLOWED: dict[tuple[str, str], int] = {
     ("ai/engines/pydantic_ai/_returns.py", "msgspec.json.encode"): 1,
     ("ai/fastapi/endpoints.py", "msgspec.json.Decoder"): 1,
     ("ai/fastapi/endpoints.py", "msgspec.json.decode"): 1,
+    ("ai/fastapi/response.py", "msgspec.json.Encoder"): 1,
     ("ai/remote_auth.py", "msgspec.convert"): 1,
     ("ai/runtime/_grants.py", "msgspec.convert"): 1,
     ("ai/runtime/_grants.py", "msgspec.json.encode"): 1,
@@ -48,6 +51,7 @@ _ALLOWED: dict[tuple[str, str], int] = {
     ("rest/fastapi/response.py", "msgspec.json.encode"): 1,
     ("rest/fastapi/router_runtime.py", "msgspec.json.decode"): 1,
     ("rest/fastapi/sql.py", "msgspec.json.Decoder"): 1,
+    ("rest/fastapi/sql.py", "msgspec.json.Encoder"): 1,
     ("rest/rest_adapter.py", "msgspec.to_builtins"): 1,
 }
 

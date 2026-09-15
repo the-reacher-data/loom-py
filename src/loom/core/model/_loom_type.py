@@ -1,11 +1,13 @@
 """Loom-owned boundary type: one contract over msgspec and pydantic.
 
-A :class:`LoomType` is what every boundary (agent output, agent state, cache,
-REST) carries once it has been compiled: it validates JSON strictly, builds the
+A :class:`LoomType` is what this slice's two boundaries — agent output and
+agent state — carry once compiled: it validates JSON strictly, builds the
 typed value in the same pass and turns a value back into JSON-mode builtins.
-The two implementations are private to this module, so no consumer branches on
-the library at run time and no other module calls ``msgspec.json.Decoder`` or
-``pydantic.TypeAdapter`` on a boundary value.
+The cache and REST boundaries are later slices. The two implementations are
+private to this module, so no other module calls ``msgspec.json.Decoder`` or
+``pydantic.TypeAdapter`` on a boundary value; the library is decided once, at
+compile time, and every consumer that needs to branch on it afterwards reads
+the ``library`` tag it was constructed with.
 
 Pydantic stays optional: the factory only looks at ``sys.modules`` and imports
 ``pydantic`` locally, so a process that never imported it keeps working with
@@ -17,7 +19,7 @@ class untyped: this module never names ``pydantic.BaseModel``, and loom's own
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
 import msgspec
@@ -35,11 +37,12 @@ class LoomType(Protocol):
     """Boundary contract a compiled type exposes to its consumers.
 
     Attributes:
-        type: The wrapped class or annotation, kept for introspection.
+        type: The declared type or a compiler-generated annotation, kept for
+            introspection.
         library: Closed tag naming the implementation behind the value.
     """
 
-    type: type
+    type: Any
     library: Literal["msgspec", "pydantic"]
 
     def schema(self) -> Mapping[str, Any]:
@@ -64,8 +67,9 @@ class BoundaryValidationError(LoomError):
     """A boundary value failed validation.
 
     Raised by every :class:`LoomType` implementation with the library error as
-    ``__cause__``. The message is one line, names the field path and never
-    echoes the input or a documentation URL.
+    ``__cause__``. The pydantic message is built field by field and omits the
+    input and any documentation URL; the msgspec message is forwarded
+    verbatim, and is one line and free of the input already.
 
     Args:
         message: One-line description of the failure.
@@ -172,14 +176,13 @@ class _PydanticType:
     def __init__(self, symbol: Any) -> None:
         from pydantic import TypeAdapter, ValidationError
 
-        self.type: type = symbol
+        self.type: Any = symbol
         self.library: Literal["msgspec", "pydantic"] = "pydantic"
-        self._json_schema: Callable[[], dict[str, Any]] = symbol.model_json_schema
         self._adapter: TypeAdapter[Any] = TypeAdapter(symbol)
         self._validation_error: type[ValidationError] = ValidationError
 
     def schema(self) -> Mapping[str, Any]:
-        schema = self._json_schema()
+        schema: dict[str, Any] = self.type.model_json_schema()
         schema.pop("title", None)
         return schema
 

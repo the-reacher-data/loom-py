@@ -137,36 +137,34 @@ class TestStateReachesTheEngine:
 
 
 class TestNoneStateOnAStatefulArtefact:
-    async def test_carries_the_shapes_declared_defaults_not_a_failure(self) -> None:
-        engine = RecordingScriptedEngine()
-        runtime = _runtime(make_plan(_AGENT, state=_SCHEMA_STATE), engine)
-        async with runtime:
-            await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)
-        assert engine.states == [{"marca": "", "km": 0}]
+    """A stateful artefact's own defaults fill in a ``None`` state, in either library."""
 
-    async def test_carries_a_pydantic_shapes_declared_defaults(self) -> None:
+    @pytest.mark.parametrize(
+        "shape", [_SCHEMA_STATE, _PYDANTIC_SCHEMA_STATE], ids=["msgspec", "pydantic"]
+    )
+    async def test_carries_the_shapes_declared_defaults_not_a_failure(
+        self, shape: StateShape
+    ) -> None:
         engine = RecordingScriptedEngine()
-        runtime = _runtime(make_plan(_AGENT, state=_PYDANTIC_SCHEMA_STATE), engine)
+        runtime = _runtime(make_plan(_AGENT, state=shape), engine)
         async with runtime:
             await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)
         assert engine.states == [{"marca": "", "km": 0}]
 
 
 class TestNoneStateAgainstARequiredField:
-    async def test_fails_coded_instead_of_crashing_with_a_raw_validation_error(self) -> None:
-        engine = RecordingScriptedEngine()
-        runtime = _runtime(make_plan(_AGENT, state=_REQUIRED_SCHEMA_STATE), engine)
-        async with runtime:
-            with pytest.raises(AgentRunError) as excinfo:
-                await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)
+    """A ``None`` state against a required field fails coded, in either library."""
 
-        assert excinfo.value.code == AgentRunErrorCode.STATE_REQUIRED
-        assert engine.stream_count == 0
-        assert engine.states == []
-
-    async def test_a_pydantic_shape_fails_coded_the_same_way(self) -> None:
+    @pytest.mark.parametrize(
+        "shape",
+        [_REQUIRED_SCHEMA_STATE, _REQUIRED_PYDANTIC_SCHEMA_STATE],
+        ids=["msgspec", "pydantic"],
+    )
+    async def test_fails_coded_instead_of_crashing_with_a_raw_validation_error(
+        self, shape: StateShape
+    ) -> None:
         engine = RecordingScriptedEngine()
-        runtime = _runtime(make_plan(_AGENT, state=_REQUIRED_PYDANTIC_SCHEMA_STATE), engine)
+        runtime = _runtime(make_plan(_AGENT, state=shape), engine)
         async with runtime:
             with pytest.raises(AgentRunError) as excinfo:
                 await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)
