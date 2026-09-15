@@ -249,6 +249,138 @@ class TestStrictness:
         assert "msgspec.Struct or pydantic.BaseModel" in str(excinfo.value)
 
 
+class StructBytes(msgspec.Struct, forbid_unknown_fields=True):
+    raw: bytes
+
+
+class ModelBytesBase64(BaseModel):
+    model_config = ConfigDict(extra="forbid", ser_json_bytes="base64", val_json_bytes="base64")
+
+    raw: bytes
+
+
+class ModelBytesDefault(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw: bytes
+
+
+class InnerStruct(msgspec.Struct, frozen=True):
+    x: int
+
+
+class RootStructWithInner(msgspec.Struct, forbid_unknown_fields=True):
+    inner: InnerStruct
+
+
+class InnerModel(BaseModel):
+    x: int
+
+
+class RootModelWithInner(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inner: InnerModel
+
+
+class ModelDatetime(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    when: datetime
+
+
+class StructDatetime(msgspec.Struct, forbid_unknown_fields=True):
+    when: datetime
+
+
+class TestBytesEncoding:
+    """Bytes round trip through base64 when both libraries opt into it."""
+
+    @pytest.fixture(params=[StructBytes, ModelBytesBase64], ids=["msgspec", "pydantic"])
+    def bytes_type(self, request: pytest.FixtureRequest) -> LoomType:
+        compiled: LoomType = loom_type(request.param)
+        return compiled
+
+    def test_to_builtins_renders_base64(self, bytes_type: LoomType) -> None:
+        value = bytes_type.decode_json(json.dumps({"raw": "AP8="}))
+
+        builtins = bytes_type.to_builtins(value)
+
+        assert builtins["raw"] == "AP8="
+
+    def test_decode_json_accepts_base64(self, bytes_type: LoomType) -> None:
+        value = bytes_type.decode_json(json.dumps({"raw": "AP8="}))
+
+        assert value.raw == b"\x00\xff"
+
+    def test_pydantic_default_config_decodes_bytes_as_utf8(self) -> None:
+        compiled = loom_type(ModelBytesDefault)
+
+        value = compiled.decode_json(json.dumps({"raw": "AP8="}))
+
+        assert value.raw == b"AP8="
+
+
+class TestNestedLaxType:
+    """A lax nested type inside a strict root is accepted; strictness is root-only."""
+
+    def test_msgspec_nested_struct_without_forbid_unknown_fields_is_accepted(self) -> None:
+        compiled = loom_type(RootStructWithInner)
+
+        value = compiled.decode_json(json.dumps({"inner": {"x": 1, "zz": 2}}))
+
+        assert value.inner.x == 1
+
+    def test_pydantic_nested_model_without_extra_is_accepted(self) -> None:
+        compiled = loom_type(RootModelWithInner)
+
+        value = compiled.decode_json(json.dumps({"inner": {"x": 1, "zz": 2}}))
+
+        assert value.inner.x == 1
+
+
+class TestDatetimeRoundTrip:
+    """A UTC-aware datetime renders as the same ISO string in both libraries."""
+
+    @pytest.fixture(params=[StructDatetime, ModelDatetime], ids=["msgspec", "pydantic"])
+    def datetime_type(self, request: pytest.FixtureRequest) -> LoomType:
+        compiled: LoomType = loom_type(request.param)
+        return compiled
+
+    def test_renders_the_iso_string(self, datetime_type: LoomType) -> None:
+        value = datetime_type.decode_json(json.dumps({"when": "2026-09-15T10:00:00Z"}))
+
+        builtins = datetime_type.to_builtins(value)
+
+        assert builtins["when"] == "2026-09-15T10:00:00Z"
+
+
+class TestSchemaShape:
+    """Both libraries expose an object schema whose root forbids extra keys."""
+
+    def test_pydantic_root_has_the_expected_keys(self) -> None:
+        schema = loom_type(RootModelWithInner).schema()
+
+        assert "additionalProperties" in schema
+        assert "properties" in schema
+        assert schema["type"] == "object"
+        assert "$defs" in schema
+
+    def test_msgspec_root_has_a_ref_and_defs_when_nested(self) -> None:
+        schema = loom_type(RootStructWithInner).schema()
+
+        assert "$ref" in schema
+        assert "$defs" in schema
+
+    @pytest.mark.parametrize(
+        "symbol", [RootModelWithInner, RootStructWithInner], ids=["pydantic", "msgspec"]
+    )
+    def test_root_object_forbids_additional_properties_when_nested(self, symbol: type) -> None:
+        root = _root_object(loom_type(symbol).schema())
+
+        assert root["additionalProperties"] is False
+
+
 class TestMsgspecType:
     """Compiler-generated annotations are wrapped without a strictness check."""
 
