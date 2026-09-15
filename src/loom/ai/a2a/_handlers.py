@@ -26,6 +26,7 @@ from loom.ai._transport import (
     always_closed,
     annotate_usage,
     failure_event,
+    project_output,
     with_heartbeats,
 )
 from loom.ai.a2a._binding import PublishedAgent
@@ -276,6 +277,7 @@ def _make_send_handler(
             # catalogue detail travel outward.
             _logger.warning("a2a run of agent %r failed: %s", name, exc)
             return error_response(call.request_id, internal_error(exc.code))
+        result = project_output(result, runtime.output_type(name))
         task = _completed_task(uuid4().hex, context_id, result.output)
         return AgentJSONResponse(content=rpc_response(call.request_id, task))
 
@@ -289,7 +291,10 @@ def _run_frames(
 
     async def _frames() -> AsyncIterator[bytes]:
         projector = A2AEventProjector(
-            task_id=task_id, context_id=context_id, max_steps=call.agent.max_steps
+            task_id=task_id,
+            context_id=context_id,
+            max_steps=call.agent.max_steps,
+            output_type=runtime.output_type(call.agent.name),
         )
         yield _sse_frame(call.request_id, _task(task_id, context_id, {"state": "submitted"}))
         try:

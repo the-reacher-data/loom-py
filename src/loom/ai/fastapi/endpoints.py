@@ -37,6 +37,7 @@ from loom.ai._transport import (
     TransportError,
     always_closed,
     annotate_usage,
+    project_output,
     read_body_capped,
     require_caller,
 )
@@ -55,7 +56,7 @@ from loom.ai.fastapi.streaming import encode_sse_event, stream_sse
 from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
 from loom.core.identity import Identity, current_identity
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import LoomFrozenStruct, LoomType
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.observability.span import LoomSpan
@@ -349,6 +350,7 @@ def _make_run_handler(
             # closing attributes are where an operator reads what it spent.
             with always_closed(span), span.as_current():
                 result = await _annotated_run(runtime, span, name, body, identity, state)
+            result = project_output(result, runtime.output_type(name))
             return AgentJSONResponse(content=result_payload(result))
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
@@ -362,7 +364,7 @@ def _make_run_handler(
 
 
 async def _annotating_usage(
-    events: AsyncIterator[AgentEvent], span: LoomSpan
+    events: AsyncIterator[AgentEvent], span: LoomSpan, output_type: LoomType
 ) -> AsyncIterator[AgentEvent]:
     """Relay *events*, annotating *span* with the usage the final one carries.
 
@@ -371,17 +373,23 @@ async def _annotating_usage(
     event is still typed — and lands on the same closing attributes the
     non-streaming run publishes. A failed run publishes what it burned before
     it failed; a stream that never reaches a terminal event annotates nothing.
+    The terminal ``final`` event additionally has its ``output`` projected to
+    builtins before it is yielded, so the SSE encoder never sees the engine's
+    validated instance (FR-010).
 
     Args:
         events: Run events, terminal event last.
         span: Open span of the run, closed by its owner.
+        output_type: The run's compiled boundary type for its answer.
 
     Yields:
-        Every event, unchanged and in order.
+        Every event, in order; the ``final`` event's ``output`` projected.
     """
     async for event in events:
         if isinstance(event, FinalEvent | ErrorEvent):
             annotate_usage(span, event.usage)
+        if isinstance(event, FinalEvent):
+            event = project_output(event, output_type)
         yield event
 
 
@@ -431,7 +439,8 @@ def _stream_frames(
                     state=state,
                 ) as events:
                     async for frame in stream_sse(
-                        _annotating_usage(events, span), heartbeat_ms=HEARTBEAT_MS
+                        _annotating_usage(events, span, runtime.output_type(name)),
+                        heartbeat_ms=HEARTBEAT_MS,
                     ):
                         yield frame
             except AgentRunError as exc:

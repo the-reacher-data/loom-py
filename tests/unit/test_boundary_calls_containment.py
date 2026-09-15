@@ -36,7 +36,6 @@ _ALLOWED: dict[tuple[str, str], int] = {
     ("ai/remote_auth.py", "msgspec.convert"): 1,
     ("ai/runtime/_grants.py", "msgspec.convert"): 1,
     ("ai/runtime/_grants.py", "msgspec.json.encode"): 1,
-    ("ai/runtime/_hooks.py", "msgspec.to_builtins"): 1,
     ("ai/runtime/_lifecycle.py", "msgspec.to_builtins"): 1,
     ("core/cache/calls.py", "msgspec.json.encode"): 1,
     ("core/cache/calls.py", "msgspec.to_builtins"): 1,

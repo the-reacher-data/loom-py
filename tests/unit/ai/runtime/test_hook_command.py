@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace as dataclass_replace
+from pathlib import Path
 from typing import Any
 
 import msgspec
@@ -21,7 +23,7 @@ from loom.ai.runtime._bounded import RunContext
 from loom.ai.runtime._hooks import hook_command
 from loom.core.command import Command
 from loom.core.identity import Identity
-from loom.core.model import msgspec_type
+from loom.core.model import loom_type, msgspec_type
 
 _ALL_NAMES = frozenset({HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS})
 
@@ -145,3 +147,47 @@ def test_offers_messages_none_when_not_given(run: RunContext) -> None:
     command = hook_command({}, run, _ALL_NAMES)
 
     assert command[HOOK_MESSAGES_FIELD] is None
+
+
+def test_projects_a_pydantic_output_through_the_plans_loom_type(
+    fake_myapp_path: Path, run: RunContext
+) -> None:
+    """A pydantic answer is offered as ``model_dump(mode='json')``, not a ``TypeError``.
+
+    US1 item 3.
+    """
+    from myapp.domain.pydantic_invoices import InvoiceSummaryModel
+
+    answer = InvoiceSummaryModel(issuer="Acme", total=42.5, due_date="2026-01-01")
+    plan = msgspec.structs.replace(
+        run.plan,
+        output=CompiledOutput(schema={"type": "object"}, loom_type=loom_type(InvoiceSummaryModel)),
+    )
+    run = dataclass_replace(run, plan=plan)
+
+    command = hook_command(answer, run, _ALL_NAMES)
+
+    assert command["output"] == answer.model_dump(mode="json")
+
+
+def test_never_projects_the_output_when_the_hook_does_not_declare_it(
+    fake_myapp_path: Path, run: RunContext
+) -> None:
+    """A hook Input without ``output`` never touches the answer (FR-011).
+
+    The plan's compiled output type is for a different shape entirely (a
+    pydantic model), while the actual answer is a plain ``str`` — the shape a
+    ``run_text`` run produces.  Projecting it would raise; the guard means it
+    is never attempted.
+    """
+    from myapp.domain.pydantic_invoices import InvoiceSummaryModel
+
+    plan = msgspec.structs.replace(
+        run.plan,
+        output=CompiledOutput(schema={"type": "object"}, loom_type=loom_type(InvoiceSummaryModel)),
+    )
+    run = dataclass_replace(run, plan=plan)
+
+    command = hook_command("plain text answer", run, frozenset({"agent"}))
+
+    assert command == {"agent": "incident-triage"}

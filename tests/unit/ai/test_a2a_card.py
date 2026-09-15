@@ -274,7 +274,12 @@ def _only_skill(card: Mapping[str, object]) -> Mapping[str, object]:
 
 def _project(events: Sequence[AgentEvent], *, max_steps: int = _MAX_STEPS) -> list[Any]:
     """Project a sequence of agent events through a single projector."""
-    projector = A2AEventProjector(task_id=_TASK_ID, context_id=_CONTEXT_ID, max_steps=max_steps)
+    projector = A2AEventProjector(
+        task_id=_TASK_ID,
+        context_id=_CONTEXT_ID,
+        max_steps=max_steps,
+        output_type=msgspec_type(dict),
+    )
     projected: list[Any] = []
     for event in events:
         projected.extend(projector.project(event))

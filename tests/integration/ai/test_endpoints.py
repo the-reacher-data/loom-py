@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 import msgspec
+import pydantic
 import pytest
 import yaml
 from fastapi import FastAPI
@@ -37,7 +38,7 @@ from loom.ai.abc import (
     StateShape,
     TextDeltaEvent,
 )
-from loom.ai.compiler._plan import AgentPlan
+from loom.ai.compiler._plan import AgentPlan, CompiledOutput
 from loom.ai.config import A2AConfig, AgentEndpointConfig
 from loom.ai.errors import (
     CONVERSATION_LOAD_FAILED_MESSAGE,
@@ -53,6 +54,7 @@ from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
 from loom.core.errors import Forbidden
 from loom.core.identity import ANONYMOUS, Identity, reset_identity, set_identity
+from loom.core.model import loom_type
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.rest.auth.middleware import AuthenticationMiddleware
@@ -86,6 +88,37 @@ _INTERACTION_ID_LENGTH = 32
 _NEW_MESSAGES = b'[{"kind": "request", "conversation_id": "c-42"}]'
 _RESULT_KEYS = {"output", "usage", "interaction_id", "hook_result"}
 """The only keys a completed run publishes, on ``/run`` and on the ``final`` frame."""
+
+
+class _AppraisalStruct(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
+    """Msgspec twin of :class:`_AppraisalModel`, same shape, same builtins."""
+
+    issuer: str
+    total: float
+
+
+class _AppraisalModel(pydantic.BaseModel):
+    """Strict pydantic twin of :class:`_AppraisalStruct`, same shape, same builtins."""
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    issuer: str
+    total: float
+
+
+_OUTPUT_TWINS: tuple[tuple[str, type[Any], object], ...] = (
+    ("msgspec", _AppraisalStruct, _AppraisalStruct(issuer="Acme", total=42.5)),
+    ("pydantic", _AppraisalModel, _AppraisalModel(issuer="Acme", total=42.5)),
+)
+"""One boundary type per library, the answer built from it, and its id."""
+
+
+def _plan_with_output(cls: type[Any]) -> AgentPlan:
+    """A plan whose declared output is ``cls``, compiled through ``loom_type``."""
+    return msgspec.structs.replace(
+        make_plan(_AGENT),
+        output=CompiledOutput(schema={"type": "object"}, loom_type=loom_type(cls)),
+    )
 
 
 class StubAuthenticator:
@@ -1188,6 +1221,59 @@ class TestStream:
             response = await client.post(f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p"})
 
             assert _sse_names(response.text) == ["text_delta", "error"]
+
+
+@pytest.mark.parametrize(("library", "cls", "answer"), _OUTPUT_TWINS)
+class TestOutputProjection:
+    """``/run`` and the SSE ``final`` frame carry the answer as builtins (SC-001)."""
+
+    async def test_run_body_carries_the_hook_payload(
+        self,
+        deps: StubDepsFactory,
+        container: LoomContainer,
+        identity: Identity,
+        library: str,
+        cls: type[Any],
+        answer: object,
+    ) -> None:
+        """The ``/run`` body's ``output`` is a JSON object equal to the hook payload."""
+        del library
+        plan = _plan_with_output(cls)
+        engine = ScriptedEngine(script=(FinalEvent(output=answer, usage=DEFAULT_USAGE),))
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=(plan,),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+            assert response.json()["output"] == loom_type(cls).to_builtins(answer)
+
+    async def test_sse_final_carries_the_hook_payload(
+        self,
+        deps: StubDepsFactory,
+        container: LoomContainer,
+        identity: Identity,
+        library: str,
+        cls: type[Any],
+        answer: object,
+    ) -> None:
+        """The SSE ``final`` frame's ``output`` is a JSON object equal to the hook payload."""
+        del library
+        plan = _plan_with_output(cls)
+        engine = ScriptedEngine(script=(FinalEvent(output=answer, usage=DEFAULT_USAGE),))
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=(plan,),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p"})
+
+            assert _final_frame(response.text)["output"] == loom_type(cls).to_builtins(answer)
 
 
 class TestStreamTracing:

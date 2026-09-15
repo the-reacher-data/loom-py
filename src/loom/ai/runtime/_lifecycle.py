@@ -85,6 +85,7 @@ from loom.ai.runtime._mcp import (
 )
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
+from loom.core.model import LoomType
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.invoker import ApplicationInvoker
 
@@ -995,6 +996,25 @@ class AgentRuntime:
             KeyError: When no agent is named *name*.
         """
         return self._require_plan(name).state
+
+    def output_type(self, name: str) -> LoomType:
+        """Return one agent's compiled boundary type for its answer.
+
+        Read at every wire surface — ``/run``, the SSE ``final`` frame and
+        both A2A paths — so the answer is projected to builtins by the
+        transport helper, never decoded again: the engine already validated
+        and built it once at run time.
+
+        Args:
+            name: Agent whose output type is read.
+
+        Returns:
+            The plan's :class:`~loom.core.model.LoomType` for the answer.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+        """
+        return self._require_plan(name).output.loom_type
 
     def grants(self, name: str) -> AgentGrants:
         """Return one agent's own resolved grants, built once at start-up.

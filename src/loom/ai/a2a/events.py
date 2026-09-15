@@ -32,6 +32,7 @@ from loom.ai.abc import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from loom.core.model import LoomType
 
 _TEXT_ARTIFACT_ID: Final[str] = "response"
 _OUTPUT_ARTIFACT_ID: Final[str] = "output"
@@ -68,20 +69,27 @@ class A2AEventProjector:
         context_id: Id of the A2A context the task belongs to.
         max_steps: Iteration ceiling of the run, published as the denominator
             of the ordinal.
+        output_type: The run's compiled boundary type, used to project the
+            ``final`` event's ``output`` to builtins before it is published.
 
     Example::
 
-        projector = A2AEventProjector(task_id=task, context_id=ctx, max_steps=12)
+        projector = A2AEventProjector(
+            task_id=task, context_id=ctx, max_steps=12, output_type=output_type
+        )
         for event in events:
             frames = projector.project(event)
     """
 
-    __slots__ = ("_context_id", "_max_steps", "_steps", "_task_id")
+    __slots__ = ("_context_id", "_max_steps", "_output_type", "_steps", "_task_id")
 
-    def __init__(self, *, task_id: str, context_id: str, max_steps: int) -> None:
+    def __init__(
+        self, *, task_id: str, context_id: str, max_steps: int, output_type: LoomType
+    ) -> None:
         self._task_id = task_id
         self._context_id = context_id
         self._max_steps = max_steps
+        self._output_type = output_type
         self._steps = 0
 
     def project(self, event: AgentEvent) -> tuple[Mapping[str, object], ...]:
@@ -145,8 +153,9 @@ class A2AEventProjector:
         return (self._status_update({"state": _WORKING}, final=False),)
 
     def _project_final(self, event: FinalEvent) -> tuple[Mapping[str, object], ...]:
+        output = self._output_type.to_builtins(event.output)
         artifact = self._artifact_update(
-            _OUTPUT_ARTIFACT_ID, (_data_part(event.output),), append=False, last_chunk=True
+            _OUTPUT_ARTIFACT_ID, (_data_part(output),), append=False, last_chunk=True
         )
         return (artifact, self._status_update({"state": _COMPLETED}, final=True))
 
