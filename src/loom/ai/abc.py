@@ -21,13 +21,11 @@ from contextlib import AbstractAsyncContextManager
 from decimal import Decimal
 from typing import Any, ClassVar, Final, Generic, Literal, Protocol, TypeAlias, TypeVar, overload
 
-import msgspec
-
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import LoomFrozenStruct, LoomType
 
 CONVERSATION_ID_MAX_LENGTH: Final[int] = 128
 """Longest ``conversation_id`` a run accepts; the value itself is opaque."""
@@ -51,21 +49,21 @@ class StateShape(LoomFrozenStruct, frozen=True, kw_only=True):
     authored spellings of one optional JSON Schema; the compiler resolves all
     three to this value, never to one of three interchangeable objects. Same
     idiom as its sibling :class:`~loom.ai.compiler._plan.CompiledOutput`,
-    including a ``decoder`` field msgspec cannot itself encode, under the
-    invariant :mod:`loom.ai.compiler._plan` documents.
+    including a :class:`~loom.core.model.LoomType` field msgspec cannot
+    itself encode, under the invariant :mod:`loom.ai.compiler._plan`
+    documents.
 
     Attributes:
         schema: JSON Schema the artifact's state must satisfy, or ``None``
             under the ``deps_type: dict`` waiver, where no schema exists and
             template markers are not validated (FR-006).
-        decoder: Built ``msgspec`` JSON decoder producing the normalised
-            state mapping, or ``None`` alongside ``schema is None``.
+        loom_type: Boundary type produced at compile, decoding and
+            normalising the state mapping, or ``None`` alongside
+            ``schema is None``.
     """
 
     schema: Mapping[str, Any] | None
-    # ``Any`` type parameter: the decoded type is derived from the artifact's
-    # declared state at compile time, so it cannot be named statically.
-    decoder: msgspec.json.Decoder[Any] | None
+    loom_type: LoomType | None
 
 
 class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):

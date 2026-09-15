@@ -10,17 +10,18 @@ for both libraries and rejects anything else with
 ``UnsupportedBoundaryType``: both satisfy invariant 5 with a strict decode,
 so both may own the pass-through of the validated bytes.
 
-:func:`_resolve_symbol` and :func:`_schema_to_decoder` are shared with the
+:func:`_resolve_symbol` and :func:`_schema_to_annotation` are shared with the
 state phase (:mod:`loom.ai.compiler.phases._state`), which compiles the same
 two authored shapes — a symbol reference and a hand-written JSON Schema —
 into a schema and an annotation. Each caller supplies its own issue factory
 and, for the schema path, its own generated-struct name; nothing about the
 issue codes, the messages, or the exceptions caught changes between the two
 callers. What differs between the two ``type_ref``/``deps_type`` paths stays
-local to each phase: the output side additionally requires the resolved
-symbol to compile through :func:`~loom.core.model.loom_type` (invariant 5);
-the state side derives its schema straight from ``msgspec.json.schema()`` and
-admits whatever symbol that call accepts.
+local to each phase: the output side requires every resolved symbol to
+compile through :func:`~loom.core.model.loom_type` (invariant 5); the state
+side only requires that of a resolved symbol that is a class, and falls back
+to ``msgspec.json.schema()`` for a container or alias, so a ``deps_type``
+that never named a class keeps compiling.
 """
 
 from __future__ import annotations
@@ -151,25 +152,6 @@ def _schema_to_annotation(
     except (TypeError, ValueError) as exc:
         return None, [invalid_issue(component, str(exc))]
     return (MappingProxyType(dict(schema)), annotation), []
-
-
-def _schema_to_decoder(
-    schema: Mapping[str, Any], model_name: str, component: str, invalid_issue: _IssueFactory
-) -> tuple[tuple[Mapping[str, Any], msgspec.json.Decoder[Any]] | None, list[AgentCompilationIssue]]:
-    """Compile a hand-written JSON Schema object into a ``(schema, decoder)`` pair.
-
-    Shared with the state ``deps_schema`` path (:mod:`loom.ai.compiler.phases._state`),
-    which still reads its own built ``msgspec.json.Decoder`` directly.
-    """
-    compiled, issues = _schema_to_annotation(schema, model_name, component, invalid_issue)
-    if compiled is None:
-        return None, issues
-    result_schema, annotation = compiled
-    try:
-        decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(annotation)
-    except (TypeError, ValueError) as exc:
-        return None, [invalid_issue(component, str(exc))]
-    return (result_schema, decoder), []
 
 
 def _schema_fault(schema: Mapping[str, Any]) -> str | None:

@@ -54,7 +54,7 @@ from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
 from loom.core.errors import Forbidden
 from loom.core.identity import ANONYMOUS, Identity, reset_identity, set_identity
-from loom.core.model import loom_type
+from loom.core.model import loom_type, msgspec_type
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.rest.auth.middleware import AuthenticationMiddleware
@@ -995,10 +995,8 @@ class _StateWithDefault(msgspec.Struct, forbid_unknown_fields=True):
     km: int = 0
 
 
-_SCHEMA_STATE = StateShape(
-    schema={"type": "object"}, decoder=msgspec.json.Decoder(_StateWithDefault)
-)
-_OPEN_STATE = StateShape(schema=None, decoder=None)
+_SCHEMA_STATE = StateShape(schema={"type": "object"}, loom_type=msgspec_type(_StateWithDefault))
+_OPEN_STATE = StateShape(schema=None, loom_type=None)
 
 
 class TestState:

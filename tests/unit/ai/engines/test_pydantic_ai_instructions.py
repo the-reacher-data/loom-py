@@ -42,11 +42,11 @@ _SCHEMA: dict[str, Any] = {
 
 
 def _schema_state() -> StateShape:
-    return StateShape(schema=_SCHEMA, decoder=None)
+    return StateShape(schema=_SCHEMA, loom_type=None)
 
 
 def _dict_state() -> StateShape:
-    return StateShape(schema=None, decoder=None)
+    return StateShape(schema=None, loom_type=None)
 
 
 def _plan_with(

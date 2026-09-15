@@ -26,8 +26,6 @@ from types import MappingProxyType, TracebackType
 from typing import Any, Self, cast
 from uuid import uuid4
 
-import msgspec
-
 from loom.ai._filters import select_names
 from loom.ai.abc import (
     CONVERSATION_ID_MAX_LENGTH,
@@ -85,7 +83,7 @@ from loom.ai.runtime._mcp import (
 )
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
-from loom.core.model import LoomType
+from loom.core.model import BoundaryValidationError, LoomType
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.invoker import ApplicationInvoker
 
@@ -1213,11 +1211,12 @@ def _resolve_state(
 
     Returns:
         *state* unchanged when given. When *state* is ``None`` and *shape*
-        declares a decoder whose every field has a default, the shape's own
-        defaults — ``msgspec.to_builtins`` of decoding an empty object — so a
-        stateful artefact renders its declared defaults rather than empty
-        markers. ``None`` when *shape* is ``None``, or declares the open
-        ``deps_type: dict`` form, which has no defaults to supply.
+        declares a :class:`~loom.core.model.LoomType` whose every field has a
+        default, the shape's own defaults — its decode of an empty object,
+        turned to builtins — so a stateful artefact renders its declared
+        defaults rather than empty markers. ``None`` when *shape* is
+        ``None``, or declares the open ``deps_type: dict`` form, which has no
+        defaults to supply.
 
     Raises:
         AgentRunError: ``STATE_UNDECLARED`` when *state* is given and *shape*
@@ -1232,17 +1231,17 @@ def _resolve_state(
                 "remove 'state' from this call or declare a state shape on the artefact",
             )
         return cast(Mapping[str, Any], state)
-    if shape is None or shape.decoder is None:
+    if shape is None or shape.loom_type is None:
         return None
     try:
-        decoded = shape.decoder.decode(b"{}")
-    except msgspec.ValidationError as exc:
+        decoded = shape.loom_type.decode_json(b"{}")
+    except BoundaryValidationError as exc:
         raise AgentRunError(
             AgentRunErrorCode.STATE_REQUIRED,
             f"agent {name!r} declares a state field with no default ({exc}); "
             "pass 'state' explicitly for this run",
         ) from exc
-    return cast(Mapping[str, Any], msgspec.to_builtins(decoded))
+    return cast(Mapping[str, Any], shape.loom_type.to_builtins(decoded))
 
 
 def _check_conversation_id(conversation_id: str | None) -> None:

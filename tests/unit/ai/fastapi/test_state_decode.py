@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import msgspec
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from loom.ai._transport import TransportError
 from loom.ai.abc import StateShape
 from loom.ai.fastapi.endpoints import _decode_state
+from loom.core.model import loom_type, msgspec_type
 
 _AGENT = "appraiser"
 
@@ -25,10 +27,22 @@ class _StateWithDefault(msgspec.Struct, forbid_unknown_fields=True):
     km: int = 0
 
 
-_SCHEMA_SHAPE = StateShape(
-    schema={"type": "object"}, decoder=msgspec.json.Decoder(_StateWithDefault)
+_SCHEMA_SHAPE = StateShape(schema={"type": "object"}, loom_type=msgspec_type(_StateWithDefault))
+_OPEN_SHAPE = StateShape(schema=None, loom_type=None)
+
+
+class _PydanticStateWithDefault(BaseModel):
+    """Pydantic analogue of ``_StateWithDefault``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    marca: str
+    km: int = 0
+
+
+_PYDANTIC_SCHEMA_SHAPE = StateShape(
+    schema={"type": "object"}, loom_type=loom_type(_PydanticStateWithDefault)
 )
-_OPEN_SHAPE = StateShape(schema=None, decoder=None)
 
 
 def _raw(payload: bytes) -> msgspec.Raw:
@@ -101,6 +115,27 @@ class TestStateAgainstASchemaShape:
         """The compiled decoder forbids unknown fields, matching the output side (FR-017)."""
         with pytest.raises(TransportError) as excinfo:
             _decode_state(_AGENT, _SCHEMA_SHAPE, _raw(b'{"marca": "civic", "extra": 1}'))
+
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.code == "INVALID_STATE"
+
+
+class TestStateAgainstAPydanticSchemaShape:
+    def test_decodes_and_normalises_the_declared_defaults(self) -> None:
+        state = _decode_state(_AGENT, _PYDANTIC_SCHEMA_SHAPE, _raw(b'{"marca": "civic"}'))
+
+        assert state == {"marca": "civic", "km": 0}
+
+    def test_an_undeclared_field_is_refused_with_422(self) -> None:
+        with pytest.raises(TransportError) as excinfo:
+            _decode_state(_AGENT, _PYDANTIC_SCHEMA_SHAPE, _raw(b'{"marca": "civic", "extra": 1}'))
+
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.code == "INVALID_STATE"
+
+    def test_malformed_bytes_are_refused_with_422(self) -> None:
+        with pytest.raises(TransportError) as excinfo:
+            _decode_state(_AGENT, _PYDANTIC_SCHEMA_SHAPE, _raw(b"not json"))
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"

@@ -631,8 +631,8 @@ def make_plan(
 
 
 def make_state_shape() -> StateShape:
-    """Build the ``deps_type: dict`` waiver shape: no schema, no decoder."""
-    return StateShape(schema=None, decoder=None)
+    """Build the ``deps_type: dict`` waiver shape: no schema, no boundary type."""
+    return StateShape(schema=None, loom_type=None)
 
 
 DEFAULT_MCP_SERVER = "tools"

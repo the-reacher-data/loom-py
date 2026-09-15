@@ -56,7 +56,7 @@ from loom.ai.fastapi.streaming import encode_sse_event, stream_sse
 from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
 from loom.core.identity import Identity, current_identity
-from loom.core.model import LoomFrozenStruct, LoomType
+from loom.core.model import BoundaryValidationError, LoomFrozenStruct, LoomType
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.observability.span import LoomSpan
@@ -171,10 +171,10 @@ def _decode_state(
             when the caller sent none.
 
     Returns:
-        ``None`` when *raw* is absent. Otherwise the decoded value converted
-        to builtins (:func:`msgspec.to_builtins`) — the normalised mapping
-        the bundle carries (FR-009) — decoded against *state_shape*'s own
-        decoder when it has one, or as a plain JSON value under the open
+        ``None`` when *raw* is absent. Otherwise the normalised mapping the
+        bundle carries (FR-009): *state_shape*'s own
+        :class:`~loom.core.model.LoomType` decoded and turned to builtins
+        when it has one, or a plain JSON value under the open
         ``deps_type: dict`` form.
 
     Raises:
@@ -192,15 +192,16 @@ def _decode_state(
             "remove 'state' from the request or declare a state shape on the artefact",
         )
     body = bytes(raw)
+    if state_shape.loom_type is None:
+        try:
+            return cast(Mapping[str, Any], msgspec.json.decode(body))
+        except msgspec.DecodeError as exc:
+            raise TransportError(422, "INVALID_STATE", str(exc)) from exc
     try:
-        decoded = (
-            state_shape.decoder.decode(body)
-            if state_shape.decoder is not None
-            else msgspec.json.decode(body)
-        )
-    except msgspec.DecodeError as exc:
+        decoded = state_shape.loom_type.decode_json(body)
+    except (BoundaryValidationError, msgspec.DecodeError) as exc:
         raise TransportError(422, "INVALID_STATE", str(exc)) from exc
-    return cast(Mapping[str, Any], msgspec.to_builtins(decoded))
+    return cast(Mapping[str, Any], state_shape.loom_type.to_builtins(decoded))
 
 
 async def _read_request(
