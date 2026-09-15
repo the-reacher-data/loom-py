@@ -33,7 +33,7 @@ from loom.ai.abc import AgentEngine, DepsFactory, OutputCheck, StateShape
 from loom.ai.compiler._plan import AgentPlan, CompiledInstruction, CompiledOutput
 from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._output import compile_output
-from loom.ai.declarative import JsonSchemaOutput, PolicySpec
+from loom.ai.declarative import JsonSchemaOutput, PolicySpec, TypeRefOutput
 from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
@@ -123,6 +123,20 @@ def make_plan(
         policies=policies if policies is not None else PolicySpec(retries=retries),
         metadata={},
     )
+
+
+def plan_with_pydantic_type_ref_output(ref: str) -> AgentPlan:
+    """A plan whose output is a compiled pydantic ``type_ref`` (hotfix/type-ref-pydantic).
+
+    ``output_mode`` is pinned to ``tool`` so a caller can pass the plan
+    straight to :func:`~loom.ai.engines.pydantic_ai._spec.build_output_type`.
+    """
+    output, issues = compile_output(TypeRefOutput(ref=ref), "contract")
+    assert output is not None, issues
+    plan = make_plan(schema=STRICT_SCHEMA)
+    plan = msgspec.structs.replace(plan, output=output)
+    inference = msgspec.structs.replace(plan.inference, output_mode="tool")
+    return msgspec.structs.replace(plan, inference=inference)
 
 
 def answering_model(payload: bytes) -> Model:

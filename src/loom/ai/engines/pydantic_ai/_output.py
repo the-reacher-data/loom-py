@@ -2,8 +2,9 @@
 
 pydantic-ai's ``output_schema`` instructs the model and returns a plain
 dictionary **without runtime validation** (research R-004), so loom validates.
-It does so with the decoder the compiler already built, over the model's raw
-JSON bytes: :meth:`msgspec.json.Decoder.decode` fuses validation and
+It does so with the :class:`~loom.core.model.LoomType` the compiler already
+built, over the model's raw JSON bytes:
+:meth:`~loom.core.model.LoomType.decode_json` fuses validation and
 construction into a single pass, which is what invariant 5 requires.
 ``msgspec.convert()`` over a mapping is never used here — walking a second
 object graph for the same payload is the double pass the performance rules
@@ -33,12 +34,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import msgspec
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 
 from loom.ai.compiler import CompiledOutput
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
+from loom.core.model import BoundaryValidationError
 
 
 class MissingOutputPayload(Exception):
@@ -81,11 +82,11 @@ def decode_output(output: CompiledOutput, result: AgentRunResult[Any]) -> object
     """Validate and build the answer in one pass over the model's bytes.
 
     Args:
-        output: Compiled output contract carrying the pre-built decoder.
+        output: Compiled output contract carrying the pre-built boundary type.
         result: Completed engine run.
 
     Returns:
-        The validated answer, built by the decoder the plan carries.
+        The validated answer, built by :meth:`~loom.core.model.LoomType.decode_json`.
 
     Raises:
         AgentRunError: With ``OUTPUT_SCHEMA_VIOLATION`` when the model's
@@ -94,8 +95,8 @@ def decode_output(output: CompiledOutput, result: AgentRunResult[Any]) -> object
     """
     try:
         raw = raw_output(result)
-        return output.decoder.decode(raw)
-    except (msgspec.ValidationError, msgspec.DecodeError, MissingOutputPayload) as exc:
+        return output.loom_type.decode_json(raw)
+    except (BoundaryValidationError, MissingOutputPayload) as exc:
         raise AgentRunError(
             AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION,
             f"the model's answer does not satisfy the declared output shape: {exc}",

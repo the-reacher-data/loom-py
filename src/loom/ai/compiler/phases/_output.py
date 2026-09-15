@@ -1,28 +1,26 @@
-"""Output phase: schema validation, ``type_ref`` resolution, decoder build.
+"""Output phase: schema validation, ``type_ref`` resolution, boundary type build.
 
 A ``json_schema`` output compiles to a concrete type via
-``msgspec.defstruct()`` and the plan stores a **built** decoder, so nothing
+``msgspec.defstruct()`` and the plan stores a :class:`~loom.core.model.LoomType`
+built once over it (:func:`~loom.core.model.msgspec_type`), so nothing
 reflects per invocation (research R-004, invariant 5).  A ``type_ref`` output
-accepts ``msgspec.Struct`` subclasses declaring ``forbid_unknown_fields=True``,
-or ``pydantic.BaseModel`` subclasses declaring ``model_config["extra"] ==
-"forbid"`` (hotfix/type-ref-pydantic): both satisfy invariant 5 with a
-strict decode, so both may own the pass-through of the validated bytes.
-:class:`_PydanticDecoder` is the seam that lets the pydantic case satisfy
-:class:`~loom.ai.compiler._plan.OutputDecoder`, the same two-member shape
-``msgspec.json.Decoder`` already has, without widening every consumer of
-``CompiledOutput.decoder`` to a union.
+accepts a strict ``msgspec.Struct`` or ``pydantic.BaseModel`` subclass,
+resolved through :func:`~loom.core.model.loom_type`, which checks strictness
+for both libraries and rejects anything else with
+``UnsupportedBoundaryType``: both satisfy invariant 5 with a strict decode,
+so both may own the pass-through of the validated bytes.
 
 :func:`_resolve_symbol` and :func:`_schema_to_decoder` are shared with the
 state phase (:mod:`loom.ai.compiler.phases._state`), which compiles the same
 two authored shapes — a symbol reference and a hand-written JSON Schema —
-into a schema-and-decoder pair. Each caller supplies its own issue factory
+into a schema and an annotation. Each caller supplies its own issue factory
 and, for the schema path, its own generated-struct name; nothing about the
 issue codes, the messages, or the exceptions caught changes between the two
 callers. What differs between the two ``type_ref``/``deps_type`` paths stays
 local to each phase: the output side additionally requires the resolved
-symbol to be a strict ``msgspec.Struct`` or ``pydantic.BaseModel``
-(invariant 5); the state side derives its schema straight from
-``msgspec.json.schema()`` and admits whatever symbol that call accepts.
+symbol to compile through :func:`~loom.core.model.loom_type` (invariant 5);
+the state side derives its schema straight from ``msgspec.json.schema()`` and
+admits whatever symbol that call accepts.
 """
 
 from __future__ import annotations
@@ -32,8 +30,6 @@ from types import MappingProxyType
 from typing import Any, cast
 
 import msgspec
-from pydantic import BaseModel, TypeAdapter
-from pydantic import ValidationError as PydanticValidationError
 
 from loom.ai.abc import OutputCheck
 from loom.ai.compiler._plan import CompiledOutput
@@ -45,6 +41,7 @@ from loom.ai.errors import (
     output_type_ref_unresolvable,
     output_type_ref_unsupported,
 )
+from loom.core.model import UnsupportedBoundaryType, loom_type, msgspec_type
 from loom.core.symbols import import_symbol
 
 _CompileResult = tuple[CompiledOutput | None, list[AgentCompilationIssue]]
@@ -103,81 +100,24 @@ def compile_output_check(
 
 
 def _compile_json_schema(output: JsonSchemaOutput, component: str) -> _CompileResult:
-    compiled, issues = _schema_to_decoder(
+    compiled, issues = _schema_to_annotation(
         output.schema, "CompiledOutputModel", component, output_schema_invalid
     )
     if compiled is None:
         return None, issues
-    schema, decoder = compiled
-    return CompiledOutput(schema=schema, decoder=decoder), []
+    schema, annotation = compiled
+    return CompiledOutput(schema=schema, loom_type=msgspec_type(annotation)), []
 
 
 def _compile_type_ref(output: TypeRefOutput, component: str) -> _CompileResult:
     symbol, issues = _resolve_symbol(output.ref, component, output_type_ref_unresolvable)
     if symbol is None:
         return None, issues
-    if isinstance(symbol, type) and issubclass(symbol, BaseModel):
-        return _compile_pydantic_type_ref(symbol, output, component)
-    if not (isinstance(symbol, type) and issubclass(symbol, msgspec.Struct)):
-        return None, [
-            output_type_ref_unsupported(
-                component,
-                output.ref,
-                "only msgspec.Struct or pydantic.BaseModel subclasses are supported in v1",
-            )
-        ]
-    if not symbol.__struct_config__.forbid_unknown_fields:
-        return None, [
-            output_type_ref_unsupported(
-                component,
-                output.ref,
-                "the struct must declare forbid_unknown_fields=True: pass-through of the "
-                "validated bytes is only safe under a strict decode (invariant 5)",
-            )
-        ]
-    decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(symbol)
-    return CompiledOutput(schema=MappingProxyType(msgspec.json.schema(symbol)), decoder=decoder), []
-
-
-def _compile_pydantic_type_ref(
-    symbol: type[BaseModel], output: TypeRefOutput, component: str
-) -> _CompileResult:
-    """Compile a ``pydantic.BaseModel`` ``type_ref``, the analogue of the msgspec branch above."""
-    if symbol.model_config.get("extra") != "forbid":
-        return None, [
-            output_type_ref_unsupported(
-                component,
-                output.ref,
-                "the model must declare model_config['extra'] == 'forbid': pass-through of "
-                "the validated bytes is only safe under a strict decode (invariant 5)",
-            )
-        ]
-    schema = MappingProxyType(symbol.model_json_schema())
-    return CompiledOutput(schema=schema, decoder=_PydanticDecoder(symbol)), []
-
-
-class _PydanticDecoder:
-    """Adapts a pydantic model to the :class:`~loom.ai.compiler._plan.OutputDecoder` shape.
-
-    ``.type`` is read by the start-up marker check (``ai/_startup.py``) that
-    proves a use case's ``AgentHandle[X]`` matches the artifact's compiled
-    output; ``.decode(bytes)`` is read by the engine
-    (``ai/engines/pydantic_ai/_output.py``). A ``pydantic.ValidationError``
-    from a bad answer is re-raised as ``msgspec.ValidationError`` so that
-    engine's existing ``except (msgspec.ValidationError, msgspec.DecodeError,
-    ...)`` keeps classifying it ``OUTPUT_SCHEMA_VIOLATION`` without having to
-    learn a second exception family.
-    """
-
-    def __init__(self, model: type[BaseModel]) -> None:
-        self.type = model
-        self._adapter: TypeAdapter[Any] = TypeAdapter(model)
-
-    def decode(self, data: bytes | str, /) -> Any:
-        try:
-            return self._adapter.validate_json(data)
-        except PydanticValidationError as exc:
-            raise msgspec.ValidationError(str(exc)) from exc
+    try:
+        lt = loom_type(symbol)
+    except UnsupportedBoundaryType as exc:
+        return None, [output_type_ref_unsupported(component, output.ref, str(exc))]
+    return CompiledOutput(schema=MappingProxyType(lt.schema()), loom_type=lt), []
 
 
 def _resolve_symbol(
@@ -193,24 +133,43 @@ def _resolve_symbol(
         return None, [unresolvable_issue(component, ref)]
 
 
-def _schema_to_decoder(
+def _schema_to_annotation(
     schema: Mapping[str, Any], model_name: str, component: str, invalid_issue: _IssueFactory
-) -> tuple[tuple[Mapping[str, Any], msgspec.json.Decoder[Any]] | None, list[AgentCompilationIssue]]:
-    """Compile a hand-written JSON Schema object into a ``(schema, decoder)`` pair.
+) -> tuple[tuple[Mapping[str, Any], Any] | None, list[AgentCompilationIssue]]:
+    """Compile a hand-written JSON Schema object into a ``(schema, annotation)`` pair.
 
     *model_name* names the generated struct type; *invalid_issue* reports a
-    structural fault or a build failure. Shared with the state ``deps_schema``
-    path (:mod:`loom.ai.compiler.phases._state`).
+    structural fault or a build failure. The annotation is whatever
+    :func:`~loom.core.model.msgspec_type` accepts: a ``defstruct`` result,
+    ``dict[str, Any]``, ``list[...]`` or a scalar.
     """
     fault = _schema_fault(schema)
     if fault is not None:
         return None, [invalid_issue(component, fault)]
     try:
         annotation = _annotation_for(schema, model_name)
+    except (TypeError, ValueError) as exc:
+        return None, [invalid_issue(component, str(exc))]
+    return (MappingProxyType(dict(schema)), annotation), []
+
+
+def _schema_to_decoder(
+    schema: Mapping[str, Any], model_name: str, component: str, invalid_issue: _IssueFactory
+) -> tuple[tuple[Mapping[str, Any], msgspec.json.Decoder[Any]] | None, list[AgentCompilationIssue]]:
+    """Compile a hand-written JSON Schema object into a ``(schema, decoder)`` pair.
+
+    Shared with the state ``deps_schema`` path (:mod:`loom.ai.compiler.phases._state`),
+    which still reads its own built ``msgspec.json.Decoder`` directly.
+    """
+    compiled, issues = _schema_to_annotation(schema, model_name, component, invalid_issue)
+    if compiled is None:
+        return None, issues
+    result_schema, annotation = compiled
+    try:
         decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(annotation)
     except (TypeError, ValueError) as exc:
         return None, [invalid_issue(component, str(exc))]
-    return (MappingProxyType(dict(schema)), decoder), []
+    return (result_schema, decoder), []
 
 
 def _schema_fault(schema: Mapping[str, Any]) -> str | None:

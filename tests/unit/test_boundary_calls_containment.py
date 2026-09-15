@@ -24,8 +24,7 @@ _TARGETS = frozenset(
 
 _ALLOWED: dict[tuple[str, str], int] = {
     ("ai/a2a/_rpc.py", "msgspec.json.Decoder"): 1,
-    ("ai/compiler/phases/_output.py", "msgspec.json.Decoder"): 2,
-    ("ai/compiler/phases/_output.py", "pydantic.TypeAdapter"): 1,
+    ("ai/compiler/phases/_output.py", "msgspec.json.Decoder"): 1,
     ("ai/compiler/phases/_state.py", "msgspec.json.Decoder"): 1,
     ("ai/declarative/_envelope.py", "msgspec.json.decode"): 1,
     ("ai/describe.py", "msgspec.to_builtins"): 1,

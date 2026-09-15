@@ -21,6 +21,7 @@ from loom.ai.runtime._bounded import RunContext
 from loom.ai.runtime._hooks import hook_command
 from loom.core.command import Command
 from loom.core.identity import Identity
+from loom.core.model import msgspec_type
 
 _ALL_NAMES = frozenset({HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS})
 
@@ -42,7 +43,7 @@ def _plan() -> AgentPlan:
         instructions=(CompiledInstruction(text="answer"),),
         spec_version=1,
         inference=InferenceTarget(provider="fake", model="fake-model"),
-        output=CompiledOutput(schema={"type": "object"}, decoder=msgspec.json.Decoder(dict)),
+        output=CompiledOutput(schema={"type": "object"}, loom_type=msgspec_type(dict)),
         capabilities=(),
         policies=PolicySpec(),
         metadata={},

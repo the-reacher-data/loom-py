@@ -5,7 +5,8 @@ Pinned contract decisions, until the implementation says otherwise:
 * ``issue.component`` is the artifact path handed via ``source_path`` — the
   ``AgentCompilationIssue`` docstring documents exactly that shape.
 * ``AgentPlan.output`` is a ``CompiledOutput`` exposing a **built**
-  ``msgspec.json.Decoder`` under ``output.decoder`` (data-model.md Tier 3).
+  :class:`~loom.core.model.LoomType` under ``output.loom_type``
+  (data-model.md Tier 3).
 * A compiled capability exposes its ``kind`` and carries the resolved handle
   (the ``SqlConnectionConfig``, the registered use-case types) among its
   field values — strings die at compile.
@@ -15,7 +16,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import msgspec
 import pytest
 
 from loom.ai.compiler import (
@@ -36,6 +36,7 @@ from loom.ai.declarative import (
     load_specs,
 )
 from loom.ai.errors import AgentErrorCode
+from loom.core.model import BoundaryValidationError
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
 from tests.unit.ai.phases.conftest import ALL_KINDS, admits_every_native_tool
@@ -280,27 +281,46 @@ class TestPlanShape:
 
 
 class TestCompiledOutput:
-    """``json_schema`` outputs compile to a built, strict msgspec decoder."""
+    """``json_schema`` outputs compile to a built, strict :class:`LoomType`."""
 
-    def test_plan_exposes_built_msgspec_decoder_when_output_is_json_schema(
+    def test_plan_exposes_a_msgspec_loom_type_when_output_is_json_schema(
         self, compiler: AgentCompiler
     ) -> None:
         plan = compiler.compile(_spec())
-        assert isinstance(plan.output.decoder, msgspec.json.Decoder)
+        assert plan.output.loom_type.library == "msgspec"
 
-    def test_decoder_decodes_valid_bytes_when_output_is_json_schema(
+    def test_loom_type_decodes_valid_bytes_when_output_is_json_schema(
         self, compiler: AgentCompiler
     ) -> None:
         plan = compiler.compile(_spec())
-        decoded = plan.output.decoder.decode(b'{"answer": "ok"}')
-        assert msgspec.to_builtins(decoded) == {"answer": "ok"}
+        decoded = plan.output.loom_type.decode_json(b'{"answer": "ok"}')
+        assert plan.output.loom_type.to_builtins(decoded) == {"answer": "ok"}
 
-    def test_decoder_rejects_unknown_fields_when_output_is_json_schema(
+    def test_loom_type_rejects_unknown_fields_when_output_is_json_schema(
         self, compiler: AgentCompiler
     ) -> None:
         plan = compiler.compile(_spec())
-        with pytest.raises(msgspec.ValidationError):
-            plan.output.decoder.decode(b'{"answer": "ok", "extra": 1}')
+        with pytest.raises(BoundaryValidationError):
+            plan.output.loom_type.decode_json(b'{"answer": "ok", "extra": 1}')
+
+    def test_schema_is_byte_equal_to_the_authored_document_when_output_is_json_schema(
+        self, compiler: AgentCompiler
+    ) -> None:
+        """FR-007: the authored schema reaches the model unchanged, on the ``json_schema`` path."""
+        plan = compiler.compile(_spec())
+        assert dict(plan.output.schema) == ANSWER_SCHEMA
+
+    def test_compiles_when_the_object_schema_declares_no_properties(
+        self, compiler: AgentCompiler
+    ) -> None:
+        spec = _spec(output=JsonSchemaOutput(schema={"type": "object"}))
+        plan = compiler.compile(spec)
+        assert plan.output.loom_type.decode_json(b'{"a": 1}') == {"a": 1}
+
+    def test_compiles_when_the_schema_is_array_rooted(self, compiler: AgentCompiler) -> None:
+        spec = _spec(output=JsonSchemaOutput(schema={"type": "array", "items": {"type": "string"}}))
+        plan = compiler.compile(spec)
+        assert plan.output.loom_type.decode_json(b'["a", "b"]') == ["a", "b"]
 
 
 class TestTypeRefOutput:
@@ -328,36 +348,47 @@ class TestTypeRefOutput:
         plan = compiler.compile(spec)
         assert isinstance(plan, AgentPlan)
 
-    def test_pydantic_type_ref_decoder_matches_the_msgspec_json_decoder_shape(
+    def test_pydantic_type_ref_loom_type_matches_the_msgspec_shape(
         self, compiler: AgentCompiler
     ) -> None:
-        """The marker check (``ai/_startup.py``) reads ``.type``, the engine reads ``.decode``."""
+        """The marker check (``ai/_startup.py``) reads ``.type``, the engine
+        reads ``.decode_json``."""
         from myapp.domain.pydantic_invoices import InvoiceSummaryModel
 
         spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
         plan = compiler.compile(spec)
 
-        assert plan.output.decoder.type is InvoiceSummaryModel
-        decoded = plan.output.decoder.decode(b'{"issuer": "ACME", "total": 12.5}')
+        assert plan.output.loom_type.type is InvoiceSummaryModel
+        decoded = plan.output.loom_type.decode_json(b'{"issuer": "ACME", "total": 12.5}')
         assert decoded == InvoiceSummaryModel(issuer="ACME", total=12.5)
 
-    def test_pydantic_type_ref_decoder_raises_msgspec_validation_error_on_bad_bytes(
+    def test_pydantic_type_ref_loom_type_raises_boundary_validation_error_on_bad_bytes(
         self, compiler: AgentCompiler
     ) -> None:
-        """A bad answer must still classify as ``msgspec.ValidationError`` (invariant 5's
+        """A bad answer must still classify as ``BoundaryValidationError`` (invariant 5's
         exception contract at the engine boundary, ``ai/engines/pydantic_ai/_output.py``)."""
         spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
         plan = compiler.compile(spec)
 
-        with pytest.raises(msgspec.ValidationError):
-            plan.output.decoder.decode(b'{"issuer": "ACME", "extra": 1}')
+        with pytest.raises(BoundaryValidationError):
+            plan.output.loom_type.decode_json(b'{"issuer": "ACME", "extra": 1}')
+
+    def test_pydantic_type_ref_loom_type_rejects_coercion_on_bad_bytes(
+        self, compiler: AgentCompiler
+    ) -> None:
+        """Strict decode: a string in a ``float`` field is never silently coerced."""
+        spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
+        plan = compiler.compile(spec)
+
+        with pytest.raises(BoundaryValidationError):
+            plan.output.loom_type.decode_json(b'{"total": "12.5"}')
 
     @pytest.mark.parametrize(
         "ref",
         [
             "myapp.domain.unsupported:PlainModel",
             "myapp.domain.unsupported:NOT_A_TYPE",
-            "myapp.domain.pydantic_invoices:LaxModel",
+            "myapp.domain.unsupported:LaxModel",
         ],
     )
     def test_compile_reports_unsupported_when_type_ref_resolves_to_non_struct(

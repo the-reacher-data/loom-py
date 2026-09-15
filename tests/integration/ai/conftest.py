@@ -65,6 +65,7 @@ from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
+from loom.core.model import msgspec_type
 from loom.core.observability.event import LifecycleEvent
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
 from loom.core.use_case import Agent, Caller, Input, UseCase
@@ -621,7 +622,7 @@ def make_plan(
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(
             schema={"type": "object"},
-            decoder=msgspec.json.Decoder(dict),
+            loom_type=msgspec_type(dict),
         ),
         capabilities=tuple(capabilities),
         policies=policies if policies is not None else make_policies(),

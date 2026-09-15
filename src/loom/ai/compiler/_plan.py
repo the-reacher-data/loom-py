@@ -8,8 +8,9 @@ the SQL connection config, the imported toolset factory — never names.
 Secret containment (invariant 4): the plan carries no literal secret.  The
 one secret-bearing struct it embeds, :class:`~loom.ai.inference.InferenceTarget`,
 redacts its references in ``repr`` and refuses msgspec encoding; the built
-decoder in :class:`CompiledOutput` is likewise not msgspec-encodable, so an
-accidental wire encode of a plan raises instead of leaking.
+:class:`~loom.core.model.LoomType` in :class:`CompiledOutput` is likewise not
+msgspec-encodable, so an accidental wire encode of a plan raises instead of
+leaking.
 
 The plan is only ever built in memory by the compiler; it is never decoded
 from JSON, which is why fields may hold arbitrary runtime handles.
@@ -18,7 +19,7 @@ from JSON, which is why fields may hold arbitrary runtime handles.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any, ClassVar, Final, Protocol
+from typing import Any, ClassVar, Final
 
 import msgspec
 
@@ -26,48 +27,30 @@ from loom.ai.abc import OutputCheck, StateShape
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import LoomFrozenStruct, LoomType
 from loom.core.sql.config import SqlConnectionConfig
 
 
-class OutputDecoder(Protocol):
-    """What :class:`CompiledOutput` needs from a decoder, whichever library built it.
-
-    ``msgspec.json.Decoder`` already satisfies this shape. A ``type_ref``
-    output resolved to a ``pydantic.BaseModel`` (:mod:`loom.ai.compiler.phases._output`)
-    wraps a ``TypeAdapter`` behind the same two members instead of widening
-    every consumer of ``CompiledOutput.decoder`` to a union: the start-up
-    marker check (``ai/_startup.py``) reads ``.type``, and the engine
-    (``ai/engines/pydantic_ai/_output.py``) reads ``.decode(bytes)``.
-    """
-
-    type: Any
-    """The type this decoder produces, compared against a use case's
-    declared ``AgentHandle[...]`` type argument at start-up."""
-
-    def decode(self, data: bytes | str, /) -> Any:
-        """Validate *data* and build the answer type in one pass."""
-        ...
-
-
 class CompiledOutput(LoomFrozenStruct, frozen=True, kw_only=True):
-    """Structured-output contract with a decoder built at compile time.
+    """Structured-output contract with a :class:`~loom.core.model.LoomType` built at compile time.
 
     Interpreting the schema per response would be per-item reflection, so the
-    decoder is constructed exactly once, at compile (research R-004,
+    boundary type is constructed exactly once, at compile (research R-004,
     invariant 5).  The decode is strict: unknown fields are rejected, which is
     what makes returning the validated bytes unchanged safe.
 
     Attributes:
         schema: JSON Schema object handed to the model.
-        decoder: Built JSON decoder producing the answer type -- ``msgspec``
-            for a ``msgspec.Struct`` output, or the ``pydantic`` adapter
-            wrapper of :mod:`loom.ai.compiler.phases._output` for a
-            ``pydantic.BaseModel`` one.
+        loom_type: Boundary type produced at compile, whichever library built
+            it (:func:`~loom.core.model.loom_type` for a ``type_ref``,
+            :func:`~loom.core.model.msgspec_type` for a ``json_schema``): the
+            start-up marker check (``ai/_startup.py``) reads ``.type``, and
+            the engine (``ai/engines/pydantic_ai/_output.py``) reads
+            ``.decode_json(bytes)``.
     """
 
     schema: Mapping[str, Any]
-    decoder: OutputDecoder
+    loom_type: LoomType
 
 
 class CompiledUsecaseCapability(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -399,7 +382,7 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
             artifact declares neither ``deps_type`` nor ``deps_schema``.
         spec_version: Artifact format version, retained for self-description.
         inference: Resolved model binding; one binding, no fallback (FR-019a).
-        output: Structured-output contract with its built decoder.
+        output: Structured-output contract with its compiled boundary type.
         output_check: Resolved predicate over the answer the engine parsed,
             when the artifact declares ``output_check``; ``None`` otherwise.
         capabilities: Compiled capabilities with resolved handles.
