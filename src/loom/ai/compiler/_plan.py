@@ -18,7 +18,7 @@ from JSON, which is why fields may hold arbitrary runtime handles.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any, ClassVar, Final, Protocol, runtime_checkable
+from typing import Any, ClassVar, Final, Protocol
 
 import msgspec
 
@@ -30,7 +30,6 @@ from loom.core.model import LoomFrozenStruct
 from loom.core.sql.config import SqlConnectionConfig
 
 
-@runtime_checkable
 class OutputDecoder(Protocol):
     """What :class:`CompiledOutput` needs from a decoder, whichever library built it.
 

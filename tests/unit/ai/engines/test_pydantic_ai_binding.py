@@ -16,6 +16,8 @@ from pydantic_ai.models.bedrock import BedrockConverseModel
 from pydantic_ai.models.test import TestModel
 
 from loom.ai.compiler._plan import AgentPlan, CompiledInstruction
+from loom.ai.compiler.phases._output import compile_output
+from loom.ai.declarative import TypeRefOutput
 from loom.ai.engines.pydantic_ai._models import SUPPORTED_PROVIDERS, resolve_model
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
 from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
@@ -313,6 +315,66 @@ class TestOutputMode:
         assert isinstance(native, NativeOutput)
         assert (tool.name, tool.description) == (None, None)
         assert (native.name, native.description) == (None, None)
+
+
+def _plan_with_pydantic_type_ref_output(ref: str) -> AgentPlan:
+    """A plan whose output is a compiled pydantic ``type_ref`` (hotfix/type-ref-pydantic)."""
+    output, issues = compile_output(TypeRefOutput(ref=ref), "contract")
+    assert output is not None, issues
+    plan = make_plan(schema=STRICT_SCHEMA)
+    plan = structs.replace(plan, output=output)
+    return structs.replace(plan, inference=structs.replace(plan.inference, output_mode="tool"))
+
+
+class TestPydanticTypeRefOutputReachesTheEngineSpec:
+    """A pydantic ``type_ref`` output must survive the same two projections a
+
+    msgspec one does: ``AgentSpec.output_schema`` (``build_agent_spec``) and
+    the ``StructuredDict`` wrapping (``build_output_type``). A flat model
+    would not exercise this -- ``model_json_schema()`` and
+    ``msgspec.json.schema()`` diverge specifically on ``$defs``/``$ref`` for
+    a *nested* shape, so ``NestedInvoiceModel`` (with a nested
+    ``LineItemModel``) is the fixture that actually discriminates.
+    """
+
+    def test_build_agent_spec_accepts_the_schema_of_a_nested_pydantic_type_ref(
+        self, fake_myapp_path: Path
+    ) -> None:
+        del fake_myapp_path
+        plan = _plan_with_pydantic_type_ref_output(
+            "myapp.domain.pydantic_invoices:NestedInvoiceModel"
+        )
+
+        spec = build_agent_spec(plan)
+
+        assert spec.output_schema == dict(plan.output.schema)
+
+    def test_build_output_type_wraps_the_schema_of_a_nested_pydantic_type_ref(
+        self, fake_myapp_path: Path
+    ) -> None:
+        """``StructuredDict`` resolves ``$ref``/``$defs`` rather than round-tripping them:
+
+        ``_wrapped_schema`` re-derives a schema from the ``StructuredDict``
+        pydantic-ai built and it comes back with the nested ``LineItemModel``
+        properties inlined, no ``$defs``/``$ref`` -- not identical to
+        ``model_json_schema()``'s own shape, but not a failure either: the
+        flat ``STRICT_SCHEMA`` case above never exercises this because it has
+        no ``$ref`` to resolve. What this proves is what matters here: the
+        build does not raise for a schema with ``$defs``/``$ref``, and the
+        properties pydantic-ai resolved are the same fields.
+        """
+        del fake_myapp_path
+        plan = _plan_with_pydantic_type_ref_output(
+            "myapp.domain.pydantic_invoices:NestedInvoiceModel"
+        )
+
+        marker = build_output_type(plan)
+
+        assert marker is not None
+        assert type(marker) is ToolOutput
+        wrapped = _wrapped_schema(marker.output)
+        assert set(wrapped["properties"]) == {"issuer", "lines"}
+        assert wrapped["properties"]["lines"]["items"]["properties"].keys() == {"label", "amount"}
 
 
 class TestInstructionsAndDescriptionKeywords:
