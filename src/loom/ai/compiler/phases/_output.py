@@ -3,8 +3,14 @@
 A ``json_schema`` output compiles to a concrete type via
 ``msgspec.defstruct()`` and the plan stores a **built** decoder, so nothing
 reflects per invocation (research R-004, invariant 5).  A ``type_ref`` output
-accepts ``msgspec.Struct`` subclasses only in v1, so pydantic never enters the
-compiler path (T053).
+accepts ``msgspec.Struct`` subclasses declaring ``forbid_unknown_fields=True``,
+or ``pydantic.BaseModel`` subclasses declaring ``model_config["extra"] ==
+"forbid"`` (hotfix/type-ref-pydantic): both satisfy invariant 5 with a
+strict decode, so both may own the pass-through of the validated bytes.
+:class:`_PydanticDecoder` is the seam that lets the pydantic case satisfy
+:class:`~loom.ai.compiler._plan.OutputDecoder`, the same two-member shape
+``msgspec.json.Decoder`` already has, without widening every consumer of
+``CompiledOutput.decoder`` to a union.
 
 :func:`_resolve_symbol` and :func:`_schema_to_decoder` are shared with the
 state phase (:mod:`loom.ai.compiler.phases._state`), which compiles the same
@@ -14,7 +20,7 @@ and, for the schema path, its own generated-struct name; nothing about the
 issue codes, the messages, or the exceptions caught changes between the two
 callers. What differs between the two ``type_ref``/``deps_type`` paths stays
 local to each phase: the output side additionally requires the resolved
-symbol to be a ``msgspec.Struct`` declaring ``forbid_unknown_fields=True``
+symbol to be a strict ``msgspec.Struct`` or ``pydantic.BaseModel``
 (invariant 5); the state side derives its schema straight from
 ``msgspec.json.schema()`` and admits whatever symbol that call accepts.
 """
@@ -26,6 +32,8 @@ from types import MappingProxyType
 from typing import Any, cast
 
 import msgspec
+from pydantic import BaseModel, TypeAdapter
+from pydantic import ValidationError as PydanticValidationError
 
 from loom.ai.abc import OutputCheck
 from loom.ai.compiler._plan import CompiledOutput
@@ -108,10 +116,14 @@ def _compile_type_ref(output: TypeRefOutput, component: str) -> _CompileResult:
     symbol, issues = _resolve_symbol(output.ref, component, output_type_ref_unresolvable)
     if symbol is None:
         return None, issues
+    if isinstance(symbol, type) and issubclass(symbol, BaseModel):
+        return _compile_pydantic_type_ref(symbol, output, component)
     if not (isinstance(symbol, type) and issubclass(symbol, msgspec.Struct)):
         return None, [
             output_type_ref_unsupported(
-                component, output.ref, "only msgspec.Struct subclasses are supported in v1"
+                component,
+                output.ref,
+                "only msgspec.Struct or pydantic.BaseModel subclasses are supported in v1",
             )
         ]
     if not symbol.__struct_config__.forbid_unknown_fields:
@@ -125,6 +137,47 @@ def _compile_type_ref(output: TypeRefOutput, component: str) -> _CompileResult:
         ]
     decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(symbol)
     return CompiledOutput(schema=MappingProxyType(msgspec.json.schema(symbol)), decoder=decoder), []
+
+
+def _compile_pydantic_type_ref(
+    symbol: type[BaseModel], output: TypeRefOutput, component: str
+) -> _CompileResult:
+    """Compile a ``pydantic.BaseModel`` ``type_ref``, the analogue of the msgspec branch above."""
+    if symbol.model_config.get("extra") != "forbid":
+        return None, [
+            output_type_ref_unsupported(
+                component,
+                output.ref,
+                "the model must declare model_config['extra'] == 'forbid': pass-through of "
+                "the validated bytes is only safe under a strict decode (invariant 5)",
+            )
+        ]
+    schema = MappingProxyType(symbol.model_json_schema())
+    return CompiledOutput(schema=schema, decoder=_PydanticDecoder(symbol)), []
+
+
+class _PydanticDecoder:
+    """Adapts a pydantic model to the :class:`~loom.ai.compiler._plan.OutputDecoder` shape.
+
+    ``.type`` is read by the start-up marker check (``ai/_startup.py``) that
+    proves a use case's ``AgentHandle[X]`` matches the artifact's compiled
+    output; ``.decode(bytes)`` is read by the engine
+    (``ai/engines/pydantic_ai/_output.py``). A ``pydantic.ValidationError``
+    from a bad answer is re-raised as ``msgspec.ValidationError`` so that
+    engine's existing ``except (msgspec.ValidationError, msgspec.DecodeError,
+    ...)`` keeps classifying it ``OUTPUT_SCHEMA_VIOLATION`` without having to
+    learn a second exception family.
+    """
+
+    def __init__(self, model: type[BaseModel]) -> None:
+        self.type = model
+        self._adapter: TypeAdapter[Any] = TypeAdapter(model)
+
+    def decode(self, data: bytes | str, /) -> Any:
+        try:
+            return self._adapter.validate_json(data)
+        except PydanticValidationError as exc:
+            raise msgspec.ValidationError(str(exc)) from exc
 
 
 def _resolve_symbol(

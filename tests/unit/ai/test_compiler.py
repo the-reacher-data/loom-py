@@ -304,7 +304,15 @@ class TestCompiledOutput:
 
 
 class TestTypeRefOutput:
-    """``type_ref`` accepts ``msgspec.Struct`` only (T053)."""
+    """``type_ref`` accepts a strict ``msgspec.Struct`` or ``pydantic.BaseModel``.
+
+    T053 fixed this to ``msgspec.Struct`` only; hotfix/type-ref-pydantic adds
+    the ``pydantic.BaseModel`` branch (``extra='forbid'`` standing in for
+    ``forbid_unknown_fields=True``), for callers who never decode a
+    ``type_ref`` output back from the model — e.g. one built entirely by
+    application code and only passed through loom for its shape and
+    ``AgentHandle[...]`` marker check (cuimo-agents' tasador, spec 015).
+    """
 
     def test_compile_returns_plan_when_type_ref_resolves_to_msgspec_struct(
         self, compiler: AgentCompiler
@@ -313,11 +321,43 @@ class TestTypeRefOutput:
         plan = compiler.compile(spec)
         assert isinstance(plan, AgentPlan)
 
+    def test_compile_returns_plan_when_type_ref_resolves_to_pydantic_model(
+        self, compiler: AgentCompiler
+    ) -> None:
+        spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
+        plan = compiler.compile(spec)
+        assert isinstance(plan, AgentPlan)
+
+    def test_pydantic_type_ref_decoder_matches_the_msgspec_json_decoder_shape(
+        self, compiler: AgentCompiler
+    ) -> None:
+        """The marker check (``ai/_startup.py``) reads ``.type``, the engine reads ``.decode``."""
+        from myapp.domain.pydantic_invoices import InvoiceSummaryModel
+
+        spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
+        plan = compiler.compile(spec)
+
+        assert plan.output.decoder.type is InvoiceSummaryModel
+        decoded = plan.output.decoder.decode(b'{"issuer": "ACME", "total": 12.5}')
+        assert decoded == InvoiceSummaryModel(issuer="ACME", total=12.5)
+
+    def test_pydantic_type_ref_decoder_raises_msgspec_validation_error_on_bad_bytes(
+        self, compiler: AgentCompiler
+    ) -> None:
+        """A bad answer must still classify as ``msgspec.ValidationError`` (invariant 5's
+        exception contract at the engine boundary, ``ai/engines/pydantic_ai/_output.py``)."""
+        spec = _spec(output=TypeRefOutput(ref="myapp.domain.pydantic_invoices:InvoiceSummaryModel"))
+        plan = compiler.compile(spec)
+
+        with pytest.raises(msgspec.ValidationError):
+            plan.output.decoder.decode(b'{"issuer": "ACME", "extra": 1}')
+
     @pytest.mark.parametrize(
         "ref",
         [
             "myapp.domain.unsupported:PlainModel",
             "myapp.domain.unsupported:NOT_A_TYPE",
+            "myapp.domain.pydantic_invoices:LaxModel",
         ],
     )
     def test_compile_reports_unsupported_when_type_ref_resolves_to_non_struct(

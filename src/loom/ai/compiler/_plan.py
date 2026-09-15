@@ -18,7 +18,7 @@ from JSON, which is why fields may hold arbitrary runtime handles.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, Protocol, runtime_checkable
 
 import msgspec
 
@@ -28,6 +28,27 @@ from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
 from loom.core.model import LoomFrozenStruct
 from loom.core.sql.config import SqlConnectionConfig
+
+
+@runtime_checkable
+class OutputDecoder(Protocol):
+    """What :class:`CompiledOutput` needs from a decoder, whichever library built it.
+
+    ``msgspec.json.Decoder`` already satisfies this shape. A ``type_ref``
+    output resolved to a ``pydantic.BaseModel`` (:mod:`loom.ai.compiler.phases._output`)
+    wraps a ``TypeAdapter`` behind the same two members instead of widening
+    every consumer of ``CompiledOutput.decoder`` to a union: the start-up
+    marker check (``ai/_startup.py``) reads ``.type``, and the engine
+    (``ai/engines/pydantic_ai/_output.py``) reads ``.decode(bytes)``.
+    """
+
+    type: Any
+    """The type this decoder produces, compared against a use case's
+    declared ``AgentHandle[...]`` type argument at start-up."""
+
+    def decode(self, data: bytes | str, /) -> Any:
+        """Validate *data* and build the answer type in one pass."""
+        ...
 
 
 class CompiledOutput(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -40,13 +61,14 @@ class CompiledOutput(LoomFrozenStruct, frozen=True, kw_only=True):
 
     Attributes:
         schema: JSON Schema object handed to the model.
-        decoder: Built ``msgspec`` JSON decoder producing the answer type.
+        decoder: Built JSON decoder producing the answer type -- ``msgspec``
+            for a ``msgspec.Struct`` output, or the ``pydantic`` adapter
+            wrapper of :mod:`loom.ai.compiler.phases._output` for a
+            ``pydantic.BaseModel`` one.
     """
 
     schema: Mapping[str, Any]
-    # ``Any`` type parameter: the decoded type is derived from the artifact's
-    # schema at compile time, so it cannot be named statically.
-    decoder: msgspec.json.Decoder[Any]
+    decoder: OutputDecoder
 
 
 class CompiledUsecaseCapability(LoomFrozenStruct, frozen=True, kw_only=True):
