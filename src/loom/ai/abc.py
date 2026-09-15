@@ -21,13 +21,11 @@ from contextlib import AbstractAsyncContextManager
 from decimal import Decimal
 from typing import Any, ClassVar, Final, Generic, Literal, Protocol, TypeAlias, TypeVar, overload
 
-import msgspec
-
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import LoomFrozenStruct, LoomType
 
 CONVERSATION_ID_MAX_LENGTH: Final[int] = 128
 """Longest ``conversation_id`` a run accepts; the value itself is opaque."""
@@ -51,21 +49,21 @@ class StateShape(LoomFrozenStruct, frozen=True, kw_only=True):
     authored spellings of one optional JSON Schema; the compiler resolves all
     three to this value, never to one of three interchangeable objects. Same
     idiom as its sibling :class:`~loom.ai.compiler._plan.CompiledOutput`,
-    including a ``decoder`` field msgspec cannot itself encode, under the
-    invariant :mod:`loom.ai.compiler._plan` documents.
+    including a :class:`~loom.core.model.LoomType` field msgspec cannot
+    itself encode, under the invariant :mod:`loom.ai.compiler._plan`
+    documents.
 
     Attributes:
         schema: JSON Schema the artifact's state must satisfy, or ``None``
             under the ``deps_type: dict`` waiver, where no schema exists and
             template markers are not validated (FR-006).
-        decoder: Built ``msgspec`` JSON decoder producing the normalised
-            state mapping, or ``None`` alongside ``schema is None``.
+        loom_type: Boundary type produced at compile, decoding and
+            normalising the state mapping, or ``None`` alongside
+            ``schema is None``.
     """
 
     schema: Mapping[str, Any] | None
-    # ``Any`` type parameter: the decoded type is derived from the artifact's
-    # declared state at compile time, so it cannot be named statically.
-    decoder: msgspec.json.Decoder[Any] | None
+    loom_type: LoomType | None
 
 
 class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -903,11 +901,17 @@ provider SDK is missing.
 OutputCheck: TypeAlias = Callable[[Mapping[str, Any]], str | None]
 """Target of an ``output_check`` reference: a pure predicate over an answer.
 
-Called once per attempt inside the engine's own output-retry loop, with the
-mapping the engine parsed from the model's answer — never loom's decoded
-object, so nothing is decoded twice. Returns ``None`` to accept the answer
-unchanged, or the text the model must read to correct itself, which drives a
-real retry bounded by the artifact's ``policies.retries``.
+Called once per attempt inside the engine's own output-retry loop. For a
+``msgspec.Struct`` output the mapping is the one the engine parsed from the
+model's answer — never loom's decoded object, so nothing is decoded twice.
+For a pydantic output (D7, FR-012) the check still receives a
+``Mapping[str, Any]``: the engine calls it with
+``loom_type.to_builtins(instance)`` of pydantic-ai's own validated instance,
+so a check written once serves both libraries. Returns ``None`` to accept the
+answer unchanged, or the text the model must read to correct itself, which
+drives a real retry bounded by the artifact's ``policies.retries`` — a real
+pydantic-ai output-tool retry for a pydantic output, exactly as for a
+``msgspec.Struct`` one.
 
 The return contract is the inverse of the usual predicate convention, which
 is why this alias is published rather than left for an author to spell: it
@@ -915,11 +919,13 @@ is the one name in this module carrying ``Mapping[str, Any]``, because the
 payload shape is the artifact's own declared schema, which loom cannot type
 statically.
 
-A returned mapping is never substituted for the answer: the engine decodes
-the model's own bytes independently of what this callable returns, so a
-check that builds and returns a different mapping has that mapping
-discarded. Synchronous and dependency-free, because any side effect inside
-the retry loop would run once per attempt.
+A returned mapping is never substituted for the answer: the engine never
+uses this callable's return value to build the answer. A ``msgspec.Struct``
+answer is decoded from the model's own bytes independently; a pydantic
+answer is pydantic-ai's own validated instance, read off ``result.output``.
+Either way, a check that builds and returns a different mapping has that
+mapping discarded. Synchronous and dependency-free, because any side effect
+inside the retry loop would run once per attempt.
 """
 
 

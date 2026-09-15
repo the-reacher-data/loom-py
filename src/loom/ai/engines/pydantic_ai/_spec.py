@@ -74,12 +74,17 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
     """Project a compiled plan onto the engine's own spec type.
 
     ``output_schema`` instructs the model on the shape to produce; it does not
-    validate the answer (research R-004), which is why the plan's decoder owns
-    validation at the boundary (see ``_output``). How the engine asks for that
-    shape (tool call or native structured output) is not part of the spec;
-    :func:`build_output_type` overrides it when the binding pins a mode.
-    ``instructions`` and ``description`` are left unset; see this module's
-    docstring for why both travel as keywords instead.
+    validate the answer on its own (research R-004). For a ``msgspec.Struct``
+    output the plan's :class:`~loom.core.model.LoomType` owns validation at the
+    boundary (see ``_output``): one loom decode over the model's own bytes. For
+    a pydantic output, :func:`build_output_type` hands pydantic-ai the model
+    class itself as ``output_type``, so pydantic-ai validates, retries and
+    builds the instance on its own; loom performs zero decodes there and only
+    projects the validated instance back to builtins at the wire. How the
+    engine asks for the shape (tool call or native structured output) is not
+    part of the spec; :func:`build_output_type` overrides it when the binding
+    pins a mode. ``instructions`` and ``description`` are left unset; see this
+    module's docstring for why both travel as keywords instead.
 
     Args:
         plan: Compiled agent plan.
@@ -95,42 +100,57 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
     )
 
 
-def build_output_type(plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | None:
+def build_output_type(plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | type[Any] | None:
     """Pin the engine's output mode when the model binding declares one.
 
-    Wraps the plan's output schema in the engine's own marker, with no name
-    or description, so the engine builds the same ``StructuredDict`` it would
-    build from ``output_schema`` alone but with the mode fixed instead of
-    resolved per provider. The value has already been validated against
-    :data:`~loom.ai.inference.OUTPUT_MODES` when the config loaded.
+    For a ``msgspec.Struct`` output, wraps the plan's output schema in the
+    engine's own marker, with no name or description, so the engine builds the
+    same ``StructuredDict`` it would build from ``output_schema`` alone but
+    with the mode fixed instead of resolved per provider. Absent a pinned
+    mode, ``None`` is returned and the engine keeps resolving the mode from
+    ``output_schema`` itself, exactly as before.
 
-    The dispatch is exhaustive rather than defaulted: an unhandled mode fails
-    type checking here (``assert_never``) and raises at run time, so a value
-    that reached this point without the config check — a plan built in
-    process, a mode loom deliberately excludes such as ``prompted`` — cannot
-    be silently served as ``native``.
+    For a pydantic output, the model class itself is wrapped the same way
+    ``expect=`` wraps a run-level override — ``ToolOutput(cls)``,
+    ``NativeOutput(cls)`` — so pydantic-ai owns the schema, the validation and
+    the retries (D7, FR-012). Absent a pinned mode, the bare class is returned
+    rather than ``None``: unlike a msgspec Struct, there is no
+    ``output_schema`` for the engine to fall back on, so ``Agent.from_spec``
+    must receive ``output_type=cls`` to learn the answer is a pydantic model
+    at all.
+
+    The mode value has already been validated against
+    :data:`~loom.ai.inference.OUTPUT_MODES` when the config loaded. The
+    dispatch is exhaustive rather than defaulted: an unhandled mode fails type
+    checking here (``assert_never``) and raises at run time, so a value that
+    reached this point without the config check — a plan built in process, a
+    mode loom deliberately excludes such as ``prompted`` — cannot be silently
+    served as ``native``.
 
     Args:
         plan: Compiled agent plan.
 
     Returns:
-        ``ToolOutput`` for ``tool``, ``NativeOutput`` for ``native``, ``None``
-        when the binding leaves the mode to the engine.
+        ``ToolOutput`` for ``tool``, ``NativeOutput`` for ``native``; for a
+        msgspec output with no pinned mode, ``None``; for a pydantic output
+        with no pinned mode, the model class itself.
 
     Raises:
         AssertionError: The binding names a mode loom does not offer.
     """
+    loom_type = plan.output.loom_type
     declared = plan.inference.output_mode
+    native = loom_type.library == "pydantic"
+    target: Any = loom_type.type if native else StructuredDict(dict(plan.output.schema))
     if declared is None:
-        return None
+        return target if native else None
     # The struct field is ``str`` (msgspec would reject a Literal during the
     # decode, before the config check could name the role), so the narrowing
     # happens here, where the dispatch below either handles the value or
     # refuses it.
     mode = cast("OutputMode", declared)
-    structured = StructuredDict(dict(plan.output.schema))
     if mode == "tool":
-        return ToolOutput(structured)
+        return ToolOutput(target)
     if mode == "native":
-        return NativeOutput(structured)
+        return NativeOutput(target)
     assert_never(mode)

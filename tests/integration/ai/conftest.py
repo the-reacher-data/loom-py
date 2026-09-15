@@ -19,6 +19,7 @@ from types import TracebackType
 from typing import Any, ClassVar
 
 import msgspec
+import pydantic
 import pytest
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart
 from pydantic_ai.models import Model
@@ -65,6 +66,7 @@ from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
+from loom.core.model import loom_type, msgspec_type
 from loom.core.observability.event import LifecycleEvent
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
 from loom.core.use_case import Agent, Caller, Input, UseCase
@@ -621,7 +623,7 @@ def make_plan(
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(
             schema={"type": "object"},
-            decoder=msgspec.json.Decoder(dict),
+            loom_type=msgspec_type(dict),
         ),
         capabilities=tuple(capabilities),
         policies=policies if policies is not None else make_policies(),
@@ -630,8 +632,39 @@ def make_plan(
 
 
 def make_state_shape() -> StateShape:
-    """Build the ``deps_type: dict`` waiver shape: no schema, no decoder."""
-    return StateShape(schema=None, decoder=None)
+    """Build the ``deps_type: dict`` waiver shape: no schema, no boundary type."""
+    return StateShape(schema=None, loom_type=None)
+
+
+class AppraisalStruct(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
+    """Msgspec twin of :class:`AppraisalModel`, same shape, same builtins."""
+
+    issuer: str
+    total: float
+
+
+class AppraisalModel(pydantic.BaseModel):
+    """Strict pydantic twin of :class:`AppraisalStruct`, same shape, same builtins."""
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    issuer: str
+    total: float
+
+
+OUTPUT_TWINS: tuple[tuple[str, type[Any], object], ...] = (
+    ("msgspec", AppraisalStruct, AppraisalStruct(issuer="Acme", total=42.5)),
+    ("pydantic", AppraisalModel, AppraisalModel(issuer="Acme", total=42.5)),
+)
+"""One boundary type per library, the answer built from it, and its id."""
+
+
+def plan_with_output(cls: type[Any], *, name: str = "analyst") -> AgentPlan:
+    """A plan whose declared output is ``cls``, compiled through ``loom_type``."""
+    return msgspec.structs.replace(
+        make_plan(name),
+        output=CompiledOutput(schema={"type": "object"}, loom_type=loom_type(cls)),
+    )
 
 
 DEFAULT_MCP_SERVER = "tools"

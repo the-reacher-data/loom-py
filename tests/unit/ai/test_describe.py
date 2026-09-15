@@ -37,7 +37,7 @@ from loom.ai.describe import _as_builtin, describe_agent, describe_agents
 from loom.ai.inference import InferenceTarget, _RedactedOptions
 from loom.core.engine.compilable import Compilable
 from loom.core.introspection import IntrospectionError
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import LoomFrozenStruct, msgspec_type
 from loom.core.sql.config import SqlConnectionConfig
 
 _AGENT = "describable"
@@ -162,7 +162,7 @@ def _make_plan(
             endpoint="https://bedrock.eu-west-1.amazonaws.com",
             credentials_ref="prod/bedrock",
         ),
-        output=CompiledOutput(schema=_OUTPUT_SCHEMA, decoder=msgspec.json.Decoder(dict)),
+        output=CompiledOutput(schema=_OUTPUT_SCHEMA, loom_type=msgspec_type(dict)),
         capabilities=capabilities,
         policies=policies
         or PolicySpec(

@@ -22,6 +22,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
     ModelResponseStreamEvent,
+    TextPart,
     ToolCallPart,
 )
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
@@ -33,7 +34,7 @@ from loom.ai.abc import AgentEngine, DepsFactory, OutputCheck, StateShape
 from loom.ai.compiler._plan import AgentPlan, CompiledInstruction, CompiledOutput
 from loom.ai.compiler.phases._instructions import compile_instructions
 from loom.ai.compiler.phases._output import compile_output
-from loom.ai.declarative import JsonSchemaOutput, PolicySpec
+from loom.ai.declarative import JsonSchemaOutput, PolicySpec, TypeRefOutput
 from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
@@ -123,6 +124,92 @@ def make_plan(
         policies=policies if policies is not None else PolicySpec(retries=retries),
         metadata={},
     )
+
+
+def plan_with_pydantic_type_ref_output(
+    ref: str,
+    *,
+    mode: str | None = "tool",
+    retries: int = 0,
+    output_check: OutputCheck | None = None,
+) -> AgentPlan:
+    """A plan whose output is a compiled pydantic ``type_ref`` (D7, FR-012).
+
+    ``output_mode`` is pinned to *mode* (default ``"tool"``) so a caller can
+    pass the plan straight to
+    :func:`~loom.ai.engines.pydantic_ai._spec.build_output_type`.
+    """
+    output, issues = compile_output(TypeRefOutput(ref=ref), "contract")
+    assert output is not None, issues
+    plan = make_plan(schema=STRICT_SCHEMA, retries=retries, output_check=output_check)
+    plan = msgspec.structs.replace(plan, output=output)
+    inference = msgspec.structs.replace(plan.inference, output_mode=mode)
+    return msgspec.structs.replace(plan, inference=inference)
+
+
+_PROSE: str = "a plain sentence with no declared shape at all"
+"""Text every prose-only scripted model answers, with no declared shape."""
+
+
+def tool_model(payloads: list[bytes], seen: list[list[ModelMessage]]) -> Model:
+    """A model answering one payload per call, by an output-tool call."""
+    calls = {"n": -1}
+
+    def _payload() -> bytes:
+        calls["n"] += 1
+        return payloads[min(calls["n"], len(payloads) - 1)]
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(list(messages))
+        tool = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool, args=_payload().decode())])
+
+    async def stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[DeltaToolCalls]:
+        seen.append(list(messages))
+        tool = info.output_tools[0].name
+        yield {0: DeltaToolCall(name=tool, json_args=_payload().decode(), tool_call_id="call")}
+
+    return FunctionModel(respond, stream_function=stream)
+
+
+def native_text_model(payloads: list[bytes]) -> Model:
+    """A model answering one payload per call, as a text part (native output)."""
+    calls = {"n": -1}
+
+    def _payload() -> str:
+        calls["n"] += 1
+        return payloads[min(calls["n"], len(payloads) - 1)].decode()
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del messages, info
+        return ModelResponse(parts=[TextPart(content=_payload())])
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
+        del messages, info
+        yield _payload()
+
+    return FunctionModel(respond, stream_function=stream)
+
+
+def prose_model() -> Model:
+    """A model that answers free text, never a structured tool call.
+
+    Free prose has no JSON shape at all, so it can only be served by a
+    per-run ``output_type=str`` override — the strongest possible witness
+    that a call is running unshaped.
+    """
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del messages, info
+        return ModelResponse(parts=[TextPart(content=_PROSE)])
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
+        del messages, info
+        yield _PROSE
+
+    return FunctionModel(respond, stream_function=stream)
 
 
 def answering_model(payload: bytes) -> Model:

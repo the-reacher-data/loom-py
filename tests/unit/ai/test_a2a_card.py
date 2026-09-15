@@ -62,6 +62,7 @@ from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
+from loom.core.model import msgspec_type
 from loom.core.sql.config import SqlConnectionConfig
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
@@ -158,8 +159,8 @@ def _policies() -> PolicySpec:
 
 
 def _output() -> CompiledOutput:
-    """Structured-output contract with its decoder already built."""
-    return CompiledOutput(schema={"type": "object"}, decoder=msgspec.json.Decoder(dict))
+    """Structured-output contract with its boundary type already built."""
+    return CompiledOutput(schema={"type": "object"}, loom_type=msgspec_type(dict))
 
 
 def _plan(**overrides: Any) -> AgentPlan:

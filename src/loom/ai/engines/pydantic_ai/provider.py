@@ -8,12 +8,14 @@ and answers which capability kinds this adapter can serve.
 The plan's output schema reaches the engine through the spec; a pinned
 ``output_mode`` on the model binding reaches it as ``output_type=`` on
 ``Agent.from_spec`` (see :func:`~loom.ai.engines.pydantic_ai._spec.build_output_type`),
-and that keyword is absent when no mode is pinned.
+and that keyword is absent when no mode is pinned. A pydantic output is the
+one case where the keyword is never absent: :func:`build_output_type` hands
+``Agent.from_spec`` the model class itself, wrapped or bare, so pydantic-ai
+owns validation and retries for that answer (D7, FR-012).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic_ai import Agent, ModelRetry
@@ -38,6 +40,7 @@ from loom.ai.engines.pydantic_ai._native import supported_native_tools
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
+from loom.core.model import LoomType
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -176,7 +179,7 @@ class PydanticAIEngineProvider:
         agent = Agent.from_spec(spec, **agent_kwargs)
         shaped_agent = agent
         if plan.output_check is not None:
-            _register_output_check(agent, plan.output_check)
+            _register_output_check(agent, plan.output.loom_type, plan.output_check)
             # A run overriding the plan's shape (``AgentHandle.run(expect=...)``,
             # ``run_text``) must not carry the check above: pydantic-ai refuses
             # a custom ``output_type`` on a run whenever the agent holds an
@@ -228,25 +231,36 @@ class PydanticAIEngineProvider:
         return SUPPORTED_KINDS
 
 
-def _register_output_check(agent: Agent[Any, Any], check: OutputCheck) -> None:
+def _register_output_check(agent: Agent[Any, Any], loom_type: LoomType, check: OutputCheck) -> None:
     """Register *check* on *agent* as a pydantic-ai output validator.
 
     A rejection is a :class:`~pydantic_ai.ModelRetry` carrying the text
     *check* returned, which the engine reads back as the correction the
     model must act on (see :data:`~loom.ai.abc.OutputCheck`). The validator
-    returns its argument unchanged on acceptance: the engine never uses that
-    return value to build the answer (:func:`~loom.ai.engines.pydantic_ai._output.decode_output`
-    decodes the model's own bytes instead), so a mapping this validator built
-    could only ever be discarded.
+    receives *check*'s own contract, a ``Mapping``: for a ``msgspec.Struct``
+    output the mapping pydantic-ai parsed is passed straight through; for a
+    pydantic output the validator receives the validated model instance and
+    calls *check* with :meth:`~loom.core.model.LoomType.to_builtins` of it,
+    so a check written once serves both libraries. The validator returns its
+    argument unchanged on acceptance in both cases: the engine never uses
+    that return value to build the answer (a ``msgspec.Struct`` answer is
+    decoded independently by
+    :func:`~loom.ai.engines.pydantic_ai._output.decode_output`; a pydantic
+    answer is pydantic-ai's own validated instance), so a mapping this
+    validator built could only ever be discarded.
 
     Args:
         agent: Agent built by :meth:`PydanticAIEngineProvider.create_engine`.
+        loom_type: The plan's compiled output type, read for its library and
+            :meth:`~loom.core.model.LoomType.to_builtins`.
         check: Resolved :data:`~loom.ai.abc.OutputCheck` of the plan.
     """
+    is_pydantic = loom_type.library == "pydantic"
 
     @agent.output_validator
-    def _validate(output: Mapping[str, Any]) -> Mapping[str, Any]:
-        rejection = check(output)
+    def _validate(output: Any) -> Any:
+        payload = loom_type.to_builtins(output) if is_pydantic else output
+        rejection = check(payload)
         if rejection is not None:
             raise ModelRetry(rejection)
         return output

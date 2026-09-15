@@ -1,22 +1,27 @@
-"""Output phase: schema validation, ``type_ref`` resolution, decoder build.
+"""Output phase: schema validation, ``type_ref`` resolution, boundary type build.
 
 A ``json_schema`` output compiles to a concrete type via
-``msgspec.defstruct()`` and the plan stores a **built** decoder, so nothing
+``msgspec.defstruct()`` and the plan stores a :class:`~loom.core.model.LoomType`
+built once over it (:func:`~loom.core.model.msgspec_type`), so nothing
 reflects per invocation (research R-004, invariant 5).  A ``type_ref`` output
-accepts ``msgspec.Struct`` subclasses only in v1, so pydantic never enters the
-compiler path (T053).
+accepts a strict ``msgspec.Struct`` or ``pydantic.BaseModel`` subclass,
+resolved through :func:`~loom.core.model.loom_type`, which checks strictness
+for both libraries and rejects anything else with
+``UnsupportedBoundaryType``: both satisfy invariant 5 with a strict decode,
+so both may own the pass-through of the validated bytes.
 
-:func:`_resolve_symbol` and :func:`_schema_to_decoder` are shared with the
+:func:`_resolve_symbol` and :func:`_schema_to_annotation` are shared with the
 state phase (:mod:`loom.ai.compiler.phases._state`), which compiles the same
 two authored shapes — a symbol reference and a hand-written JSON Schema —
-into a schema-and-decoder pair. Each caller supplies its own issue factory
+into a schema and an annotation. Each caller supplies its own issue factory
 and, for the schema path, its own generated-struct name; nothing about the
 issue codes, the messages, or the exceptions caught changes between the two
 callers. What differs between the two ``type_ref``/``deps_type`` paths stays
-local to each phase: the output side additionally requires the resolved
-symbol to be a ``msgspec.Struct`` declaring ``forbid_unknown_fields=True``
-(invariant 5); the state side derives its schema straight from
-``msgspec.json.schema()`` and admits whatever symbol that call accepts.
+local to each phase: the output side requires every resolved symbol to
+compile through :func:`~loom.core.model.loom_type` (invariant 5); the state
+side only requires that of a resolved symbol that is a class, and falls back
+to ``msgspec.json.schema()`` for a container or alias, so a ``deps_type``
+that never named a class keeps compiling.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from loom.ai.errors import (
     output_type_ref_unresolvable,
     output_type_ref_unsupported,
 )
+from loom.core.model import LoomType, UnsupportedBoundaryType, loom_type, msgspec_type
 from loom.core.symbols import import_symbol
 
 _CompileResult = tuple[CompiledOutput | None, list[AgentCompilationIssue]]
@@ -95,36 +101,24 @@ def compile_output_check(
 
 
 def _compile_json_schema(output: JsonSchemaOutput, component: str) -> _CompileResult:
-    compiled, issues = _schema_to_decoder(
+    compiled, issues = _schema_to_annotation(
         output.schema, "CompiledOutputModel", component, output_schema_invalid
     )
     if compiled is None:
         return None, issues
-    schema, decoder = compiled
-    return CompiledOutput(schema=schema, decoder=decoder), []
+    schema, lt = compiled
+    return CompiledOutput(schema=schema, loom_type=lt), []
 
 
 def _compile_type_ref(output: TypeRefOutput, component: str) -> _CompileResult:
     symbol, issues = _resolve_symbol(output.ref, component, output_type_ref_unresolvable)
     if symbol is None:
         return None, issues
-    if not (isinstance(symbol, type) and issubclass(symbol, msgspec.Struct)):
-        return None, [
-            output_type_ref_unsupported(
-                component, output.ref, "only msgspec.Struct subclasses are supported in v1"
-            )
-        ]
-    if not symbol.__struct_config__.forbid_unknown_fields:
-        return None, [
-            output_type_ref_unsupported(
-                component,
-                output.ref,
-                "the struct must declare forbid_unknown_fields=True: pass-through of the "
-                "validated bytes is only safe under a strict decode (invariant 5)",
-            )
-        ]
-    decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(symbol)
-    return CompiledOutput(schema=MappingProxyType(msgspec.json.schema(symbol)), decoder=decoder), []
+    try:
+        lt = loom_type(symbol)
+    except UnsupportedBoundaryType as exc:
+        return None, [output_type_ref_unsupported(component, output.ref, str(exc))]
+    return CompiledOutput(schema=MappingProxyType(lt.schema()), loom_type=lt), []
 
 
 def _resolve_symbol(
@@ -140,24 +134,27 @@ def _resolve_symbol(
         return None, [unresolvable_issue(component, ref)]
 
 
-def _schema_to_decoder(
+def _schema_to_annotation(
     schema: Mapping[str, Any], model_name: str, component: str, invalid_issue: _IssueFactory
-) -> tuple[tuple[Mapping[str, Any], msgspec.json.Decoder[Any]] | None, list[AgentCompilationIssue]]:
-    """Compile a hand-written JSON Schema object into a ``(schema, decoder)`` pair.
+) -> tuple[tuple[Mapping[str, Any], LoomType] | None, list[AgentCompilationIssue]]:
+    """Compile a hand-written JSON Schema object into a ``(schema, loom_type)`` pair.
 
     *model_name* names the generated struct type; *invalid_issue* reports a
-    structural fault or a build failure. Shared with the state ``deps_schema``
-    path (:mod:`loom.ai.compiler.phases._state`).
+    structural fault, a failure to map the schema to a runtime annotation, or
+    a failure of :func:`~loom.core.model.msgspec_type` to build a decoder over
+    it — the annotation mapping and the decoder build both run inside the same
+    guard, so either failure is a coded compilation issue and never an
+    unhandled exception.
     """
     fault = _schema_fault(schema)
     if fault is not None:
         return None, [invalid_issue(component, fault)]
     try:
         annotation = _annotation_for(schema, model_name)
-        decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(annotation)
+        lt = msgspec_type(annotation)
     except (TypeError, ValueError) as exc:
         return None, [invalid_issue(component, str(exc))]
-    return (MappingProxyType(dict(schema)), decoder), []
+    return (MappingProxyType(dict(schema)), lt), []
 
 
 def _schema_fault(schema: Mapping[str, Any]) -> str | None:

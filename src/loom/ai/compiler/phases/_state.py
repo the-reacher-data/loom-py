@@ -1,48 +1,27 @@
 """State phase: resolve ``deps_type``/``deps_schema`` into one :class:`StateShape`.
 
 ``deps_schema``, ``deps_type: <symbol>`` and ``deps_type: dict`` are three
-authored spellings of one thing: an optional JSON Schema (FR-003). The symbol
-form is sugar — the compiler resolves the reference and calls
-``msgspec.json.schema()`` on it, and from that point the artifact is
-indistinguishable from one that wrote the schema by hand. The ``dict`` form
-is the absence of a schema and therefore the absence of validation (FR-006).
-:func:`compile_state` resolves all three to one small frozen value with two
-fields, built by three branches of one factory function.
+authored spellings of one thing: an optional JSON Schema (FR-003).
+:func:`compile_state` resolves all three to one small frozen value, built by
+three branches of one factory function.
 
-The symbol-resolution step and the hand-written-schema-to-decoder step are
-not reimplemented here: both come from
-:mod:`loom.ai.compiler.phases._output` (:func:`~loom.ai.compiler.phases._output._resolve_symbol`,
-:func:`~loom.ai.compiler.phases._output._schema_to_decoder`), parametrised by
-this module's own issue factories. What genuinely differs stays local: the
-state symbol path derives its schema straight from ``msgspec.json.schema()``
-rather than validating a ``msgspec.Struct`` first, the way the output side
-does.
+The symbol-resolution step and the hand-written-schema-to-annotation step are
+not reimplemented here: both come from :mod:`loom.ai.compiler.phases._output`
+(:func:`~loom.ai.compiler.phases._output._resolve_symbol`,
+:func:`~loom.ai.compiler.phases._output._schema_to_annotation`), parametrised
+by this module's own issue factories.
 
-State reaches the artifact through a caller's request body, so it forbids
-unknown fields exactly as the output side does (FR-017): the ``deps_schema``
-path already does through ``_annotation_for``'s generated struct, and
-:func:`_schema_admits_unknown_fields` extends the same requirement to the
-``deps_type`` symbol path — by reading msgspec's own
-``additionalProperties`` verdict on the derived schema, never by inspecting
-the symbol.
-
-**The first draft of this module was a Strategy** — ``SymbolState`` /
-``SchemaState`` / ``OpenState`` behind a Protocol — justified by the claim
-that the engine offers three distinct template entry points. The spike this
-train measured (see ``spec.md``, "What the spike measured") found that it
-offers one: the typed template path raises ``PydanticSchemaGenerationError``
-on a ``msgspec.Struct``, and ``msgspec.json.schema()`` is what bridges a
-declared symbol onto the one schema-based path that remains. Three classes to
-carry a ``Mapping | None`` and a decoder is the premature abstraction
-``.claude/rules/engineering.md`` forbids. The branching happens once, in this
-module's factory function; what leaves it is a value with two fields, and
-nothing downstream asks which of the three spellings produced it — it asks
-whether ``schema`` is set and whether ``decoder`` is set.
-
-The check on a ``deps_type`` symbol is the call to ``msgspec.json.schema()``
-itself, not an inspection of the symbol: the question is not *is this a
-type* but *can a schema be derived from it*, and only msgspec answers that
-(FR-004).
+A resolved ``deps_type`` symbol that is a class is compiled the same way the
+output side compiles a ``type_ref`` (D3): :func:`~loom.core.model.loom_type`
+decides the library and checks strictness once. A symbol that is not a class
+— a container or alias a hand-authored ``deps_type`` may still resolve to,
+such as ``dict[str, int]`` — falls back to ``msgspec.json.schema()`` plus
+:func:`~loom.core.model.msgspec_type`, exactly as before this train, so no
+``deps_type`` that compiled before it stops compiling (FR-007). Either way
+state forbids unknown fields exactly as the output side does (FR-017):
+:func:`_schema_admits_unknown_fields` checks the derived schema's own
+``additionalProperties`` verdict for the fallback path, and ``loom_type``
+checks strictness directly for the class path.
 
 This module does not import ``pydantic_ai`` or any other engine package: the
 compiler is engine-agnostic.
@@ -57,7 +36,7 @@ from typing import Any
 import msgspec
 
 from loom.ai.abc import StateShape
-from loom.ai.compiler.phases._output import _resolve_symbol, _schema_to_decoder
+from loom.ai.compiler.phases._output import _resolve_symbol, _schema_to_annotation
 from loom.ai.errors import (
     AgentCompilationIssue,
     state_declaration_conflict,
@@ -65,6 +44,7 @@ from loom.ai.errors import (
     state_type_ref_unresolvable,
     state_type_ref_unsupported,
 )
+from loom.core.model import UnsupportedBoundaryType, loom_type, msgspec_type
 
 _CompileResult = tuple[StateShape | None, list[AgentCompilationIssue]]
 
@@ -89,7 +69,7 @@ def compile_state(
     if deps_type is not None and deps_schema is not None:
         return None, [state_declaration_conflict(component)]
     if deps_type == "dict":
-        return StateShape(schema=None, decoder=None), []
+        return StateShape(schema=None, loom_type=None), []
     if deps_type is not None:
         return _compile_type_ref(deps_type, component)
     if deps_schema is not None:
@@ -101,6 +81,12 @@ def _compile_type_ref(ref: str, component: str) -> _CompileResult:
     symbol, issues = _resolve_symbol(ref, component, state_type_ref_unresolvable)
     if symbol is None:
         return None, issues
+    if isinstance(symbol, type):
+        try:
+            lt = loom_type(symbol)
+        except UnsupportedBoundaryType as exc:
+            return None, [state_type_ref_unsupported(component, ref, str(exc))]
+        return StateShape(schema=MappingProxyType(lt.schema()), loom_type=lt), []
     try:
         schema = msgspec.json.schema(symbol)
     except TypeError as exc:
@@ -115,13 +101,7 @@ def _compile_type_ref(ref: str, component: str) -> _CompileResult:
                 "exactly as the output side already requires (FR-017)",
             )
         ]
-    # ``symbol``, not the schema just derived from it: ``msgspec.json.schema``
-    # emits a root ``$ref``-plus-``$defs`` document for a struct (measured),
-    # which ``_annotation_for`` cannot resolve — it has no notion of ``$ref``.
-    # The type itself decodes directly, exactly as ``_compile_type_ref`` in
-    # ``phases/_output.py`` already does for the output side of this split.
-    decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(symbol)
-    return StateShape(schema=MappingProxyType(schema), decoder=decoder), []
+    return StateShape(schema=MappingProxyType(schema), loom_type=msgspec_type(symbol)), []
 
 
 def _schema_admits_unknown_fields(schema: Mapping[str, Any]) -> bool:
@@ -144,10 +124,10 @@ def _schema_admits_unknown_fields(schema: Mapping[str, Any]) -> bool:
 
 
 def _compile_schema(schema: Mapping[str, Any], component: str) -> _CompileResult:
-    compiled, issues = _schema_to_decoder(
+    compiled, issues = _schema_to_annotation(
         schema, "CompiledStateModel", component, state_schema_invalid
     )
     if compiled is None:
         return None, issues
-    result_schema, decoder = compiled
-    return StateShape(schema=result_schema, decoder=decoder), []
+    result_schema, lt = compiled
+    return StateShape(schema=result_schema, loom_type=lt), []

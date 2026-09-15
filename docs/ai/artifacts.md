@@ -198,6 +198,15 @@ deps_type: dict                         # open: an explicit waiver of validation
 indistinguishable from one that wrote the schema by hand. Declaring both
 `deps_type` and `deps_schema` is a compilation error.
 
+A strict `pydantic.BaseModel` subclass (`model_config["extra"] == "forbid"`)
+is accepted for `deps_type` exactly as a `msgspec.Struct` is: decoding is
+strict, the state a run renders when no `state` is sent comes from the
+model's own field defaults, and a request `state` with an undeclared field
+fails with `422 INVALID_STATE`, unchanged from the Struct path. State is
+always decoded strictly regardless of library — `"5"` for a declared `int`
+is rejected, never coerced — whereas a pydantic `type_ref` *output* is
+validated with pydantic-ai's own coercion (see "Output" below).
+
 The consequences an author needs, stated rather than left implicit:
 
 * **`deps_type: <symbol>` buys validation at start-up — every templated
@@ -285,6 +294,14 @@ output:
 
 The reference is `module:Symbol`. Filesystem paths are not representable by the
 pattern.
+
+A strict `pydantic.BaseModel` subclass (`model_config["extra"] == "forbid"`) is
+accepted alongside a strict `msgspec.Struct`. The two are validated
+differently: a pydantic `type_ref` is handed to pydantic-ai itself as the
+run's `output_type`, so pydantic-ai validates the answer with its own
+coercion, feeds a rejection back to the model and retries within
+`policies.retries`; a `msgspec.Struct` `type_ref` is decoded strictly by loom
+and fails fast on the first rejection.
 
 ### `output_check` — demanding the shape of the answer
 
