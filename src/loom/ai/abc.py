@@ -903,11 +903,17 @@ provider SDK is missing.
 OutputCheck: TypeAlias = Callable[[Mapping[str, Any]], str | None]
 """Target of an ``output_check`` reference: a pure predicate over an answer.
 
-Called once per attempt inside the engine's own output-retry loop, with the
-mapping the engine parsed from the model's answer — never loom's decoded
-object, so nothing is decoded twice. Returns ``None`` to accept the answer
-unchanged, or the text the model must read to correct itself, which drives a
-real retry bounded by the artifact's ``policies.retries``.
+Called once per attempt inside the engine's own output-retry loop. For a
+``msgspec.Struct`` output the mapping is the one the engine parsed from the
+model's answer — never loom's decoded object, so nothing is decoded twice.
+For a pydantic output (D7, FR-012) the check still receives a
+``Mapping[str, Any]``: the engine calls it with
+``loom_type.to_builtins(instance)`` of pydantic-ai's own validated instance,
+so a check written once serves both libraries. Returns ``None`` to accept the
+answer unchanged, or the text the model must read to correct itself, which
+drives a real retry bounded by the artifact's ``policies.retries`` — a real
+pydantic-ai output-tool retry for a pydantic output, exactly as for a
+``msgspec.Struct`` one.
 
 The return contract is the inverse of the usual predicate convention, which
 is why this alias is published rather than left for an author to spell: it
@@ -915,11 +921,13 @@ is the one name in this module carrying ``Mapping[str, Any]``, because the
 payload shape is the artifact's own declared schema, which loom cannot type
 statically.
 
-A returned mapping is never substituted for the answer: the engine decodes
-the model's own bytes independently of what this callable returns, so a
-check that builds and returns a different mapping has that mapping
-discarded. Synchronous and dependency-free, because any side effect inside
-the retry loop would run once per attempt.
+A returned mapping is never substituted for the answer: the engine never
+uses this callable's return value to build the answer. A ``msgspec.Struct``
+answer is decoded from the model's own bytes independently; a pydantic
+answer is pydantic-ai's own validated instance, read off ``result.output``.
+Either way, a check that builds and returns a different mapping has that
+mapping discarded. Synchronous and dependency-free, because any side effect
+inside the retry loop would run once per attempt.
 """
 
 

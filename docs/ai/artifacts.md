@@ -286,6 +286,14 @@ output:
 The reference is `module:Symbol`. Filesystem paths are not representable by the
 pattern.
 
+A strict `pydantic.BaseModel` subclass (`model_config["extra"] == "forbid"`) is
+accepted alongside a strict `msgspec.Struct`. The two are validated
+differently: a pydantic `type_ref` is handed to pydantic-ai itself as the
+run's `output_type`, so pydantic-ai validates the answer with its own
+coercion, feeds a rejection back to the model and retries within
+`policies.retries`; a `msgspec.Struct` `type_ref` is decoded strictly by loom
+and fails fast on the first rejection.
+
 ### `output_check` — demanding the shape of the answer
 
 `output_check` names an `OutputCheck` (`loom.ai.OutputCheck`): a pure,

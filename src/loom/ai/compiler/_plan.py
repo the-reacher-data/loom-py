@@ -36,17 +36,26 @@ class CompiledOutput(LoomFrozenStruct, frozen=True, kw_only=True):
 
     Interpreting the schema per response would be per-item reflection, so the
     boundary type is constructed exactly once, at compile (research R-004,
-    invariant 5).  The decode is strict: unknown fields are rejected, which is
-    what makes returning the validated bytes unchanged safe.
+    invariant 5).  For a ``msgspec.Struct`` output the decode is strict —
+    unknown fields are rejected, which is what makes returning the validated
+    bytes unchanged safe. For a pydantic output invariant 5 is satisfied
+    differently (D7, FR-012): ``.type`` is handed to pydantic-ai itself as the
+    run's ``output_type``, so pydantic-ai — not loom — validates, retries and
+    builds the instance; loom never decodes that answer a second time.
 
     Attributes:
         schema: JSON Schema object handed to the model.
         loom_type: Boundary type produced at compile, whichever library built
             it (:func:`~loom.core.model.loom_type` for a ``type_ref``,
             :func:`~loom.core.model.msgspec_type` for a ``json_schema``): the
-            start-up marker check (``ai/_startup.py``) reads ``.type``, and
-            the engine (``ai/engines/pydantic_ai/_output.py``) reads
-            ``.decode_json(bytes)``.
+            start-up marker check (``ai/_startup.py``) reads ``.type``. The
+            engine reads it differently per library: for a ``msgspec.Struct``,
+            ``ai/engines/pydantic_ai/_output.py`` decodes the model's raw
+            bytes through ``.decode_json(bytes)``; for a pydantic model,
+            ``.type`` reaches ``Agent.from_spec(output_type=...)`` and the
+            engine reads the validated answer straight off
+            ``result.output``. ``.to_builtins`` projects either answer to
+            JSON-mode builtins once, at the wire.
     """
 
     schema: Mapping[str, Any]

@@ -341,9 +341,11 @@ class TestPydanticTypeRefOutputReachesTheEngineSpec:
 
         assert spec.output_schema == dict(plan.output.schema)
 
-    def test_build_output_type_carries_no_root_title_for_a_pydantic_type_ref(
+    def test_build_output_type_hands_the_model_class_under_the_default_tool_name(
         self, fake_myapp_path: Path
     ) -> None:
+        from myapp.domain.pydantic_invoices import InvoiceSummaryModel
+
         del fake_myapp_path
         plan = plan_with_pydantic_type_ref_output(
             "myapp.domain.pydantic_invoices:InvoiceSummaryModel"
@@ -351,10 +353,10 @@ class TestPydanticTypeRefOutputReachesTheEngineSpec:
 
         marker = build_output_type(plan)
 
-        assert marker is not None
         assert "title" not in dict(plan.output.schema)
         assert type(marker) is ToolOutput
-        assert "title" not in TypeAdapter(marker.output).json_schema()
+        assert marker.output is InvoiceSummaryModel
+        assert marker.name is None
 
 
 class TestInstructionsAndDescriptionKeywords:

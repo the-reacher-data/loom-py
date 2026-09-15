@@ -32,7 +32,7 @@ carries the same gap forward once observed.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import fields
 from time import perf_counter
@@ -140,6 +140,19 @@ class PydanticAIEngine:
         usage_limits: The plan's spend caps, projected once at construction
             (:func:`~loom.ai.engines.pydantic_ai._limits.usage_limits`) and
             passed on every run and every streamed attempt.
+
+    Two more handles are resolved once here, from the plan's output library
+    (D7, FR-012), and reused by every run and every streamed attempt alike:
+    ``self._answer`` reads the answer off a finished
+    :class:`~pydantic_ai.AgentRunResult` — ``result.output`` for a pydantic
+    output, already validated and retried by pydantic-ai itself, or
+    :func:`~loom.ai.engines.pydantic_ai._output.decode_output` for a
+    ``msgspec.Struct`` output, which still decodes the model's own bytes —
+    and ``self._withhold`` decides whether a stream buffers its deltas until
+    the attempt's result is known, true whenever the plan declares
+    ``output_check`` or the output is pydantic: both can replay the model
+    request inside one attempt, so a delta already relayed could not be
+    un-sent.
     """
 
     def __init__(
@@ -161,6 +174,13 @@ class PydanticAIEngine:
         self._attempts = max(plan.policies.retries, 0) + 1
         self._last_failure: AgentRunErrorCode | None = None
         self._unpriced_spend_observed = False
+        library = plan.output.loom_type.library
+        self._answer: Callable[[AgentRunResult[Any]], Any] = (
+            (lambda result: result.output)
+            if library == "pydantic"
+            else (lambda result: decode_output(plan.output, result))
+        )
+        self._withhold = plan.output_check is not None or library == "pydantic"
 
     async def run(
         self,
@@ -198,7 +218,7 @@ class PydanticAIEngine:
         try:
             result = await self._run_with_retries(prompt, identity, spend, decoded, state)
             unpriced = self._apply_unpriced_spend_policy(result)
-            output = decode_output(self._plan.output, result)
+            output = self._answer(result)
         except AgentRunError as error:
             self._record(error.code)
             error.usage = self._usage(spend, started)
@@ -259,8 +279,9 @@ class PydanticAIEngine:
         a parameter every engine must carry.
 
         pydantic-ai validates the run's answer against *output_type* on its
-        own, exactly as it validates against the plan's declared shape for an
-        unshaped run; what this method skips is loom's *own* output check
+        own, exactly as it already does against a pydantic ``type_ref`` plan's
+        own declared shape (D7, FR-012); what this method skips is loom's
+        *own* output check for a ``msgspec.Struct`` plan
         (:func:`~loom.ai.engines.pydantic_ai._output.decode_output`), because
         that check is compiled against the plan's declared schema and *this*
         answer is deliberately shaped otherwise. When the plan declares an
@@ -549,21 +570,23 @@ class PydanticAIEngine:
         *outcome*, so :meth:`_events` can apply the policy only once every
         delta from this attempt has already reached the caller.
 
-        When the plan declares ``output_check``, text deltas are buffered in
-        *pending* rather than relayed live, and flushed only once this
-        attempt's ``AgentRunResultEvent`` arrives: an ``output_check``
-        rejection replays the model request inside this same call, each
-        replay's ``PartStartEvent`` starts again at ``index=0``, and a delta
-        already relayed cannot be un-sent. A plan with no check never
-        buffers: *pending* stays empty and every mapped event is yielded as
-        it arrives, exactly as before ``output_check`` existed.
+        When :attr:`_withhold` is set — the plan declares ``output_check`` or
+        the output is pydantic — text deltas are buffered in *pending* rather
+        than relayed live, and flushed only once this attempt's
+        ``AgentRunResultEvent`` arrives: an ``output_check`` rejection and a
+        pydantic validation failure alike replay the model request inside
+        this same call, each replay's ``PartStartEvent`` starts again at
+        ``index=0``, and a delta already relayed cannot be un-sent. A plan
+        that withholds nothing never buffers: *pending* stays empty and every
+        mapped event is yielded as it arrives, exactly as before
+        ``output_check`` existed.
 
         *output_type* also selects which built agent serves this attempt:
         :attr:`_shaped_agent`, carrying no output validator, when given —
         pydantic-ai refuses a run-level ``output_type`` on an agent holding
         one — and :attr:`_agent`, the plan's own checked agent, otherwise.
         """
-        withhold = self._plan.output_check is not None
+        withhold = self._withhold
         pending: list[AgentEvent] = []
         pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
         agent = self._agent if output_type is None else self._shaped_agent
@@ -618,14 +641,17 @@ class PydanticAIEngine:
         *,
         unpriced_requests: int = 0,
     ) -> FinalEvent:
-        # An overridden shape skips loom's own output check on purpose
-        # (T304): 'decode_output' is compiled against the plan's declared
-        # schema, and pydantic-ai has already validated 'result.output'
-        # against 'output_type' itself when one was requested.
-        if output_type is not None:
-            output = result.output
-        else:
-            output = decode_output(self._plan.output, result)
+        """Build this attempt's terminal event, resolving the answer once.
+
+        An overridden shape skips :attr:`_answer` on purpose (T304):
+        pydantic-ai has already validated ``result.output`` against
+        *output_type* itself, whatever the plan's own output library, so the
+        raw result is the answer. Otherwise :attr:`_answer` resolves it —
+        ``result.output`` for a pydantic plan, already validated and retried
+        by pydantic-ai (D7, FR-012), or :func:`~loom.ai.engines.pydantic_ai._output.decode_output`
+        for a ``msgspec.Struct`` plan, compiled against its declared schema.
+        """
+        output = result.output if output_type is not None else self._answer(result)
         return FinalEvent(
             output=output,
             usage=self._usage(spend, started, unpriced_requests=unpriced_requests),
