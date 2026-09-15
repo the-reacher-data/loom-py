@@ -9,6 +9,13 @@ from loom.core.model.introspection import (
     get_relations,
     get_table_name,
 )
+from loom.core.model.loom_type import (
+    BoundaryValidationError,
+    LoomType,
+    UnsupportedBoundaryType,
+    loom_type,
+    msgspec_type,
+)
 from loom.core.model.projection import (
     Projection,
     ProjectionField,
@@ -32,6 +39,7 @@ from loom.core.model.types_postgres import Postgres
 
 __all__ = [
     "BaseModel",
+    "BoundaryValidationError",
     "LoomFrozenStruct",
     "LoomStruct",
     "TimestampedModel",
@@ -50,6 +58,7 @@ __all__ = [
     "Postgres",
     "ProjectionField",
     "LoomStructMeta",
+    "LoomType",
     "Numeric",
     "OnDelete",
     "OnUpdate",
@@ -60,9 +69,12 @@ __all__ = [
     "ServerOnUpdate",
     "String",
     "Text",
+    "UnsupportedBoundaryType",
     "get_column_fields",
     "get_id_attribute",
     "get_projections",
     "get_relations",
     "get_table_name",
+    "loom_type",
+    "msgspec_type",
 ]
