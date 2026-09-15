@@ -1,5 +1,53 @@
 # Unreleased
 
+## ✨ Features
+
+### core
+
+- **core:** `loom.core.model.loom_type` is the one module that decides whether
+  a boundary type is a `msgspec.Struct` or a strict `pydantic.BaseModel`.
+  `loom_type(symbol)` resolves an authored symbol by `issubclass`,
+  `msgspec_type(annotation)` wraps a compiler-generated annotation, and both
+  return a `LoomType` (`type`, `schema()`, `decode_json()`, `to_builtins()`).
+  Strictness (`forbid_unknown_fields=True` or `model_config["extra"] ==
+  "forbid"`) is required and checked once, in the factory, for either
+  library, raising `UnsupportedBoundaryType`; a decode or validation failure
+  raises `BoundaryValidationError`. `pydantic` stays optional: the module
+  gates on `sys.modules` and imports it locally, so a process that never
+  declares a pydantic type never loads it.
+
+### ai
+
+- **ai:** `output.type_ref` and `deps_type` accept a strict
+  `pydantic.BaseModel` (`model_config["extra"] == "forbid"`) wherever they
+  accept a `msgspec.Struct`. A pydantic output is handed to pydantic-ai as
+  its own `output_type`, so pydantic-ai builds its schema, validates the
+  answer with its own coercion, feeds a rejection back to the model and
+  retries within `policies.retries`, unlike a Struct output, which loom
+  keeps decoding strictly and failing fast on the first rejection. Whichever
+  library produced the answer, the hook payload, `/agents/{name}/run`, the
+  SSE `final` frame and the A2A output artifact all carry it as plain JSON
+  builtins, built from the plan's `LoomType`.
+
+## ⚠ Behaviour changes
+
+### ai
+
+- **ai:** `CompiledOutput.decoder` and `StateShape.decoder` are gone,
+  replaced by `loom_type: LoomType` (`LoomType | None` on `StateShape`); a
+  reader of either field must move to `loom_type.type` / `.decode_json()` /
+  `.to_builtins()`. `AgentRuntime.output_type(name) -> LoomType` is added
+  next to `state_shape(name)`. A pydantic `output.type_ref` is now validated
+  by pydantic-ai itself, not by loom, and a rejected answer retries within
+  `policies.retries` instead of failing the run on the first attempt; a
+  `msgspec.Struct` output is unchanged (strict decode, fail fast). The root
+  `title` is dropped from a pydantic output's `CompiledOutput.schema`, to
+  match the untitled document a Struct output always produced. Two
+  residuals, documented rather than closed: `bytes` needs
+  `ser_json_bytes`/`val_json_bytes = "base64"` set on the pydantic model to
+  reach parity with msgspec's default base64 rendering, and strictness is
+  still checked on the root type only, for either library.
+
 ## 🐛 Fixes
 
 ### core

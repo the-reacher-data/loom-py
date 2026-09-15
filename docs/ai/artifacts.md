@@ -198,6 +198,12 @@ deps_type: dict                         # open: an explicit waiver of validation
 indistinguishable from one that wrote the schema by hand. Declaring both
 `deps_type` and `deps_schema` is a compilation error.
 
+A strict `pydantic.BaseModel` subclass (`model_config["extra"] == "forbid"`)
+is accepted for `deps_type` exactly as a `msgspec.Struct` is: decoding is
+strict, the state a run renders when no `state` is sent comes from the
+model's own field defaults, and a request `state` with an undeclared field
+fails with `422 INVALID_STATE`, unchanged from the Struct path.
+
 The consequences an author needs, stated rather than left implicit:
 
 * **`deps_type: <symbol>` buys validation at start-up — every templated
