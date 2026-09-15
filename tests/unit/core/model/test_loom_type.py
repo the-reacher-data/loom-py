@@ -17,7 +17,6 @@ from uuid import UUID
 
 import msgspec
 import pytest
-from pydantic import BaseModel, ConfigDict
 
 from loom.core.model import (
     BoundaryValidationError,
@@ -26,6 +25,10 @@ from loom.core.model import (
     loom_type,
     msgspec_type,
 )
+
+pydantic = pytest.importorskip("pydantic")
+BaseModel = pydantic.BaseModel
+ConfigDict = pydantic.ConfigDict
 
 _LAX_REASON = (
     "the type must reject unknown fields: forbid_unknown_fields=True or "
