@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from loom.core.engine.post_commit import PostCommitError
 from loom.core.errors import LoomError, NotFound, RuleViolations
 from loom.core.errors.codes import ErrorCode
+from loom.core.model import BoundaryValidationError
 from loom.core.tracing import get_trace_id
 from loom.rest.constants import BEARER_CHALLENGE
 
@@ -51,6 +52,8 @@ class HttpErrorMapper:
 
     - :class:`~loom.core.errors.NotFound` → ``entity``, ``id``
     - :class:`~loom.core.errors.RuleViolations` → ``violations``
+    - :class:`~loom.core.model.BoundaryValidationError` → ``violations``
+      (``422``; a schema failure, distinct from a rule failure)
     - :class:`~loom.core.engine.post_commit.PostCommitError` → ``committed``
       (``500``; ``true`` when a unit of work committed, so a retry would
       repeat the write, ``false`` when the execution held none)
@@ -73,6 +76,7 @@ class HttpErrorMapper:
         ErrorCode.CONFLICT: 409,
         ErrorCode.RULE_VIOLATIONS: 422,
         ErrorCode.RULE_VIOLATION: 422,
+        ErrorCode.BOUNDARY_VALIDATION: 422,
         ErrorCode.UNSUPPORTED_FORMAT: 400,
         ErrorCode.UNSUPPORTED_QUERY: 400,
         ErrorCode.SYSTEM_ERROR: 500,
@@ -105,6 +109,12 @@ class HttpErrorMapper:
         if isinstance(error, RuleViolations):
             detail[ErrorField.VIOLATIONS] = [
                 {ErrorField.FIELD: v.field, ErrorField.MESSAGE: v.message} for v in error.violations
+            ]
+
+        if isinstance(error, BoundaryValidationError):
+            detail[ErrorField.VIOLATIONS] = [
+                {ErrorField.FIELD: field, ErrorField.MESSAGE: message}
+                for field, message in error.violations
             ]
 
         if isinstance(error, PostCommitError):

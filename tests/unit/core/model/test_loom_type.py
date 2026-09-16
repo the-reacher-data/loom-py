@@ -25,7 +25,9 @@ from loom.core.model import (
     loom_type,
     loom_type_of,
     msgspec_type,
+    pydantic_type,
 )
+from loom.core.model._loom_type import _msgspec_violation
 
 pydantic = pytest.importorskip("pydantic")
 BaseModel = pydantic.BaseModel
@@ -128,23 +130,26 @@ class TestDecodeJson:
         ids=["int-from-str", "int-from-float", "float-from-str", "bool-from-str", "bool-from-int"],
     )
     def test_rejects_scalar_coercion(self, invoice: LoomType, field: str, wrong: Any) -> None:
+        body = _with(**{field: wrong})
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(_with(**{field: wrong}))
+            invoice.decode_json(body)
 
         assert field in str(excinfo.value)
 
     def test_rejects_an_unknown_key(self, invoice: LoomType) -> None:
+        body = _with(zz=1)
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(_with(zz=1))
+            invoice.decode_json(body)
 
         assert "zz" in str(excinfo.value)
 
     def test_rejects_a_missing_field(self, invoice: LoomType) -> None:
         payload = dict(_PAYLOAD)
         del payload["note"]
+        body = json.dumps(payload)
 
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(json.dumps(payload))
+            invoice.decode_json(body)
 
         assert "note" in str(excinfo.value)
 
@@ -155,8 +160,9 @@ class TestDecodeJson:
     def test_error_carries_the_library_error_and_a_one_line_message(
         self, invoice: LoomType
     ) -> None:
+        body = _with(total="5", zz=1)
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(_with(total="5", zz=1))
+            invoice.decode_json(body)
 
         error = excinfo.value
         assert error.code == "boundary_validation"
@@ -479,3 +485,77 @@ class TestPydanticToBuiltinsSubclass:
 
         assert "extra_field" not in builtins
         assert set(builtins) == set(_PAYLOAD)
+
+
+class TestMsgspecViolationParser:
+    """D6: one parser over the msgspec message text, pinned by its five literal shapes."""
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("Expected `int`, got `str` - at `$.km`", ("km", "Expected `int`, got `str`")),
+            (
+                "Object missing required field `email`",
+                ("email", "Object missing required field `email`"),
+            ),
+            (
+                "Object missing required field `x` - at `$.a`",
+                ("a.x", "Object missing required field `x`"),
+            ),
+            ("Expected `int`, got `str` - at `$[0]`", ("0", "Expected `int`, got `str`")),
+            (
+                "Expected `str`, got `int` - at `key` in `$.tags`",
+                ("tags", "Expected `str`, got `int`"),
+            ),
+            (
+                "Invalid enum value 'a - at b' - at `$.kind`",
+                ("kind", "Invalid enum value 'a - at b'"),
+            ),
+            (
+                "Expected `int`, got `str` - at `$.meta[...]`",
+                ("meta", "Expected `int`, got `str`"),
+            ),
+            (
+                "Object contains unknown field `zz`",
+                ("zz", "Object contains unknown field `zz`"),
+            ),
+        ],
+    )
+    def test_parses_the_literal_shapes(self, message: str, expected: tuple[str, str]) -> None:
+        assert _msgspec_violation(message) == expected
+
+    def test_a_real_msgspec_failure_carries_one_violation(self) -> None:
+        compiled = msgspec_type(StructInvoice)
+
+        with pytest.raises(BoundaryValidationError) as excinfo:
+            compiled.from_builtins({**_PAYLOAD, "total": "not-an-int"})
+
+        assert excinfo.value.violations == (("total", "Expected `int`, got `str`"),)
+        assert excinfo.value.violations[0][0] == "total"
+
+
+class NestedModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+
+
+class ParentModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nested: NestedModel
+    other: int
+
+
+class TestPydanticViolations:
+    """D6: pydantic builds one violation per error, field is the dotted ``loc``."""
+
+    def test_a_real_pydantic_failure_with_two_errors_carries_two_dotted_violations(self) -> None:
+        compiled = pydantic_type(ParentModel)
+
+        with pytest.raises(BoundaryValidationError) as excinfo:
+            compiled.from_builtins({"nested": {}, "other": "not-an-int"})
+
+        fields = {field for field, _ in excinfo.value.violations}
+        assert fields == {"nested.id", "other"}
+        assert len(excinfo.value.violations) == 2

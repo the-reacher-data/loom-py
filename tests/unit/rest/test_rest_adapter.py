@@ -7,6 +7,9 @@ import msgspec
 import pytest
 from fastapi import HTTPException
 
+from loom.core.command import Command
+from loom.core.engine.compiler import UseCaseCompiler
+from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.post_commit import PostCommitError
 from loom.core.errors import (
     Conflict,
@@ -18,8 +21,10 @@ from loom.core.errors import (
     Unauthenticated,
 )
 from loom.core.errors.codes import ErrorCode
+from loom.core.model import BoundaryValidationError
 from loom.core.repository.abc.query import CursorResult, PageResult
 from loom.core.transport.adapter import AdapterRequest, LoomAdapter
+from loom.core.use_case.markers import Input
 from loom.core.use_case.use_case import UseCase
 from loom.etl import Format, UnsupportedFormatError
 from loom.rest.errors import HttpErrorMapper
@@ -169,6 +174,16 @@ class TestHttpErrorMapper:
         assert "violations" in detail
         assert len(detail["violations"]) == 2
         assert detail["violations"][0] == {"field": "email", "message": "invalid"}
+
+    def test_boundary_validation_maps_to_422_with_violations(self) -> None:
+        error = BoundaryValidationError("bad body", (("fullName", "Expected `str`, got `int`"),))
+        exc = self._mapper().to_http(error)
+        detail = _detail(exc)
+        assert exc.status_code == 422
+        assert detail["code"] == ErrorCode.BOUNDARY_VALIDATION
+        assert detail["violations"] == [
+            {"field": "fullName", "message": "Expected `str`, got `int`"}
+        ]
 
     def test_unknown_code_defaults_to_500(self) -> None:
         class _CustomError(LoomError):
@@ -332,3 +347,41 @@ class TestLoomRestAdapterErrors:
         with pytest.raises(HTTPException) as exc_info:
             await adapter.handle(use_case, request)
         assert exc_info.value.status_code == 418
+
+
+# ---------------------------------------------------------------------------
+# LoomRestAdapter — boundary validation, driven by a real RuntimeExecutor
+# ---------------------------------------------------------------------------
+
+
+class _CreateItemCmd(Command, frozen=True):
+    full_name: str
+
+
+class _CreateItemUseCase(UseCase[Any, dict[str, Any]]):
+    async def execute(self, cmd: _CreateItemCmd = Input()) -> dict[str, Any]:
+        return {"full_name": cmd.full_name}
+
+
+def _real_executor(*use_case_types: type[UseCase[Any, Any]]) -> RuntimeExecutor:
+    uc_compiler = UseCaseCompiler()
+    for use_case_type in use_case_types:
+        uc_compiler.compile(use_case_type)
+    return RuntimeExecutor(uc_compiler)
+
+
+class TestLoomRestAdapterBoundaryValidation:
+    """A bad body drives the same 422 through the adapter and a real executor."""
+
+    async def test_a_bad_field_maps_to_422_with_violations(self) -> None:
+        adapter = LoomRestAdapter(_real_executor(_CreateItemUseCase))
+        request = AdapterRequest(params={}, payload={"fullName": 12})
+        use_case = _CreateItemUseCase()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await adapter.handle(use_case, request)
+
+        assert exc_info.value.status_code == 422
+        detail = _detail(exc_info.value)
+        assert detail["code"] == ErrorCode.BOUNDARY_VALIDATION
+        assert detail["violations"][0]["field"] == "fullName"

@@ -600,15 +600,31 @@ class PydanticAIEngine:
                     for held in pending:
                         yield held
                     return
-                if withhold and isinstance(event, PartStartEvent) and event.index == 0:
-                    pending.clear()
-                mapped = translate(event)
-                if mapped is None:
-                    continue
-                if withhold and isinstance(mapped, TextDeltaEvent):
-                    pending.append(mapped)
-                else:
+                mapped = self._relay_or_buffer(event, withhold, pending)
+                if mapped is not None:
                     yield mapped
+
+    @staticmethod
+    def _relay_or_buffer(
+        event: object, withhold: bool, pending: list[AgentEvent]
+    ) -> AgentEvent | None:
+        """Translate one non-terminal stream *event* and apply the buffering policy.
+
+        A fresh replay's ``PartStartEvent`` at ``index=0`` discards whatever
+        this attempt had buffered so far. A mapped text delta is appended to
+        *pending* instead of returned when *withhold* is set, so the caller
+        never yields it directly; every other mapped event is returned as-is
+        for the caller to yield.
+        """
+        if withhold and isinstance(event, PartStartEvent) and event.index == 0:
+            pending.clear()
+        mapped = translate(event)
+        if mapped is None:
+            return None
+        if withhold and isinstance(mapped, TextDeltaEvent):
+            pending.append(mapped)
+            return None
+        return mapped
 
     def _conclude(
         self,

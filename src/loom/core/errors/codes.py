@@ -30,6 +30,7 @@ class ErrorCode(StrEnum):
     CONFLICT = "conflict"
     RULE_VIOLATION = "rule_violation"
     RULE_VIOLATIONS = "rule_violations"
+    BOUNDARY_VALIDATION = "boundary_validation"
     UNSUPPORTED_FORMAT = "unsupported_format"
     UNSUPPORTED_QUERY = "unsupported_query"
     SYSTEM_ERROR = "system_error"

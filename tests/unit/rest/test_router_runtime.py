@@ -6,12 +6,14 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
+import pydantic
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic.alias_generators import to_camel
 
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
 from loom.core.command import Command, Internal
@@ -64,6 +66,36 @@ class CreateItemUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, cmd: CreateItemCmd = Input()) -> dict[str, Any]:
         await asyncio.sleep(0)
         return {"full_name": cmd.full_name}
+
+
+class ItemModel(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(
+        extra="forbid", alias_generator=to_camel, populate_by_name=True
+    )
+
+    full_name: str
+
+
+class ItemRootModel(pydantic.RootModel[ItemModel]):
+    pass
+
+
+class ModelResultUseCase(UseCase[Any, ItemModel]):
+    async def execute(self, **kwargs: Any) -> ItemModel:
+        await asyncio.sleep(0)
+        return ItemModel(full_name="Alice")
+
+
+class ModelListResultUseCase(UseCase[Any, list[ItemModel]]):
+    async def execute(self, **kwargs: Any) -> list[ItemModel]:
+        await asyncio.sleep(0)
+        return [ItemModel(full_name="Alice"), ItemModel(full_name="Bob")]
+
+
+class RootModelResultUseCase(UseCase[Any, ItemRootModel]):
+    async def execute(self, **kwargs: Any) -> ItemRootModel:
+        await asyncio.sleep(0)
+        return ItemRootModel(ItemModel(full_name="Alice"))
 
 
 @dataclass(frozen=True)
@@ -575,6 +607,112 @@ def test_openapi_request_schema_for_plain_command_type() -> None:
     request_schema = _resolve_schema(raw_schema, schema)
     assert request_schema["type"] == "object"
     assert "full_name" in request_schema["properties"]
+
+
+# ---------------------------------------------------------------------------
+# bind_interfaces — boundary validation (a Command body that fails to convert)
+# ---------------------------------------------------------------------------
+
+
+def test_bind_interfaces_bad_body_field_maps_to_422_boundary_validation() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        routes = (RestRoute(use_case=CreateItemUseCase, method="POST", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.post("/items/", json={"fullName": 12})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "boundary_validation"
+    assert detail["violations"] == [{"field": "fullName", "message": "Expected `str`, got `int`"}]
+
+
+def test_bind_interfaces_missing_body_field_reports_that_field() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        routes = (RestRoute(use_case=CreateItemUseCase, method="POST", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.post("/items/", json={})
+    assert response.status_code == 422
+    assert response.json()["detail"]["violations"][0]["field"] == "fullName"
+
+
+# ---------------------------------------------------------------------------
+# bind_interfaces — a strict pydantic.BaseModel result renders through the loom type
+# ---------------------------------------------------------------------------
+
+
+def test_bind_interfaces_basemodel_result_renders_as_json_object() -> None:
+    class IFace(RestInterface[Any]):
+        prefix = "/model"
+        routes = (RestRoute(use_case=ModelResultUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/model/")
+    assert response.status_code == 200
+    assert response.json() == {"fullName": "Alice"}
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI — response schema for a pydantic return type
+# ---------------------------------------------------------------------------
+
+
+def test_openapi_response_schema_for_basemodel_return_type() -> None:
+    class IFace(RestInterface[Any]):
+        prefix = "/model"
+        routes = (RestRoute(use_case=ModelResultUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    raw_schema = schema["paths"]["/model/"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    response_schema = _resolve_schema(raw_schema, schema)
+    assert "fullName" in response_schema["properties"]
+    assert "title" not in response_schema
+
+
+def test_openapi_response_schema_for_basemodel_list_return_type() -> None:
+    class IFace(RestInterface[Any]):
+        prefix = "/models"
+        routes = (RestRoute(use_case=ModelListResultUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    response_schema = schema["paths"]["/models/"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert response_schema["type"] == "array"
+    items_schema = _resolve_schema(response_schema["items"], schema)
+    assert "fullName" in items_schema["properties"]
+
+
+def test_openapi_response_schema_for_root_model_return_type() -> None:
+    class IFace(RestInterface[Any]):
+        prefix = "/root"
+        routes = (RestRoute(use_case=RootModelResultUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    raw_schema = schema["paths"]["/root/"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    response_schema = _resolve_schema(raw_schema, schema)
+    assert "fullName" in response_schema["properties"]
 
 
 def test_openapi_autocrud_list_has_response_schema_and_query_parameters() -> None:

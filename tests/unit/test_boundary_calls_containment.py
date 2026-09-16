@@ -10,7 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "loom"
-_PACKAGES = ("ai", "core/cache", "rest")
+_PACKAGES = ("ai", "core/cache", "core/command", "rest")
 _TARGETS = frozenset(
     {
         "msgspec.convert",
@@ -43,7 +43,6 @@ _ALLOWED: dict[tuple[str, str], int] = {
     ("core/cache/result_codec.py", "msgspec.to_builtins"): 1,
     ("rest/_body.py", "msgspec.json.encode"): 1,
     ("rest/auth/middleware.py", "msgspec.json.encode"): 1,
-    ("rest/fastapi/openapi.py", "pydantic.TypeAdapter"): 1,
     ("rest/fastapi/response.py", "msgspec.json.encode"): 1,
     ("rest/fastapi/router_runtime.py", "msgspec.json.decode"): 1,
     ("rest/fastapi/sql.py", "msgspec.json.Decoder"): 1,

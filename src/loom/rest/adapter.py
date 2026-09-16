@@ -100,7 +100,10 @@ class PydanticAdapter:
             contains the names of fields present in the raw input.
 
         Raises:
-            pydantic.ValidationError: If the raw input fails validation.
+            pydantic.ValidationError: If ``raw`` fails validation against
+                the compiled pydantic schema.
+            BoundaryValidationError: If ``from_payload`` rejects the
+                validated payload while converting it to *command_cls*.
         """
         schema = self.compile_schema(command_cls)
         validated = schema.model_validate(raw)

@@ -35,6 +35,15 @@
   SSE `final` frame and the A2A output artifact all carry it as plain JSON
   builtins, built from the plan's `LoomType`.
 
+### rest
+
+- **rest:** a strict `pydantic.BaseModel` result, a `list` of them or an
+  envelope holding one now renders directly on a REST route, through
+  `MsgspecJSONResponse`'s `enc_hook`, and documents in OpenAPI
+  (`_safe_pydantic_schema`) through the same `LoomType` the cache and MCP
+  boundaries already use; `LoomRestAdapter`'s Struct projection goes
+  through it too.
+
 ## ⚠ Behaviour changes
 
 ### core
@@ -67,6 +76,18 @@
   declares both a pydantic `type_ref` output and `output_check` serialises
   an accepted answer twice per attempt — once for the check's own builtins
   projection, once for the wire — accepted rather than optimised away.
+
+### rest
+
+- **rest:** a JSON object body that fails `Command` validation now answers
+  `422 boundary_validation` with a `violations` list (`{field, message}`
+  pairs, `field` being the wire name the client sent, the same shape
+  `rule_violations` already uses) instead of a generic `500`; malformed
+  JSON and a non-object body are unchanged. `Command.from_payload` now
+  raises `BoundaryValidationError` — a `ValueError` — instead of
+  `msgspec.ValidationError`. The root `title` is dropped on pydantic
+  OpenAPI schemas for request bodies and responses alike, matching the
+  untitled document a Struct always produced.
 
 ## 🐛 Fixes
 

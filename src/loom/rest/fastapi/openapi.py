@@ -17,6 +17,7 @@ from loom.core.command.introspection import (
     get_patch_fields,
 )
 from loom.core.engine.plan import ExecutionPlan
+from loom.core.model import pydantic_type
 from loom.core.repository.abc.query import PaginationMode, QuerySpec
 from loom.rest.compiler import CompiledRoute
 from loom.rest.constants import QueryParam
@@ -286,10 +287,7 @@ def _safe_msgspec_schema(annotation: Any) -> JsonSchema | None:
 
 def _safe_pydantic_schema(annotation: Any) -> JsonSchema | None:
     try:
-        from pydantic import TypeAdapter  # lazy — only when pydantic is installed
-
-        adapter = TypeAdapter(annotation)
-        return adapter.json_schema()
+        return dict(pydantic_type(annotation).schema())
     except Exception:
         return None
 
