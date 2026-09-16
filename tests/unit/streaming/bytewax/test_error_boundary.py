@@ -8,7 +8,7 @@ from typing import NoReturn, cast
 import pytest
 
 from loom.core.errors.errors import RuleViolation
-from loom.core.model import LoomStruct
+from loom.core.model import BoundaryValidationError, LoomStruct
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import _error_boundary
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
@@ -50,6 +50,12 @@ def _raise(exc: Exception) -> NoReturn:
 
 def _boundary() -> _error_boundary.ErrorBoundary:
     return _error_boundary.ErrorBoundary(observer=ObservabilityRuntime.noop(), flow="orders")
+
+
+def test_classify_task_maps_boundary_validation_error_to_task() -> None:
+    """A ``BoundaryValidationError`` is a ``LoomError``, not a ``DomainError``: same bucket
+    a msgspec conversion failure fell into before ``core/command`` grew its own error."""
+    assert _error_boundary._classify_task(BoundaryValidationError("bad body")) is ErrorKind.TASK
 
 
 def test_execute_in_boundary_returns_message_on_success() -> None:

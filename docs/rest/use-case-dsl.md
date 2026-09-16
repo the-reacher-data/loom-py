@@ -513,7 +513,11 @@ UPDATE_NORMALIZE_PRICE = (
 ## Rule — validate before execute
 
 Rules run after all computes. A failing rule raises a structured 422 response
-before `execute()` is called.
+before `execute()` is called. A body that fails to convert into the `Command`
+in the first place — a wrong field type, a missing required field — never
+reaches a rule: it answers its own 422 with `code: "boundary_validation"` and
+a `violations` list shaped the same way (`{field, message}` pairs, `field`
+being the wire name the client sent).
 
 ### Rule.check — field validation
 

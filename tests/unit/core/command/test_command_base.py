@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-import msgspec
 import pytest
 
 from loom.core.command import Command, Computed, Internal, Patch
+from loom.core.model import BoundaryValidationError
 
 
 class CreateUser(Command, frozen=True):
@@ -67,7 +67,7 @@ class TestCommandFromPayload:
         assert fields_set == frozenset({"email", "name"})
 
     def test_missing_required_field_raises(self) -> None:
-        with pytest.raises(msgspec.ValidationError):
+        with pytest.raises(BoundaryValidationError):
             CreateUser.from_payload({"email": "a@b.com"})
 
     def test_fields_set_tracks_payload_keys(self) -> None:

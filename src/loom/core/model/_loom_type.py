@@ -2,8 +2,8 @@
 
 A :class:`LoomType` is what a boundary carries once compiled: it validates
 JSON strictly, builds the typed value in the same pass and turns a value
-back into JSON-mode builtins. Agent output, agent state, the cache and MCP
-results are served this way; REST is a later slice. The two implementations
+back into JSON-mode builtins. Agent output, agent state, the cache, MCP
+results and REST are all served this way. The two implementations
 are private to this module, so no other module calls ``msgspec.json.Decoder``
 or ``pydantic.TypeAdapter`` on a boundary value; the library is decided once,
 at compile time, and every consumer that needs to branch on it afterwards
@@ -19,6 +19,7 @@ class untyped: this module never names ``pydantic.BaseModel``, and loom's own
 from __future__ import annotations
 
 import functools
+import re
 import sys
 import typing
 from collections.abc import Callable, Mapping
@@ -26,6 +27,7 @@ from typing import Any, Literal, Protocol
 
 import msgspec
 
+from loom.core.errors.codes import ErrorCode
 from loom.core.errors.errors import LoomError
 
 _LAX_TYPE_REASON = (
@@ -91,10 +93,13 @@ class BoundaryValidationError(LoomError, ValueError):
 
     Args:
         message: One-line description of the failure.
+        violations: ``(field, message)`` pairs, one per failed field. Empty
+            when the caller has no per-field breakdown to offer.
     """
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message, code="boundary_validation")
+    def __init__(self, message: str, violations: tuple[tuple[str, str], ...] = ()) -> None:
+        super().__init__(message, code=ErrorCode.BOUNDARY_VALIDATION)
+        self.violations = violations
 
 
 class UnsupportedBoundaryType(LoomError):
@@ -290,7 +295,8 @@ class _MsgspecType:
         try:
             return self._decoder.decode(data)
         except (msgspec.ValidationError, msgspec.DecodeError) as exc:
-            raise BoundaryValidationError(str(exc)) from exc
+            text = str(exc)
+            raise BoundaryValidationError(text, (_msgspec_violation(text),)) from exc
 
     def to_builtins(self, obj: Any, /) -> Any:
         return msgspec.to_builtins(obj)
@@ -299,7 +305,8 @@ class _MsgspecType:
         try:
             return msgspec.convert(payload, self.type)
         except msgspec.ValidationError as exc:
-            raise BoundaryValidationError(str(exc)) from exc
+            text = str(exc)
+            raise BoundaryValidationError(text, (_msgspec_violation(text),)) from exc
 
 
 class _PydanticType:
@@ -320,7 +327,9 @@ class _PydanticType:
         try:
             return self._adapter.validate_json(data, strict=True)
         except self._validation_error as exc:
-            raise BoundaryValidationError(_pydantic_message(exc)) from exc
+            violations = _pydantic_violations(exc)
+            message = "; ".join(f"{field}: {msg}" for field, msg in violations)
+            raise BoundaryValidationError(message, violations) from exc
 
     def to_builtins(self, obj: Any, /) -> Any:
         return self._adapter.dump_python(obj, mode="json", by_alias=True)
@@ -329,11 +338,44 @@ class _PydanticType:
         try:
             return self._adapter.validate_python(payload)
         except self._validation_error as exc:
-            raise BoundaryValidationError(_pydantic_message(exc)) from exc
+            violations = _pydantic_violations(exc)
+            message = "; ".join(f"{field}: {msg}" for field, msg in violations)
+            raise BoundaryValidationError(message, violations) from exc
 
 
-def _pydantic_message(exc: Any) -> str:
-    return "; ".join(
-        f"{'.'.join(map(str, error['loc'])) or '$'}: {error['msg']}"
+def _pydantic_violations(exc: Any) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        ("body" if not error["loc"] else ".".join(map(str, error["loc"])), error["msg"])
         for error in exc.errors(include_url=False, include_input=False)
     )
+
+
+_MSGSPEC_AT_SUFFIX = re.compile(r"^(.*) - at (?:`key` in )?`\$(.*)`$")
+_MSGSPEC_FIELD = re.compile(r"(?:missing required|contains unknown) field `([^`]+)`")
+_MSGSPEC_ARRAY_INDEX = re.compile(r"\[(\d+)\]")
+
+
+def _msgspec_violation(text: str) -> tuple[str, str]:
+    """Parse a msgspec validation message into a ``(field, message)`` violation.
+
+    Args:
+        text: The one-line message a msgspec ``ValidationError`` carries.
+
+    Returns:
+        The violation's field (``"body"`` when the message names none) and
+        the message with any trailing ``- at ...`` location stripped.
+    """
+    at_match = _MSGSPEC_AT_SUFFIX.match(text)
+    message = at_match.group(1) if at_match else text
+    path = None
+    if at_match is not None:
+        path = at_match.group(2)
+        path = path.replace("[...]", "")
+        path = _MSGSPEC_ARRAY_INDEX.sub(r".\1", path)
+        path = path.removeprefix(".")
+
+    field_match = _MSGSPEC_FIELD.search(message)
+    named_field = field_match.group(1) if field_match else None
+
+    field = ".".join(part for part in (path, named_field) if part) or "body"
+    return field, message

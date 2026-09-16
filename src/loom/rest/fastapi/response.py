@@ -7,7 +7,9 @@ exactly once.
 
 Supports any type that ``msgspec.json.encode`` accepts: plain Python types
 (``dict``, ``list``, ``str``, ``int``, etc.), ``msgspec.Struct`` instances,
-and ``dataclasses``.
+and ``dataclasses``. A type msgspec declines — a strict ``pydantic.BaseModel``
+result, a ``list`` of them, or an envelope holding one — falls through to
+``enc_hook``, which renders it through the loom type instead.
 
 Usage::
 
@@ -21,8 +23,12 @@ Usage::
 
 from __future__ import annotations
 
+from typing import Any
+
 import msgspec
 from starlette.responses import Response
+
+from loom.core.model import UnsupportedBoundaryType, loom_type_of
 
 
 class MsgspecJSONResponse(Response):
@@ -57,5 +63,29 @@ class MsgspecJSONResponse(Response):
 
         Returns:
             UTF-8 encoded JSON bytes.
+
+        Raises:
+            TypeError: ``content``, or a value nested inside it, is a type
+                neither msgspec nor pydantic can render.
+            pydantic_core.PydanticSerializationError: A nested
+                ``pydantic.BaseModel`` fails its own serialisation; pydantic
+                raises it directly and it propagates unchanged.
         """
-        return msgspec.json.encode(content)
+        return msgspec.json.encode(content, enc_hook=_to_builtins)
+
+
+def _to_builtins(obj: Any) -> Any:
+    """Render a type ``msgspec.json.encode`` cannot handle on its own.
+
+    Runs only for a type msgspec declines — a strict ``pydantic.BaseModel``
+    nested inside the response, most often — so a Struct, a builtin or
+    ``None`` keeps paying for a single encode pass.
+
+    Raises:
+        TypeError: ``obj``'s type is not a boundary type either library
+            knows how to render.
+    """
+    try:
+        return loom_type_of(type(obj)).to_builtins(obj)
+    except UnsupportedBoundaryType as exc:
+        raise TypeError(str(exc)) from exc

@@ -13,6 +13,7 @@ from typing import (
 import msgspec
 
 from loom.core.command.field import CommandField
+from loom.core.model import loom_type_of
 
 
 class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True, rename="camel"):
@@ -52,7 +53,7 @@ class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True, ren
             internal_to_external=internal_to_external,
         )
 
-        instance = msgspec.convert(normalized, cls)
+        instance = loom_type_of(cls).from_builtins(normalized)
         return instance, fields_set
 
 

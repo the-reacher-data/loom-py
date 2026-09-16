@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 
 import msgspec
+import pydantic
+import pytest
 
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
@@ -16,6 +18,17 @@ from loom.rest.fastapi.response import MsgspecJSONResponse
 class _Item(msgspec.Struct):
     id: int
     name: str
+
+
+class _ItemModel(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+
+
+class _Unsupported:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +88,40 @@ def test_render_list_of_structs() -> None:
     r = MsgspecJSONResponse(content=items)
     data = json.loads(bytes(r.body))
     assert data == [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
+
+
+# ---------------------------------------------------------------------------
+# render — pydantic.BaseModel, through the loom type's enc_hook
+# ---------------------------------------------------------------------------
+
+
+def test_render_basemodel() -> None:
+    model = _ItemModel(id=1, name="Widget")
+    r = MsgspecJSONResponse(content=model)
+    data = json.loads(bytes(r.body))
+    assert data == {"id": 1, "name": "Widget"}
+
+
+def test_render_list_of_basemodels() -> None:
+    models = [_ItemModel(id=1, name="A"), _ItemModel(id=2, name="B")]
+    r = MsgspecJSONResponse(content=models)
+    data = json.loads(bytes(r.body))
+    assert data == [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
+
+
+def test_render_envelope_holding_a_basemodel() -> None:
+    class _Envelope(msgspec.Struct):
+        item: _ItemModel
+
+    r = MsgspecJSONResponse(content=_Envelope(item=_ItemModel(id=1, name="Widget")))
+    data = json.loads(bytes(r.body))
+    assert data == {"item": {"id": 1, "name": "Widget"}}
+
+
+def test_render_an_unsupported_type_raises_type_error() -> None:
+    r = MsgspecJSONResponse(content={})
+    with pytest.raises(TypeError):
+        r.render(_Unsupported())
 
 
 # ---------------------------------------------------------------------------
