@@ -350,9 +350,29 @@ def _pydantic_violations(exc: Any) -> tuple[tuple[str, str], ...]:
     )
 
 
-_MSGSPEC_AT_SUFFIX = re.compile(r"^(.*) - at (?:`key` in )?`\$(.*)`$")
+_MSGSPEC_AT_MARKER = " - at `"
+_MSGSPEC_AT_KEY_IN_PREFIX = "key` in `"
 _MSGSPEC_FIELD = re.compile(r"(?:missing required|contains unknown) field `([^`]+)`")
 _MSGSPEC_ARRAY_INDEX = re.compile(r"\[(\d+)\]")
+
+
+def _msgspec_at_path(text: str) -> tuple[str, str | None]:
+    """Split *text* into its message and trailing ``- at ...`` path, if any.
+
+    Uses plain string operations rather than a backtracking-prone regular
+    expression, since the location suffix is a fixed literal shape rather
+    than a pattern worth expressing declaratively.
+    """
+    marker_index = text.rfind(_MSGSPEC_AT_MARKER)
+    if marker_index == -1:
+        return text, None
+
+    suffix = text[marker_index + len(_MSGSPEC_AT_MARKER) :]
+    suffix = suffix.removeprefix(_MSGSPEC_AT_KEY_IN_PREFIX)
+    if not suffix.startswith("$") or not suffix.endswith("`"):
+        return text, None
+
+    return text[:marker_index], suffix[1:-1]
 
 
 def _msgspec_violation(text: str) -> tuple[str, str]:
@@ -365,11 +385,8 @@ def _msgspec_violation(text: str) -> tuple[str, str]:
         The violation's field (``"body"`` when the message names none) and
         the message with any trailing ``- at ...`` location stripped.
     """
-    at_match = _MSGSPEC_AT_SUFFIX.match(text)
-    message = at_match.group(1) if at_match else text
-    path = None
-    if at_match is not None:
-        path = at_match.group(2)
+    message, path = _msgspec_at_path(text)
+    if path is not None:
         path = path.replace("[...]", "")
         path = _MSGSPEC_ARRAY_INDEX.sub(r".\1", path)
         path = path.removeprefix(".")

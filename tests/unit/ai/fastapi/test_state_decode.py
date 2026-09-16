@@ -68,8 +68,9 @@ class TestNoStateGiven:
 
 class TestStateAgainstNoDeclaredShape:
     def test_refuses_with_422_naming_the_agent(self) -> None:
+        payload = _raw(b'{"marca": "civic"}')
         with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, None, _raw(b'{"marca": "civic"}'))
+            _decode_state(_AGENT, None, payload)
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "STATE_NOT_DECLARED"
@@ -99,16 +100,18 @@ class TestStateAgainstASchemaShape:
     def test_malformed_bytes_are_refused_with_422_before_any_provider_call(
         self, shape: StateShape
     ) -> None:
+        payload = _raw(b"not json")
         with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, shape, _raw(b"not json"))
+            _decode_state(_AGENT, shape, payload)
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"
 
     def test_an_undeclared_field_is_refused_not_dropped(self, shape: StateShape) -> None:
         """The compiled decoder forbids unknown fields, matching the output side (FR-017)."""
+        payload = _raw(b'{"marca": "civic", "extra": 1}')
         with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, shape, _raw(b'{"marca": "civic", "extra": 1}'))
+            _decode_state(_AGENT, shape, payload)
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"
@@ -121,8 +124,9 @@ class TestStateAgainstASchemaShape:
         payload present but missing ``marca`` is refused the same coded way
         as malformed bytes rather than raising uncaught.
         """
+        payload = _raw(b"{}")
         with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, _SCHEMA_SHAPE, _raw(b"{}"))
+            _decode_state(_AGENT, _SCHEMA_SHAPE, payload)
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"
@@ -135,8 +139,9 @@ class TestStateAgainstTheOpenDictShape:
         assert state == {"anything": "goes"}
 
     def test_malformed_bytes_are_refused_with_422(self) -> None:
+        payload = _raw(b"not json")
         with pytest.raises(TransportError) as excinfo:
-            _decode_state(_AGENT, _OPEN_SHAPE, _raw(b"not json"))
+            _decode_state(_AGENT, _OPEN_SHAPE, payload)
 
         assert excinfo.value.status_code == 422
         assert excinfo.value.code == "INVALID_STATE"

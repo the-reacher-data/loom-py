@@ -130,23 +130,26 @@ class TestDecodeJson:
         ids=["int-from-str", "int-from-float", "float-from-str", "bool-from-str", "bool-from-int"],
     )
     def test_rejects_scalar_coercion(self, invoice: LoomType, field: str, wrong: Any) -> None:
+        body = _with(**{field: wrong})
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(_with(**{field: wrong}))
+            invoice.decode_json(body)
 
         assert field in str(excinfo.value)
 
     def test_rejects_an_unknown_key(self, invoice: LoomType) -> None:
+        body = _with(zz=1)
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(_with(zz=1))
+            invoice.decode_json(body)
 
         assert "zz" in str(excinfo.value)
 
     def test_rejects_a_missing_field(self, invoice: LoomType) -> None:
         payload = dict(_PAYLOAD)
         del payload["note"]
+        body = json.dumps(payload)
 
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(json.dumps(payload))
+            invoice.decode_json(body)
 
         assert "note" in str(excinfo.value)
 
@@ -157,8 +160,9 @@ class TestDecodeJson:
     def test_error_carries_the_library_error_and_a_one_line_message(
         self, invoice: LoomType
     ) -> None:
+        body = _with(total="5", zz=1)
         with pytest.raises(BoundaryValidationError) as excinfo:
-            invoice.decode_json(_with(total="5", zz=1))
+            invoice.decode_json(body)
 
         error = excinfo.value
         assert error.code == "boundary_validation"

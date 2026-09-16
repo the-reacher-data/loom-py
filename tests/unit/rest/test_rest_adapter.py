@@ -376,9 +376,10 @@ class TestLoomRestAdapterBoundaryValidation:
     async def test_a_bad_field_maps_to_422_with_violations(self) -> None:
         adapter = LoomRestAdapter(_real_executor(_CreateItemUseCase))
         request = AdapterRequest(params={}, payload={"fullName": 12})
+        use_case = _CreateItemUseCase()
 
         with pytest.raises(HTTPException) as exc_info:
-            await adapter.handle(_CreateItemUseCase(), request)
+            await adapter.handle(use_case, request)
 
         assert exc_info.value.status_code == 422
         detail = _detail(exc_info.value)

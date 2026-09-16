@@ -120,8 +120,9 @@ def test_render_envelope_holding_a_basemodel() -> None:
 
 def test_render_an_unsupported_type_raises_type_error() -> None:
     r = MsgspecJSONResponse(content={})
+    unsupported = _Unsupported()
     with pytest.raises(TypeError):
-        r.render(_Unsupported())
+        r.render(unsupported)
 
 
 # ---------------------------------------------------------------------------

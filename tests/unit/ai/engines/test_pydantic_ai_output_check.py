@@ -105,7 +105,8 @@ class TestOnRejectionTheEngineRetries:
         assert len(seen_by_model) == 2
         retried_request = seen_by_model[1][-1]
         retry_parts = [part for part in retried_request.parts if isinstance(part, RetryPromptPart)]
-        assert retry_parts and "answer must be 'good'" in retry_parts[0].content
+        assert retry_parts
+        assert "answer must be 'good'" in retry_parts[0].content
 
     async def test_the_retry_budget_is_bounded_by_retries(self) -> None:
         seen_by_check: list[Mapping[str, Any]] = []
