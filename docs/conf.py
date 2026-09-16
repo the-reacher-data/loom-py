@@ -156,6 +156,8 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
 }
 
+suppress_warnings = ["ref.python"]
+
 # Optional dependencies are mocked to keep docs builds lightweight and stable.
 autodoc_mock_imports = [
     "aiocache",

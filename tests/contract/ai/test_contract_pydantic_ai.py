@@ -21,6 +21,7 @@ from loom.ai.abc import AgentEngine, FinalEvent
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.runtime import AgentRunError
 from loom.core.identity import Identity
+from loom.core.model import LoomType
 from loom.testing import ContractScenario, agent_engine_contract_suite
 from tests.helpers.pydantic_ai_engine import (
     STRICT_SCHEMA,
@@ -103,9 +104,9 @@ class TestSerializationPasses:
     ) -> None:
         """One loom-side decode of the payload, zero loom-side encodes."""
         plan = make_plan(schema=STRICT_SCHEMA)
-        decoder = _CountingDecoder(plan.output.decoder)
+        decoder = _CountingDecoder(plan.output.loom_type)
         plan = msgspec.structs.replace(
-            plan, output=msgspec.structs.replace(plan.output, decoder=decoder)
+            plan, output=msgspec.structs.replace(plan.output, loom_type=decoder)
         )
         engine = build_engine(plan, answering_model(encode({"answer": "ok"})))
         encodes = _count_encodes(monkeypatch)
@@ -120,9 +121,9 @@ class TestSerializationPasses:
     ) -> None:
         """A streamed run decodes the answer once, when it terminates."""
         plan = make_plan(schema=STRICT_SCHEMA)
-        decoder = _CountingDecoder(plan.output.decoder)
+        decoder = _CountingDecoder(plan.output.loom_type)
         plan = msgspec.structs.replace(
-            plan, output=msgspec.structs.replace(plan.output, decoder=decoder)
+            plan, output=msgspec.structs.replace(plan.output, loom_type=decoder)
         )
         engine = build_engine(plan, answering_model(encode({"answer": "ok"})))
         encodes = _count_encodes(monkeypatch)
@@ -136,15 +137,23 @@ class TestSerializationPasses:
 
 
 class _CountingDecoder:
-    """Decoder proxy counting the passes loom makes over the payload."""
+    """``LoomType`` proxy counting the decode passes loom makes over the payload."""
 
-    def __init__(self, inner: msgspec.json.Decoder[Any]) -> None:
+    def __init__(self, inner: LoomType) -> None:
         self._inner = inner
+        self.type = inner.type
+        self.library = inner.library
         self.decodes = 0
 
-    def decode(self, buf: str | bytes) -> Any:
+    def schema(self) -> Mapping[str, Any]:
+        return self._inner.schema()
+
+    def decode_json(self, data: bytes | str, /) -> Any:
         self.decodes += 1
-        return self._inner.decode(buf)
+        return self._inner.decode_json(data)
+
+    def to_builtins(self, obj: Any, /) -> Any:
+        return self._inner.to_builtins(obj)
 
 
 def _count_encodes(monkeypatch: pytest.MonkeyPatch) -> list[str]:

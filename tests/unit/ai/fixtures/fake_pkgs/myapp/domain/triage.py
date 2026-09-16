@@ -26,6 +26,12 @@ class TriageReport(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fie
     alerts: list[str] = []
 
 
+TriageCounts = dict[str, int]
+"""A container alias, not a class: a ``deps_type`` resolving to this compiles
+through ``msgspec.json.schema()`` directly, the way it did before
+``loom_type`` existed (FR-007)."""
+
+
 class TriageRecorded(msgspec.Struct, frozen=True):
     """Result of recording one triage."""
 

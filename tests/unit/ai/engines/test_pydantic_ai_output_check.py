@@ -21,7 +21,7 @@ and :class:`~loom.ai.engines.pydantic_ai._engine.PydanticAIEngine` — against a
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from typing import Any
 from unittest.mock import patch
 
@@ -29,15 +29,7 @@ import msgspec
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai._agent_graph import GraphAgentState
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelResponse,
-    RetryPromptPart,
-    TextPart,
-    ToolCallPart,
-)
-from pydantic_ai.models import Model
-from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
+from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, ToolCallPart
 from pydantic_ai.run import AgentRunResult
 from pydantic_ai.toolsets import FunctionToolset
 
@@ -55,6 +47,9 @@ from tests.helpers.pydantic_ai_engine import (
     compiled_output,
     encode,
     make_plan,
+    native_text_model,
+    prose_model,
+    tool_model,
 )
 
 _IDENTITY = Identity(subject="caller")
@@ -84,67 +79,6 @@ def _always_reject(seen: list[Mapping[str, Any]]) -> Any:
     return check
 
 
-def _tool_model(payloads: list[bytes], seen: list[list[ModelMessage]]) -> Model:
-    """A model answering one payload per call, by an output-tool call."""
-    calls = {"n": -1}
-
-    def _payload() -> bytes:
-        calls["n"] += 1
-        return payloads[min(calls["n"], len(payloads) - 1)]
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        seen.append(list(messages))
-        tool = info.output_tools[0].name
-        return ModelResponse(parts=[ToolCallPart(tool_name=tool, args=_payload().decode())])
-
-    async def stream(
-        messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[DeltaToolCalls]:
-        seen.append(list(messages))
-        tool = info.output_tools[0].name
-        yield {0: DeltaToolCall(name=tool, json_args=_payload().decode(), tool_call_id="call")}
-
-    return FunctionModel(respond, stream_function=stream)
-
-
-def _native_text_model(payloads: list[bytes]) -> Model:
-    """A model answering one payload per call, as a text part (native output)."""
-    calls = {"n": -1}
-
-    def _payload() -> str:
-        calls["n"] += 1
-        return payloads[min(calls["n"], len(payloads) - 1)].decode()
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages, info
-        return ModelResponse(parts=[TextPart(content=_payload())])
-
-    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
-        del messages, info
-        yield _payload()
-
-    return FunctionModel(respond, stream_function=stream)
-
-
-def _prose_model() -> Model:
-    """A model that answers free text, never a structured tool call.
-
-    Free prose has no JSON shape at all, so it can only be served by a
-    per-run ``output_type=str`` override — the strongest possible witness
-    that a call is running unshaped.
-    """
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages, info
-        return ModelResponse(parts=[TextPart(content=_PROSE)])
-
-    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
-        del messages, info
-        yield _PROSE
-
-    return FunctionModel(respond, stream_function=stream)
-
-
 def _python_capability() -> CompiledPythonCapability:
     """A minimal granted toolset, enough to make a plan capability-bearing."""
 
@@ -162,7 +96,7 @@ class TestOnRejectionTheEngineRetries:
         seen_by_check: list[Mapping[str, Any]] = []
         seen_by_model: list[list[ModelMessage]] = []
         plan = make_plan(retries=2, output_check=_reject_until_good(seen_by_check))
-        engine = build_engine(plan, _tool_model([_BAD, _GOOD], seen_by_model))
+        engine = build_engine(plan, tool_model([_BAD, _GOOD], seen_by_model))
 
         result = await engine.run("hi", identity=_IDENTITY)
 
@@ -177,7 +111,7 @@ class TestOnRejectionTheEngineRetries:
         seen_by_check: list[Mapping[str, Any]] = []
         seen_by_model: list[list[ModelMessage]] = []
         plan = make_plan(retries=1, output_check=_always_reject(seen_by_check))
-        engine = build_engine(plan, _tool_model([_BAD], seen_by_model))
+        engine = build_engine(plan, tool_model([_BAD], seen_by_model))
 
         with pytest.raises(AgentRunError) as excinfo:
             await engine.run("hi", identity=_IDENTITY)
@@ -201,7 +135,7 @@ class TestOnRejectionTheEngineRetries:
         seen_by_model: list[list[ModelMessage]] = []
         plan = make_plan(retries=1, output_check=_reject_until_good(seen_by_check))
         plan = msgspec.structs.replace(plan, capabilities=(_python_capability(),))
-        engine = build_engine(plan, _tool_model([_BAD, _GOOD], seen_by_model))
+        engine = build_engine(plan, tool_model([_BAD, _GOOD], seen_by_model))
         assert isinstance(engine, PydanticAIEngine)
 
         result = await engine.run("hi", identity=_IDENTITY)
@@ -239,7 +173,7 @@ class TestNativeModeWithholdsARejectedAttempt:
         plan = make_plan(
             retries=1, output_check=_reject_until_good(seen_by_check), inference=inference
         )
-        engine = build_engine(plan, _native_text_model([_BAD, _GOOD]))
+        engine = build_engine(plan, native_text_model([_BAD, _GOOD]))
 
         async with engine.run_stream("hi", identity=_IDENTITY) as events:
             collected = [event async for event in events]
@@ -251,7 +185,7 @@ class TestNativeModeWithholdsARejectedAttempt:
     async def test_an_artefact_with_no_check_is_unaffected(self) -> None:
         inference = InferenceTarget(provider="openai", model="gpt-5.2", output_mode="native")
         plan = make_plan(inference=inference)
-        engine = build_engine(plan, _native_text_model([_GOOD]))
+        engine = build_engine(plan, native_text_model([_GOOD]))
 
         async with engine.run_stream("hi", identity=_IDENTITY) as events:
             collected = [event async for event in events]
@@ -289,7 +223,7 @@ class TestARunLevelShapeOverrideSurvivesAnArtefactsOwnOutputCheck:
     ) -> None:
         seen_by_check: list[Mapping[str, Any]] = []
         plan = make_plan(retries=1, output_check=_always_reject(seen_by_check))
-        engine = build_engine(plan, _prose_model())
+        engine = build_engine(plan, prose_model())
         assert isinstance(engine, PydanticAIEngine)
 
         async with engine.run_stream_shaped("hi", identity=_IDENTITY, output_type=str) as events:
@@ -304,7 +238,7 @@ class TestARunLevelShapeOverrideSurvivesAnArtefactsOwnOutputCheck:
         seen_by_check: list[Mapping[str, Any]] = []
         seen_by_model: list[list[ModelMessage]] = []
         plan = make_plan(retries=1, output_check=_reject_until_good(seen_by_check))
-        engine = build_engine(plan, _tool_model([_BAD, _GOOD], seen_by_model))
+        engine = build_engine(plan, tool_model([_BAD, _GOOD], seen_by_model))
 
         result = await engine.run("hi", identity=_IDENTITY)
 

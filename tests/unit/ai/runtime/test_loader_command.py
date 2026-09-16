@@ -21,6 +21,7 @@ from loom.ai.runtime._conversation import _as_history, loader_command
 from loom.core.command import Command
 from loom.core.errors import Forbidden
 from loom.core.identity import Identity
+from loom.core.model import msgspec_type
 
 _ALL_NAMES = frozenset(CONVERSATION_CONTEXT_FIELDS)
 _DENIED_MESSAGE = "the caller is not allowed to perform this operation"
@@ -37,7 +38,7 @@ def _plan() -> AgentPlan:
         instructions=(CompiledInstruction(text="answer"),),
         spec_version=1,
         inference=InferenceTarget(provider="fake", model="fake-model"),
-        output=CompiledOutput(schema={"type": "object"}, decoder=msgspec.json.Decoder(dict)),
+        output=CompiledOutput(schema={"type": "object"}, loom_type=msgspec_type(dict)),
         capabilities=(),
         policies=PolicySpec(),
         metadata={},

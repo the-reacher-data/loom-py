@@ -37,6 +37,8 @@ from loom.ai._transport import (
     TransportError,
     always_closed,
     annotate_usage,
+    project_output,
+    projecting_final,
     read_body_capped,
     require_caller,
 )
@@ -55,7 +57,7 @@ from loom.ai.fastapi.streaming import encode_sse_event, stream_sse
 from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
 from loom.core.identity import Identity, current_identity
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import BoundaryValidationError, LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.observability.span import LoomSpan
@@ -170,10 +172,10 @@ def _decode_state(
             when the caller sent none.
 
     Returns:
-        ``None`` when *raw* is absent. Otherwise the decoded value converted
-        to builtins (:func:`msgspec.to_builtins`) — the normalised mapping
-        the bundle carries (FR-009) — decoded against *state_shape*'s own
-        decoder when it has one, or as a plain JSON value under the open
+        ``None`` when *raw* is absent. Otherwise the normalised mapping the
+        bundle carries (FR-009): *state_shape*'s own
+        :class:`~loom.core.model.LoomType` decoded and turned to builtins
+        when it has one, or a plain JSON value under the open
         ``deps_type: dict`` form.
 
     Raises:
@@ -191,15 +193,16 @@ def _decode_state(
             "remove 'state' from the request or declare a state shape on the artefact",
         )
     body = bytes(raw)
+    if state_shape.loom_type is None:
+        try:
+            return cast(Mapping[str, Any], msgspec.json.decode(body))
+        except msgspec.DecodeError as exc:
+            raise TransportError(422, "INVALID_STATE", str(exc)) from exc
     try:
-        decoded = (
-            state_shape.decoder.decode(body)
-            if state_shape.decoder is not None
-            else msgspec.json.decode(body)
-        )
-    except msgspec.DecodeError as exc:
+        decoded = state_shape.loom_type.decode_json(body)
+    except BoundaryValidationError as exc:
         raise TransportError(422, "INVALID_STATE", str(exc)) from exc
-    return cast(Mapping[str, Any], msgspec.to_builtins(decoded))
+    return cast(Mapping[str, Any], state_shape.loom_type.to_builtins(decoded))
 
 
 async def _read_request(
@@ -349,6 +352,7 @@ def _make_run_handler(
             # closing attributes are where an operator reads what it spent.
             with always_closed(span), span.as_current():
                 result = await _annotated_run(runtime, span, name, body, identity, state)
+            result = project_output(result, runtime.output_type(name))
             return AgentJSONResponse(content=result_payload(result))
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
@@ -377,7 +381,7 @@ async def _annotating_usage(
         span: Open span of the run, closed by its owner.
 
     Yields:
-        Every event, unchanged and in order.
+        Every event, unchanged, in order.
     """
     async for event in events:
         if isinstance(event, FinalEvent | ErrorEvent):
@@ -430,8 +434,10 @@ def _stream_frames(
                     conversation_id=body.conversation_id,
                     state=state,
                 ) as events:
+                    projected_events = projecting_final(events, runtime.output_type(name))
                     async for frame in stream_sse(
-                        _annotating_usage(events, span), heartbeat_ms=HEARTBEAT_MS
+                        _annotating_usage(projected_events, span),
+                        heartbeat_ms=HEARTBEAT_MS,
                     ):
                         yield frame
             except AgentRunError as exc:

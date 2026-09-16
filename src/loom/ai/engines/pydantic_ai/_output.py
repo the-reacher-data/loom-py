@@ -1,13 +1,23 @@
-"""Output validation at the engine boundary — one decode, zero encodes.
+"""Output validation at the engine boundary for a ``msgspec.Struct`` plan — one decode.
 
-pydantic-ai's ``output_schema`` instructs the model and returns a plain
-dictionary **without runtime validation** (research R-004), so loom validates.
-It does so with the decoder the compiler already built, over the model's raw
-JSON bytes: :meth:`msgspec.json.Decoder.decode` fuses validation and
-construction into a single pass, which is what invariant 5 requires.
-``msgspec.convert()`` over a mapping is never used here — walking a second
-object graph for the same payload is the double pass the performance rules
-forbid.
+This module serves the ``msgspec.Struct`` output path only. pydantic-ai's
+``output_schema`` instructs the model and returns a plain dictionary
+**without runtime validation** (research R-004), so loom validates. It does
+so with the :class:`~loom.core.model.LoomType` the compiler already built,
+over the model's raw JSON bytes: :meth:`~loom.core.model.LoomType.decode_json`
+fuses validation and construction into a single pass, which is what
+invariant 5 requires for this path. ``msgspec.convert()`` over a mapping is
+never used here — walking a second object graph for the same payload is the
+double pass the performance rules forbid.
+
+A pydantic output satisfies invariant 5 differently and never reaches this
+module (D7, FR-012): the compiled model class is pydantic-ai's own
+``output_type``, so pydantic-ai validates the answer, feeds a rejection back
+to the model and retries, entirely on its own side — zero loom decodes. The
+engine reads that answer straight off ``result.output``
+(:class:`~loom.ai.engines.pydantic_ai._engine.PydanticAIEngine`'s
+``self._answer``) and projects it to builtins once, at the wire, exactly as
+it projects a ``msgspec.Struct`` answer.
 
 **Where the bytes come from.** The engine keeps the provider's own payload in
 the final ``ModelResponse``: the output tool call's ``args``, or the text part
@@ -33,12 +43,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import msgspec
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 
 from loom.ai.compiler import CompiledOutput
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
+from loom.core.model import BoundaryValidationError
 
 
 class MissingOutputPayload(Exception):
@@ -81,11 +91,11 @@ def decode_output(output: CompiledOutput, result: AgentRunResult[Any]) -> object
     """Validate and build the answer in one pass over the model's bytes.
 
     Args:
-        output: Compiled output contract carrying the pre-built decoder.
+        output: Compiled output contract carrying the pre-built boundary type.
         result: Completed engine run.
 
     Returns:
-        The validated answer, built by the decoder the plan carries.
+        The validated answer, built by :meth:`~loom.core.model.LoomType.decode_json`.
 
     Raises:
         AgentRunError: With ``OUTPUT_SCHEMA_VIOLATION`` when the model's
@@ -94,8 +104,8 @@ def decode_output(output: CompiledOutput, result: AgentRunResult[Any]) -> object
     """
     try:
         raw = raw_output(result)
-        return output.decoder.decode(raw)
-    except (msgspec.ValidationError, msgspec.DecodeError, MissingOutputPayload) as exc:
+        return output.loom_type.decode_json(raw)
+    except (BoundaryValidationError, MissingOutputPayload) as exc:
         raise AgentRunError(
             AgentRunErrorCode.OUTPUT_SCHEMA_VIOLATION,
             f"the model's answer does not satisfy the declared output shape: {exc}",

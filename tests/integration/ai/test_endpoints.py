@@ -53,12 +53,14 @@ from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
 from loom.core.errors import Forbidden
 from loom.core.identity import ANONYMOUS, Identity, reset_identity, set_identity
+from loom.core.model import loom_type, msgspec_type
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
+    OUTPUT_TWINS,
     ConversationRecorder,
     CountingEngineProvider,
     RecordingDepsFactory,
@@ -75,6 +77,7 @@ from tests.integration.ai.conftest import (
     make_mcp_servers,
     make_plan,
     mcp_client_factory,
+    plan_with_output,
 )
 
 _AGENT = "analyst"
@@ -962,10 +965,8 @@ class _StateWithDefault(msgspec.Struct, forbid_unknown_fields=True):
     km: int = 0
 
 
-_SCHEMA_STATE = StateShape(
-    schema={"type": "object"}, decoder=msgspec.json.Decoder(_StateWithDefault)
-)
-_OPEN_STATE = StateShape(schema=None, decoder=None)
+_SCHEMA_STATE = StateShape(schema={"type": "object"}, loom_type=msgspec_type(_StateWithDefault))
+_OPEN_STATE = StateShape(schema=None, loom_type=None)
 
 
 class TestState:
@@ -1188,6 +1189,59 @@ class TestStream:
             response = await client.post(f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p"})
 
             assert _sse_names(response.text) == ["text_delta", "error"]
+
+
+@pytest.mark.parametrize(("library", "cls", "answer"), OUTPUT_TWINS)
+class TestOutputProjection:
+    """``/run`` and the SSE ``final`` frame carry the answer as builtins (SC-001)."""
+
+    async def test_run_body_carries_the_hook_payload(
+        self,
+        deps: StubDepsFactory,
+        container: LoomContainer,
+        identity: Identity,
+        library: str,
+        cls: type[Any],
+        answer: object,
+    ) -> None:
+        """The ``/run`` body's ``output`` is a JSON object equal to the hook payload."""
+        del library
+        plan = plan_with_output(cls, name=_AGENT)
+        engine = ScriptedEngine(script=(FinalEvent(output=answer, usage=DEFAULT_USAGE),))
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=(plan,),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+            assert response.json()["output"] == loom_type(cls).to_builtins(answer)
+
+    async def test_sse_final_carries_the_hook_payload(
+        self,
+        deps: StubDepsFactory,
+        container: LoomContainer,
+        identity: Identity,
+        library: str,
+        cls: type[Any],
+        answer: object,
+    ) -> None:
+        """The SSE ``final`` frame's ``output`` is a JSON object equal to the hook payload."""
+        del library
+        plan = plan_with_output(cls, name=_AGENT)
+        engine = ScriptedEngine(script=(FinalEvent(output=answer, usage=DEFAULT_USAGE),))
+        async with _serving(
+            deps=deps,
+            container=container,
+            identity=identity,
+            plans=(plan,),
+            engines={_AGENT: engine},
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p"})
+
+            assert _final_frame(response.text)["output"] == loom_type(cls).to_builtins(answer)
 
 
 class TestStreamTracing:

@@ -12,6 +12,7 @@ from typing import Any
 
 import msgspec
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from loom.ai.abc import StateShape
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
@@ -19,6 +20,7 @@ from loom.ai.runtime import AgentRuntime
 from loom.ai.runtime._handle import _BoundAgentHandle
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
+from loom.core.model import loom_type, msgspec_type
 from loom.core.sql.service import NullSqlQueryService
 from tests.integration.ai.conftest import (
     CountingEngineProvider,
@@ -39,7 +41,7 @@ class _DefaultedState(msgspec.Struct, forbid_unknown_fields=True):
     km: int = 0
 
 
-_SCHEMA_STATE = StateShape(schema={"type": "object"}, decoder=msgspec.json.Decoder(_DefaultedState))
+_SCHEMA_STATE = StateShape(schema={"type": "object"}, loom_type=msgspec_type(_DefaultedState))
 
 
 class _RequiredState(msgspec.Struct, forbid_unknown_fields=True):
@@ -50,7 +52,35 @@ class _RequiredState(msgspec.Struct, forbid_unknown_fields=True):
 
 _REQUIRED_SCHEMA_STATE = StateShape(
     schema={"type": "object", "properties": {"marca": {"type": "string"}}, "required": ["marca"]},
-    decoder=msgspec.json.Decoder(_RequiredState),
+    loom_type=msgspec_type(_RequiredState),
+)
+
+
+class _DefaultedPydanticState(BaseModel):
+    """A pydantic state shape whose every field carries a declared default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    marca: str = ""
+    km: int = 0
+
+
+_PYDANTIC_SCHEMA_STATE = StateShape(
+    schema={"type": "object"}, loom_type=loom_type(_DefaultedPydanticState)
+)
+
+
+class _RequiredPydanticState(BaseModel):
+    """A pydantic state shape with one field carrying no declared default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    marca: str
+
+
+_REQUIRED_PYDANTIC_SCHEMA_STATE = StateShape(
+    schema={"type": "object", "properties": {"marca": {"type": "string"}}, "required": ["marca"]},
+    loom_type=loom_type(_RequiredPydanticState),
 )
 
 
@@ -107,18 +137,34 @@ class TestStateReachesTheEngine:
 
 
 class TestNoneStateOnAStatefulArtefact:
-    async def test_carries_the_shapes_declared_defaults_not_a_failure(self) -> None:
+    """A stateful artefact's own defaults fill in a ``None`` state, in either library."""
+
+    @pytest.mark.parametrize(
+        "shape", [_SCHEMA_STATE, _PYDANTIC_SCHEMA_STATE], ids=["msgspec", "pydantic"]
+    )
+    async def test_carries_the_shapes_declared_defaults_not_a_failure(
+        self, shape: StateShape
+    ) -> None:
         engine = RecordingScriptedEngine()
-        runtime = _runtime(make_plan(_AGENT, state=_SCHEMA_STATE), engine)
+        runtime = _runtime(make_plan(_AGENT, state=shape), engine)
         async with runtime:
             await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)
         assert engine.states == [{"marca": "", "km": 0}]
 
 
 class TestNoneStateAgainstARequiredField:
-    async def test_fails_coded_instead_of_crashing_with_a_raw_validation_error(self) -> None:
+    """A ``None`` state against a required field fails coded, in either library."""
+
+    @pytest.mark.parametrize(
+        "shape",
+        [_REQUIRED_SCHEMA_STATE, _REQUIRED_PYDANTIC_SCHEMA_STATE],
+        ids=["msgspec", "pydantic"],
+    )
+    async def test_fails_coded_instead_of_crashing_with_a_raw_validation_error(
+        self, shape: StateShape
+    ) -> None:
         engine = RecordingScriptedEngine()
-        runtime = _runtime(make_plan(_AGENT, state=_REQUIRED_SCHEMA_STATE), engine)
+        runtime = _runtime(make_plan(_AGENT, state=shape), engine)
         async with runtime:
             with pytest.raises(AgentRunError) as excinfo:
                 await runtime.run(_AGENT, "hola", identity=_AUTHENTICATED)

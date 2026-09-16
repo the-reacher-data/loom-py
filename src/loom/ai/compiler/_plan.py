@@ -8,8 +8,9 @@ the SQL connection config, the imported toolset factory — never names.
 Secret containment (invariant 4): the plan carries no literal secret.  The
 one secret-bearing struct it embeds, :class:`~loom.ai.inference.InferenceTarget`,
 redacts its references in ``repr`` and refuses msgspec encoding; the built
-decoder in :class:`CompiledOutput` is likewise not msgspec-encodable, so an
-accidental wire encode of a plan raises instead of leaking.
+:class:`~loom.core.model.LoomType` in :class:`CompiledOutput` is likewise not
+msgspec-encodable, so an accidental wire encode of a plan raises instead of
+leaking.
 
 The plan is only ever built in memory by the compiler; it is never decoded
 from JSON, which is why fields may hold arbitrary runtime handles.
@@ -26,27 +27,39 @@ from loom.ai.abc import OutputCheck, StateShape
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import LoomFrozenStruct, LoomType
 from loom.core.sql.config import SqlConnectionConfig
 
 
 class CompiledOutput(LoomFrozenStruct, frozen=True, kw_only=True):
-    """Structured-output contract with a decoder built at compile time.
+    """Structured-output contract with a :class:`~loom.core.model.LoomType` built at compile time.
 
     Interpreting the schema per response would be per-item reflection, so the
-    decoder is constructed exactly once, at compile (research R-004,
-    invariant 5).  The decode is strict: unknown fields are rejected, which is
-    what makes returning the validated bytes unchanged safe.
+    boundary type is constructed exactly once, at compile (research R-004,
+    invariant 5).  For a ``msgspec.Struct`` output the decode is strict —
+    unknown fields are rejected, which is what makes returning the validated
+    bytes unchanged safe. For a pydantic output invariant 5 is satisfied
+    differently (D7, FR-012): ``.type`` is handed to pydantic-ai itself as the
+    run's ``output_type``, so pydantic-ai — not loom — validates, retries and
+    builds the instance; loom never decodes that answer a second time.
 
     Attributes:
         schema: JSON Schema object handed to the model.
-        decoder: Built ``msgspec`` JSON decoder producing the answer type.
+        loom_type: Boundary type produced at compile, whichever library built
+            it (:func:`~loom.core.model.loom_type` for a ``type_ref``,
+            :func:`~loom.core.model.msgspec_type` for a ``json_schema``): the
+            start-up marker check (``ai/_startup.py``) reads ``.type``. The
+            engine reads it differently per library: for a ``msgspec.Struct``,
+            ``ai/engines/pydantic_ai/_output.py`` decodes the model's raw
+            bytes through ``.decode_json(bytes)``; for a pydantic model,
+            ``.type`` reaches ``Agent.from_spec(output_type=...)`` and the
+            engine reads the validated answer straight off
+            ``result.output``. ``.to_builtins`` projects either answer to
+            JSON-mode builtins once, at the wire.
     """
 
     schema: Mapping[str, Any]
-    # ``Any`` type parameter: the decoded type is derived from the artifact's
-    # schema at compile time, so it cannot be named statically.
-    decoder: msgspec.json.Decoder[Any]
+    loom_type: LoomType
 
 
 class CompiledUsecaseCapability(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -378,7 +391,7 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
             artifact declares neither ``deps_type`` nor ``deps_schema``.
         spec_version: Artifact format version, retained for self-description.
         inference: Resolved model binding; one binding, no fallback (FR-019a).
-        output: Structured-output contract with its built decoder.
+        output: Structured-output contract with its compiled boundary type.
         output_check: Resolved predicate over the answer the engine parsed,
             when the artifact declares ``output_check``; ``None`` otherwise.
         capabilities: Compiled capabilities with resolved handles.

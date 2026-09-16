@@ -50,10 +50,11 @@ def test_reports_type_ref_unresolvable_when_module_does_not_import(
     [
         "myapp.domain.unsupported:PlainModel",
         "myapp.domain.unsupported:NOT_A_TYPE",
+        "myapp.domain.unsupported:LaxModel",
     ],
-    ids=["pydantic_like_plain_class", "dict_value"],
+    ids=["plain_class", "dict_value", "pydantic_model_admitting_unknown_fields"],
 )
-def test_reports_type_ref_unsupported_when_symbol_is_not_a_msgspec_struct(
+def test_reports_type_ref_unsupported_when_symbol_is_not_a_strict_boundary_type(
     spec_factory: Callable[..., AgentSpecV1],
     single_issue_for: Callable[..., AgentCompilationIssue],
     ref: str,

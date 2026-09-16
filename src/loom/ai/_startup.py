@@ -94,7 +94,7 @@ def _agent_binding_issues(
             # so it is not reported as a mismatch.
             continue
         expected = expected_args[0]
-        declared = agent_plan.output.decoder.type
+        declared = agent_plan.output.loom_type.type
         if expected is declared:
             continue
         yield agent_marker_output_mismatch(

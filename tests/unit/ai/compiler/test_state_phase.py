@@ -9,7 +9,6 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-import msgspec
 import pytest
 
 from loom.ai.abc import StateShape
@@ -48,7 +47,7 @@ def test_declaring_both_fields_reports_the_conflict() -> None:
 def test_dict_waives_the_schema() -> None:
     shape, issues = compile_state("dict", None, _COMPONENT)
     assert issues == []
-    assert shape == StateShape(schema=None, decoder=None)
+    assert shape == StateShape(schema=None, loom_type=None)
 
 
 def test_a_missing_module_reports_unresolvable() -> None:
@@ -65,16 +64,16 @@ def test_a_symbol_msgspec_cannot_schematise_reports_unsupported(
     assert [issue.code for issue in issues] == [AgentErrorCode.STATE_TYPE_REF_UNSUPPORTED]
 
 
-def test_a_resolvable_struct_symbol_compiles_a_decoder_with_defaults(
+def test_a_resolvable_struct_symbol_compiles_a_boundary_type_with_defaults(
     fake_myapp_path: Path,
 ) -> None:
     shape, issues = compile_state("myapp.domain.triage:TriageReport", None, _COMPONENT)
     assert issues == []
     assert shape is not None
     assert shape.schema is not None
-    assert shape.decoder is not None
-    decoded = shape.decoder.decode(b"{}")
-    assert msgspec.to_builtins(decoded) == {
+    assert shape.loom_type is not None
+    decoded = shape.loom_type.decode_json(b"{}")
+    assert shape.loom_type.to_builtins(decoded) == {
         "incident_ref": "",
         "severity": "low",
         "confidence": 0.0,
@@ -91,13 +90,42 @@ def test_a_symbol_admitting_unknown_fields_reports_unsupported(
     assert [issue.code for issue in issues] == [AgentErrorCode.STATE_TYPE_REF_UNSUPPORTED]
 
 
+def test_a_container_alias_symbol_still_compiles(fake_myapp_path: Path) -> None:
+    """A ``deps_type`` naming a container alias, not a class, keeps compiling (FR-007)."""
+    shape, issues = compile_state("myapp.domain.triage:TriageCounts", None, _COMPONENT)
+    assert issues == []
+    assert shape is not None
+    assert shape.schema is not None
+    assert shape.loom_type is not None
+    decoded = shape.loom_type.decode_json(b'{"critical": 2}')
+    assert shape.loom_type.to_builtins(decoded) == {"critical": 2}
+
+
+def test_a_strict_pydantic_symbol_compiles(fake_myapp_path: Path) -> None:
+    """SC-003: the schema and the boundary type match a strict pydantic model."""
+    shape, issues = compile_state(
+        "myapp.domain.pydantic_invoices:InvoiceSummaryModel", None, _COMPONENT
+    )
+    assert issues == []
+    assert shape is not None
+    assert shape.loom_type is not None
+    assert shape.loom_type.library == "pydantic"
+    assert (shape.schema or {}).get("additionalProperties") is False
+
+
+def test_a_lax_pydantic_symbol_reports_unsupported(fake_myapp_path: Path) -> None:
+    shape, issues = compile_state("myapp.domain.unsupported:LaxModel", None, _COMPONENT)
+    assert shape is None
+    assert [issue.code for issue in issues] == [AgentErrorCode.STATE_TYPE_REF_UNSUPPORTED]
+
+
 def test_an_invalid_deps_schema_reports_schema_invalid() -> None:
     shape, issues = compile_state(None, {"type": 42}, _COMPONENT)
     assert shape is None
     assert [issue.code for issue in issues] == [AgentErrorCode.STATE_SCHEMA_INVALID]
 
 
-def test_a_valid_deps_schema_compiles_a_decoder() -> None:
+def test_a_valid_deps_schema_compiles_a_boundary_type() -> None:
     schema = {
         "type": "object",
         "properties": {"marca": {"type": "string"}, "km": {"type": "integer"}},
@@ -107,8 +135,9 @@ def test_a_valid_deps_schema_compiles_a_decoder() -> None:
     assert issues == []
     assert shape is not None
     assert dict(shape.schema or {}) == schema
-    decoded = shape.decoder.decode(b'{"marca": "civic"}') if shape.decoder else None
-    assert msgspec.to_builtins(decoded) == {"marca": "civic", "km": None}
+    assert shape.loom_type is not None
+    decoded = shape.loom_type.decode_json(b'{"marca": "civic"}')
+    assert shape.loom_type.to_builtins(decoded) == {"marca": "civic", "km": None}
 
 
 _IMPORT_CHECK_SCRIPT = """

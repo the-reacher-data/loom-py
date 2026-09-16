@@ -22,7 +22,12 @@ from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
-from tests.helpers.pydantic_ai_engine import STRICT_SCHEMA, NullDeps, make_plan
+from tests.helpers.pydantic_ai_engine import (
+    STRICT_SCHEMA,
+    NullDeps,
+    make_plan,
+    plan_with_pydantic_type_ref_output,
+)
 
 
 def _vendor_client(model: object) -> Any:
@@ -313,6 +318,45 @@ class TestOutputMode:
         assert isinstance(native, NativeOutput)
         assert (tool.name, tool.description) == (None, None)
         assert (native.name, native.description) == (None, None)
+
+
+class TestPydanticTypeRefOutputReachesTheEngineSpec:
+    """A pydantic ``type_ref`` output must survive the same two projections a
+
+    msgspec one does: ``AgentSpec.output_schema`` (``build_agent_spec``) and
+    the ``StructuredDict`` wrapping (``build_output_type``); R1 is pinned
+    here too — the model's own class name must not leak as the output tool
+    name through ``model_json_schema()``'s root ``title``.
+    """
+
+    def test_build_agent_spec_accepts_the_schema_of_a_pydantic_type_ref(
+        self, fake_myapp_path: Path
+    ) -> None:
+        del fake_myapp_path
+        plan = plan_with_pydantic_type_ref_output(
+            "myapp.domain.pydantic_invoices:InvoiceSummaryModel"
+        )
+
+        spec = build_agent_spec(plan)
+
+        assert spec.output_schema == dict(plan.output.schema)
+
+    def test_build_output_type_hands_the_model_class_under_the_default_tool_name(
+        self, fake_myapp_path: Path
+    ) -> None:
+        from myapp.domain.pydantic_invoices import InvoiceSummaryModel
+
+        del fake_myapp_path
+        plan = plan_with_pydantic_type_ref_output(
+            "myapp.domain.pydantic_invoices:InvoiceSummaryModel"
+        )
+
+        marker = build_output_type(plan)
+
+        assert "title" not in dict(plan.output.schema)
+        assert type(marker) is ToolOutput
+        assert marker.output is InvoiceSummaryModel
+        assert marker.name is None
 
 
 class TestInstructionsAndDescriptionKeywords:

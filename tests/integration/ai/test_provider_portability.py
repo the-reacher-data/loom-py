@@ -74,13 +74,13 @@ def _compile(target: InferenceTarget) -> AgentPlan:
     return compiler.compile(_spec(), source_path="agents/analyst.agent.yaml")
 
 
-def _decoder_shape(plan: AgentPlan) -> tuple[str, object]:
-    """Identity of the built decoder: its target type's name and fields.
+def _loom_type_shape(plan: AgentPlan) -> tuple[str, object]:
+    """Identity of the built boundary type: its target type's name and fields.
 
-    The decoder is a compile-time artifact, so two compiles produce two
+    The boundary type is a compile-time artifact, so two compiles produce two
     distinct generated types; what must match is the shape they decode into.
     """
-    target = plan.output.decoder.type
+    target = plan.output.loom_type.type
     return (getattr(target, "__name__", str(target)), getattr(target, "__struct_fields__", None))
 
 
@@ -92,7 +92,7 @@ def _vendor_free_fields(plan: AgentPlan) -> Mapping[str, Any]:
         if name not in {"inference", "output"}
     }
     fields["output.schema"] = dict(plan.output.schema)
-    fields["output.decoder"] = _decoder_shape(plan)
+    fields["output.loom_type"] = _loom_type_shape(plan)
     return fields
 
 

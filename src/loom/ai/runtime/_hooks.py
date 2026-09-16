@@ -69,7 +69,6 @@ def hook_command(
         The payload ``from_payload`` will decode.
     """
     offered: dict[str, Any] = {
-        HOOK_OUTPUT_FIELD: msgspec.to_builtins(output),
         HOOK_MESSAGES_FIELD: messages,
         "interaction_id": run.interaction_id,
         "conversation_id": run.conversation_id,
@@ -79,6 +78,8 @@ def hook_command(
         "provider": run.plan.inference.provider,
         "model": run.plan.inference.model,
     }
+    if HOOK_OUTPUT_FIELD in accepted:
+        offered[HOOK_OUTPUT_FIELD] = run.plan.output.loom_type.to_builtins(output)
     return {name: value for name, value in offered.items() if name in accepted}
 
 

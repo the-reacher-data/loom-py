@@ -26,6 +26,8 @@ from loom.ai._transport import (
     always_closed,
     annotate_usage,
     failure_event,
+    project_output,
+    projecting_final,
     with_heartbeats,
 )
 from loom.ai.a2a._binding import PublishedAgent
@@ -276,6 +278,7 @@ def _make_send_handler(
             # catalogue detail travel outward.
             _logger.warning("a2a run of agent %r failed: %s", name, exc)
             return error_response(call.request_id, internal_error(exc.code))
+        result = project_output(result, runtime.output_type(name))
         task = _completed_task(uuid4().hex, context_id, result.output)
         return AgentJSONResponse(content=rpc_response(call.request_id, task))
 
@@ -296,7 +299,8 @@ def _run_frames(
             async with runtime.run_stream(
                 call.agent.name, prompt, identity=call.identity, conversation_id=context_id
             ) as events:
-                async for event in events:
+                projected_events = projecting_final(events, runtime.output_type(call.agent.name))
+                async for event in projected_events:
                     for projected in projector.project(event):
                         yield _sse_frame(call.request_id, projected)
         except Exception as exc:

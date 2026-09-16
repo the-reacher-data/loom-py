@@ -24,6 +24,7 @@ from loom.core.di import LoomContainer
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
+from loom.core.model import msgspec_type
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.sql.service import NullSqlQueryService, SqlQueryService
 from loom.core.use_case import Agent
@@ -49,7 +50,7 @@ def _plan(name: str, *, output_type: type[Any] = dict) -> AgentPlan:
         inference=InferenceTarget(provider="fake", model="fake-model"),
         output=CompiledOutput(
             schema={"type": "object"},
-            decoder=msgspec.json.Decoder(output_type),
+            loom_type=msgspec_type(output_type),
         ),
         capabilities=(),
         policies=PolicySpec(),

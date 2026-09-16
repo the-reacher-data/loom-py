@@ -22,15 +22,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
-from typing import Final
+from typing import Final, TypeVar
 
+import msgspec
 from starlette.requests import Request
 
-from loom.ai.abc import AgentUsage, ErrorEvent
+from loom.ai.abc import AgentEvent, AgentResult, AgentUsage, ErrorEvent, FinalEvent
 from loom.ai.config import AgentEndpointConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.identity import Identity, current_identity
+from loom.core.model import LoomType
 from loom.core.observability.span import LoomSpan
+
+_WireResultT = TypeVar("_WireResultT", AgentResult, FinalEvent)
 
 BODY_OVERHEAD_BYTES: Final[int] = 64 * 1024
 """Headroom over the declared field caps for the JSON envelope around them.
@@ -257,6 +261,52 @@ def always_closed(span: LoomSpan) -> Iterator[None]:
         raise
     else:
         span.end()
+
+
+def project_output(value: _WireResultT, output_type: LoomType) -> _WireResultT:
+    """Rewrite ``value.output`` to builtins before it reaches a wire encoder.
+
+    The one place every surface — ``/run``, the SSE ``final`` frame and both
+    A2A paths — projects the run's already-validated answer, so
+    ``result_payload``, ``encode_sse_event``, ``_data_part`` and
+    ``_completed_task`` keep encoding whatever ``output`` already holds
+    (FR-010).
+
+    Args:
+        value: Result or terminal event whose ``output`` is still the
+            engine's validated instance.
+        output_type: The run's compiled boundary type, read from
+            :meth:`~loom.ai.runtime.AgentRuntime.output_type`.
+
+    Returns:
+        *value* with ``output`` replaced by its builtins projection.
+    """
+    return msgspec.structs.replace(value, output=output_type.to_builtins(value.output))
+
+
+async def projecting_final(
+    events: AsyncIterator[AgentEvent], output_type: LoomType
+) -> AsyncIterator[AgentEvent]:
+    """Relay *events*, projecting the terminal ``final`` event's ``output``.
+
+    Every event but ``final`` is yielded unchanged; ``final`` is passed
+    through :func:`project_output` first, so a consumer downstream — the SSE
+    encoder, the A2A projector — never sees the engine's validated instance
+    (FR-010). Both agent surfaces wrap their event stream with this generator
+    before their own projection consumes it.
+
+    Args:
+        events: Run events, terminal event last.
+        output_type: The run's compiled boundary type, read from
+            :meth:`~loom.ai.runtime.AgentRuntime.output_type`.
+
+    Yields:
+        Every event, in order; the ``final`` event's ``output`` projected.
+    """
+    async for event in events:
+        if isinstance(event, FinalEvent):
+            event = project_output(event, output_type)
+        yield event
 
 
 def failure_event(exc: BaseException) -> ErrorEvent:

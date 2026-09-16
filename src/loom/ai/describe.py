@@ -13,8 +13,8 @@ new field appears.  A kind with no registered projection is therefore an
 error, never a guess.
 
 Excluded at agent level (FR-054): ``instructions``, the resolved
-``inference`` target, the built ``output.decoder`` and the author's free-form
-``metadata``.
+``inference`` target, the compiled ``output.loom_type`` and the author's
+free-form ``metadata``.
 """
 
 from __future__ import annotations
