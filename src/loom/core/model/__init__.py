@@ -2,8 +2,11 @@ from loom.core.model._loom_type import (
     BoundaryValidationError,
     LoomType,
     UnsupportedBoundaryType,
+    is_pydantic_model,
     loom_type,
+    loom_type_of,
     msgspec_type,
+    pydantic_type,
 )
 from loom.core.model.base import BaseModel, LoomStructMeta
 from loom.core.model.enums import Cardinality, OnDelete, OnUpdate, ServerDefault, ServerOnUpdate
@@ -75,6 +78,9 @@ __all__ = [
     "get_projections",
     "get_relations",
     "get_table_name",
+    "is_pydantic_model",
     "loom_type",
+    "loom_type_of",
     "msgspec_type",
+    "pydantic_type",
 ]

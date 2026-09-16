@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 import msgspec
@@ -23,6 +23,7 @@ from loom.core.model import (
     LoomType,
     UnsupportedBoundaryType,
     loom_type,
+    loom_type_of,
     msgspec_type,
 )
 
@@ -356,3 +357,125 @@ class TestMsgspecType:
         assert compiled.type is generated
         assert compiled.to_builtins(value) == {"total": 1}
         assert _root_object(compiled.schema())["additionalProperties"] is False
+
+    def test_an_annotation_msgspec_rejects_raises_unsupported_boundary_type(self) -> None:
+        with pytest.raises(UnsupportedBoundaryType):
+            msgspec_type(3)
+
+
+class TestFromBuiltins:
+    """``from_builtins`` is the cache/MCP entry point: builtins in, the typed value out."""
+
+    def test_accepts_the_same_payload_shapes_on_both_libraries(self, invoice: LoomType) -> None:
+        payload = dict(_PAYLOAD)
+
+        value = invoice.from_builtins(payload)
+
+        assert isinstance(value, invoice.type)
+        assert value.total == 3
+        assert value.when.year == 2026
+        assert value.ident.hex == "12345678123456781234567812345678"
+        assert value.amount == Decimal("1.50")
+
+    def test_rejects_an_unknown_key_on_both_libraries(self, invoice: LoomType) -> None:
+        payload = {**_PAYLOAD, "zz": 1}
+
+        with pytest.raises(BoundaryValidationError) as excinfo:
+            invoice.from_builtins(payload)
+
+        assert isinstance(excinfo.value, ValueError)
+
+    def test_rejects_a_malformed_payload_on_both_libraries(self, invoice: LoomType) -> None:
+        with pytest.raises(BoundaryValidationError) as excinfo:
+            invoice.from_builtins({"total": "not-an-int"})
+
+        assert isinstance(excinfo.value, ValueError)
+
+
+class TestLoomTypeOfDispatch:
+    """The single dispatcher, without any strictness check."""
+
+    def test_a_struct_class_resolves_to_msgspec(self) -> None:
+        compiled = loom_type_of(StructInvoice)
+
+        assert compiled.library == "msgspec"
+
+    def test_a_basemodel_class_resolves_to_pydantic(self) -> None:
+        compiled = loom_type_of(ModelInvoice)
+
+        assert compiled.library == "pydantic"
+
+    def test_a_list_of_basemodel_resolves_to_pydantic(self) -> None:
+        compiled = loom_type_of(list[ModelInvoice])
+
+        assert compiled.library == "pydantic"
+
+    def test_an_optional_basemodel_resolves_to_pydantic(self) -> None:
+        compiled = loom_type_of(ModelInvoice | None)
+
+        assert compiled.library == "pydantic"
+
+    def test_a_list_of_int_resolves_to_msgspec(self) -> None:
+        compiled = loom_type_of(list[int])
+
+        assert compiled.library == "msgspec"
+
+    def test_mixing_both_libraries_is_rejected(self) -> None:
+        with pytest.raises(UnsupportedBoundaryType) as excinfo:
+            loom_type_of(StructInvoice | ModelInvoice)
+
+        assert excinfo.value.code == "boundary_type_unsupported"
+        assert "mixes msgspec and pydantic" in str(excinfo.value)
+
+    def test_a_non_strict_struct_is_accepted_by_loom_type_of(self) -> None:
+        compiled = loom_type_of(LaxStruct)
+
+        assert compiled.library == "msgspec"
+
+    def test_a_non_strict_struct_is_rejected_by_loom_type(self) -> None:
+        with pytest.raises(UnsupportedBoundaryType):
+            loom_type(LaxStruct)
+
+    def test_a_non_strict_model_is_accepted_by_loom_type_of(self) -> None:
+        compiled = loom_type_of(LaxModel)
+
+        assert compiled.library == "pydantic"
+
+    def test_a_non_strict_model_is_rejected_by_loom_type(self) -> None:
+        with pytest.raises(UnsupportedBoundaryType):
+            loom_type(LaxModel)
+
+
+class TestLoomTypeOfMemoisation:
+    """The dispatcher is a pure factory, memoised by the annotation's identity."""
+
+    def test_the_same_annotation_returns_the_same_compiled_type(self) -> None:
+        assert loom_type_of(StructInvoice) is loom_type_of(StructInvoice)
+
+    @pytest.mark.parametrize("symbol", [StructInvoice, ModelInvoice], ids=["msgspec", "pydantic"])
+    def test_loom_type_of_the_same_authored_symbol_is_memoised(self, symbol: type) -> None:
+        assert loom_type(symbol) is loom_type(symbol)
+
+    def test_an_unhashable_annotated_annotation_still_resolves(self) -> None:
+        annotation = Annotated[int, {"k": 1}]
+
+        compiled = loom_type_of(annotation)
+
+        assert compiled.library == "msgspec"
+
+
+class SubModelInvoice(ModelInvoice):
+    extra_field: str = "unused"
+
+
+class TestPydanticToBuiltinsSubclass:
+    """A subclass instance is serialised through the declared type's own fields."""
+
+    def test_only_the_declared_fields_are_serialised(self) -> None:
+        compiled = loom_type(ModelInvoice)
+        instance = SubModelInvoice(**_PAYLOAD)
+
+        builtins = compiled.to_builtins(instance)
+
+        assert "extra_field" not in builtins
+        assert set(builtins) == set(_PAYLOAD)

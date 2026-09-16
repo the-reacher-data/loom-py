@@ -9,6 +9,7 @@ import msgspec
 from loom.core.cache.errors import CacheWriteError
 from loom.core.cache.serializer import MsgspecSerializer
 from loom.core.config.errors import ConfigError
+from loom.core.model import loom_type_of
 
 if TYPE_CHECKING:
     from loom.core.cache.abc.config import CacheConfig
@@ -155,17 +156,21 @@ class CacheGateway:
 
         Args:
             key: Cache key.
-            type: Optional target type for ``msgspec.convert``.
+            type: Optional target type, converted through the type's
+                :class:`~loom.core.model.LoomType`.
 
         Returns:
             The cached value (converted to ``type`` if given) or ``None`` on miss.
+
+        Raises:
+            BoundaryValidationError: The cached value does not match ``type``.
         """
         value = await self._cache.get(key)
         if value is None:
             return None
         if type is None:
             return value
-        return msgspec.convert(value, type=type)
+        return loom_type_of(type).from_builtins(value)
 
     async def multi_get_values(
         self,
@@ -177,15 +182,20 @@ class CacheGateway:
 
         Args:
             keys: Cache keys to look up.
-            type: Optional target type for ``msgspec.convert`` on each value.
+            type: Optional target type, converted through the type's
+                :class:`~loom.core.model.LoomType` on each value.
 
         Returns:
             Values in the same order as ``keys``, with ``None`` for misses.
+
+        Raises:
+            BoundaryValidationError: A cached value does not match ``type``.
         """
         values = await self._cache.multi_get(keys)
         if type is not None:
+            compiled = loom_type_of(type)
             return [
-                msgspec.convert(value, type=type) if value is not None else None for value in values
+                compiled.from_builtins(value) if value is not None else None for value in values
             ]
         return cast(list[T | Any | None], values)
 

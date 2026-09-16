@@ -52,6 +52,15 @@ class _Severity(msgspec.Struct, frozen=True):
     level: int
 
 
+pydantic = pytest.importorskip("pydantic")
+
+
+class _SeverityModel(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    level: int
+
+
 def _view(
     *,
     capability: CompiledMcpCapability,
@@ -214,6 +223,69 @@ class TestTypedCall:
 
         assert excinfo.value.code is AgentRunErrorCode.TOOL_DECODE_FAILED
         assert "level" in str(excinfo.value)
+
+    async def test_a_pydantic_expect_decodes_the_structured_content(self) -> None:
+        capability = make_mcp_capability()
+        catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
+        session = FakeSession(
+            tools=catalogue,
+            results={"severity": McpToolCallResult(ok=True, structured={"level": 4})},
+        )
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        result = await view.call("severity", {}, expect=_SeverityModel)
+
+        assert result == _SeverityModel(level=4)
+
+    async def test_an_invalid_pydantic_result_fails_to_decode_without_echoing_the_input(
+        self,
+    ) -> None:
+        capability = make_mcp_capability()
+        catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
+        session = FakeSession(
+            tools=catalogue,
+            results={
+                "severity": McpToolCallResult(
+                    ok=True, structured={"level": "another-callers-secret"}
+                )
+            },
+        )
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        with pytest.raises(AgentRunError) as excinfo:
+            await view.call("severity", {}, expect=_SeverityModel)
+
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_DECODE_FAILED
+        message = str(excinfo.value)
+        assert "level" in message
+        assert "another-callers-secret" not in message
+
+    async def test_a_mixed_union_expect_fails_before_calling_the_tool(self) -> None:
+        capability = make_mcp_capability()
+        catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
+        session = FakeSession(tools=catalogue)
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        with pytest.raises(AgentRunError) as excinfo:
+            await view.call("severity", {}, expect=_Severity | _SeverityModel)  # type: ignore[arg-type]
+
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_DECODE_FAILED
+        assert "mixes msgspec and pydantic" in str(excinfo.value)
+        assert session.calls == []
+
+    async def test_an_unsupported_expect_fails_with_a_decode_error_not_a_bare_type_error(
+        self,
+    ) -> None:
+        capability = make_mcp_capability()
+        catalogue = (McpToolInfo(name="severity", has_output_schema=True),)
+        session = FakeSession(tools=catalogue)
+        view = _view(capability=capability, session=session, catalogue=catalogue)
+
+        with pytest.raises(AgentRunError) as excinfo:
+            await view.call("severity", {}, expect=object())  # type: ignore[arg-type]
+
+        assert excinfo.value.code is AgentRunErrorCode.TOOL_DECODE_FAILED
+        assert session.calls == []
 
 
 class TestUntypedCall:

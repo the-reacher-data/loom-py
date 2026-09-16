@@ -44,6 +44,7 @@ from uuid import UUID
 
 import msgspec
 
+from loom.core.model import LoomType, is_pydantic_model, loom_type_of, pydantic_type
 from loom.core.model.introspection import resolve_type_hints
 
 _SCALAR_TYPES: frozenset[type] = frozenset(
@@ -56,9 +57,9 @@ def to_payload(value: Any) -> Any:
     """Render *value* as builtins, leaving what it cannot describe untouched.
 
     Unlike :func:`msgspec.to_builtins` this never raises: a value outside the
-    struct, sequence and mapping shapes it knows is returned as it is, and the
-    backend serializer decides whether it can store it. That leniency is what
-    lets an unannotated cached read keep working.
+    struct, pydantic model, sequence and mapping shapes it knows is returned
+    as it is, and the backend serializer decides whether it can store it.
+    That leniency is what lets an unannotated cached read keep working.
 
     Args:
         value: Value on its way to the cache backend.
@@ -68,6 +69,8 @@ def to_payload(value: Any) -> Any:
     """
     if isinstance(value, msgspec.Struct):
         return msgspec.to_builtins(value)
+    if is_pydantic_model(type(value)):
+        return loom_type_of(type(value)).to_builtins(value)
     if isinstance(value, list | tuple):
         return [to_payload(item) for item in value]
     if isinstance(value, dict):
@@ -119,19 +122,25 @@ class PassthroughResultCodec:
         return payload
 
 
-class _TypedResultCodec:
-    """Codec that converts both paths to one resolved return type."""
+class _LoomTypeResultCodec:
+    """Codec that converts both paths through a single :class:`LoomType`.
 
-    __slots__ = ("_return_type",)
+    Shared by the msgspec grammar :func:`build_result_codec` implements and
+    by the pydantic fallback :func:`build_call_codec` extends it with: both
+    resolve to one already-built :class:`LoomType` and differ only in which
+    factory built it.
+    """
 
-    def __init__(self, return_type: Any) -> None:
-        """Bind the codec to an already resolved return type.
+    __slots__ = ("_loom_type",)
+
+    def __init__(self, loom_type: LoomType) -> None:
+        """Bind the codec to an already built boundary type.
 
         Args:
-            return_type: Type inside the supported grammar, with every type
-                variable already substituted.
+            loom_type: Boundary type compiled from the cached call's or
+                read's resolved return annotation.
         """
-        self._return_type = return_type
+        self._loom_type = loom_type
 
     def encode(self, result: Any) -> EncodedResult:
         """Render *result* as builtins and decode it back.
@@ -141,77 +150,20 @@ class _TypedResultCodec:
         stored on the first call instead of the second.
 
         Raises:
-            TypeError: The result cannot be rendered as builtins at all.
-            msgspec.ValidationError: The rendered result does not match the
+            BoundaryValidationError: The rendered result does not match the
                 declared return type.
         """
-        payload = msgspec.to_builtins(result)
+        payload = self._loom_type.to_builtins(result)
         return EncodedResult(payload, self.decode(payload))
 
     def decode(self, payload: Any) -> Any:
         """Convert *payload* to the declared return type.
 
         Raises:
-            msgspec.ValidationError: The payload does not match the declared
+            BoundaryValidationError: The payload does not match the declared
                 return type.
         """
-        return msgspec.convert(payload, self._return_type)
-
-
-class _PydanticResultCodec:
-    """Codec that converts both paths through a single ``pydantic.TypeAdapter``.
-
-    One adapter covers a ``BaseModel``, a ``RootModel``, a parameterised
-    generic model, a ``pydantic.dataclasses`` type and ``list``/``tuple``/
-    optional of those, so no reflection triage is needed to pick a branch.
-    """
-
-    __slots__ = ("_adapter",)
-
-    def __init__(self, annotation: Any) -> None:
-        """Build the adapter for an already resolved return annotation.
-
-        The import is local because pydantic is an optional dependency of
-        ``loom.core.cache``; the caller only reaches here once pydantic is
-        already loaded in the process.
-
-        Args:
-            annotation: Resolved return annotation of the cached call.
-
-        Raises:
-            Exception: pydantic cannot build an adapter for *annotation*.
-        """
-        from pydantic import TypeAdapter
-
-        self._adapter: Any = TypeAdapter(annotation)
-
-    def encode(self, result: Any) -> EncodedResult:
-        """Dump *result* to its JSON-mode payload and read it back.
-
-        Returning the decoded value rather than *result* is what makes a miss
-        and a hit indistinguishable, exactly as :class:`_TypedResultCodec`
-        does. ``by_alias=True`` stores the field names the model validates
-        from, so a model with an alias generator survives the round trip.
-
-        Raises:
-            pydantic.ValidationError: The dumped payload does not validate
-                back into the declared type.
-        """
-        payload = self._adapter.dump_python(result, mode="json", by_alias=True)
-        return EncodedResult(payload, self.decode(payload))
-
-    def decode(self, payload: Any) -> Any:
-        """Validate *payload* back into the declared type.
-
-        Validation is lax, so a field typed ``Any`` accepts whatever
-        ``mode="json"`` produced and can change shape silently between a miss
-        and a hit. Declare precise field types.
-
-        Raises:
-            pydantic.ValidationError: The payload does not match the declared
-                return type.
-        """
-        return self._adapter.validate_python(payload)
+        return self._loom_type.from_builtins(payload)
 
 
 def build_call_codec(func: Callable[..., Any]) -> ResultCodec | None:
@@ -245,7 +197,7 @@ def build_call_codec(func: Callable[..., Any]) -> ResultCodec | None:
         return None
     return_type = _resolve_return_type(annotation, None)
     if return_type is not None:
-        return _TypedResultCodec(return_type)
+        return _LoomTypeResultCodec(loom_type_of(return_type))
     return _pydantic_codec(annotation)
 
 
@@ -302,7 +254,7 @@ def _pydantic_codec(annotation: Any) -> ResultCodec | None:
     if sys.modules.get("pydantic") is None:
         return None
     try:
-        return _PydanticResultCodec(annotation)
+        return _LoomTypeResultCodec(pydantic_type(annotation))
     except Exception:
         return None
 
@@ -332,7 +284,7 @@ def build_result_codec(method: Callable[..., Any], *, model: object | None) -> R
     return_type = _resolve_return_type(annotation, model)
     if return_type is None:
         return None
-    return _TypedResultCodec(return_type)
+    return _LoomTypeResultCodec(loom_type_of(return_type))
 
 
 def _resolve_return_type(annotation: Any, model: object | None) -> Any | None:

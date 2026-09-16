@@ -40,7 +40,7 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import msgspec
 
@@ -50,6 +50,7 @@ from loom.ai.abc import McpHandle, McpSession, McpToolInfo, SqlGrantHandle
 from loom.ai.compiler import CompiledMcpCapability, CompiledSqlCapability
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.identity import Identity
+from loom.core.model import BoundaryValidationError, UnsupportedBoundaryType, loom_type_of
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.sql.abc import SqlQueryResult
@@ -198,16 +199,17 @@ class McpGrantView:
                 f"tool {tool!r} of mcp server {self._capability.server!r} publishes no "
                 "output schema; call it with call_untyped() instead",
             )
-        structured = await self._call(tool, arguments)
-        if structured is None:
-            raise AgentRunError(
-                AgentRunErrorCode.TOOL_RESULT_UNSTRUCTURED,
-                f"tool {tool!r} of mcp server {self._capability.server!r} published an "
-                "output schema but returned no structured content",
-            )
         try:
-            return msgspec.convert(structured, expect)
-        except msgspec.ValidationError as exc:
+            expect_type = loom_type_of(expect)
+            structured = await self._call(tool, arguments)
+            if structured is None:
+                raise AgentRunError(
+                    AgentRunErrorCode.TOOL_RESULT_UNSTRUCTURED,
+                    f"tool {tool!r} of mcp server {self._capability.server!r} published an "
+                    "output schema but returned no structured content",
+                )
+            return cast(_T, expect_type.from_builtins(structured))
+        except (UnsupportedBoundaryType, BoundaryValidationError) as exc:
             raise AgentRunError(
                 AgentRunErrorCode.TOOL_DECODE_FAILED,
                 f"tool {tool!r} of mcp server {self._capability.server!r}: {exc}",

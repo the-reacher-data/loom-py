@@ -26,6 +26,7 @@ from loom.core.cache.result_codec import (
 )
 from loom.core.engine.post_commit import active_channel
 from loom.core.logger import get_logger
+from loom.core.model import BoundaryValidationError, LoomType, is_pydantic_model, loom_type_of
 from loom.core.model.convert import to_struct
 from loom.core.model.enums import Cardinality
 from loom.core.model.introspection import (
@@ -236,6 +237,17 @@ class CachedRepository(
         self._passthrough_codec = PassthroughResultCodec()
         self._cached_method_wrappers: dict[str, Callable[..., Awaitable[Any]]] = {}
         self._result_codecs = self._build_result_codecs(repository)
+        self._pydantic_output_type: LoomType | None = self._resolve_pydantic_output_type(repository)
+
+    @staticmethod
+    def _resolve_pydantic_output_type(
+        repository: Repository[OutputT, CreateT, UpdateT, IdT],
+    ) -> LoomType | None:
+        """Compile the repository's pydantic ``model``, or ``None`` when it is not one."""
+        model = getattr(repository, "model", None)
+        if not isinstance(model, type) or not is_pydantic_model(model):
+            return None
+        return loom_type_of(model)
 
     @property
     def entity_name(self) -> str:
@@ -657,8 +669,18 @@ class CachedRepository(
         if loaded is None:
             return None
         ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
-        await self._cache.set_value(key, to_payload(loaded), ttl=ttl)
+        await self._cache.set_value(key, self._entity_payload(loaded), ttl=ttl)
         return loaded
+
+    def _entity_payload(self, item: Any) -> Any:
+        """Render *item* for storage, through the declared pydantic type when strict.
+
+        A subclass instance carrying an extra field is rendered in the
+        declared shape, so the strict hit-path validation still accepts it.
+        """
+        if self._pydantic_output_type is not None:
+            return self._pydantic_output_type.to_builtins(item)
+        return to_payload(item)
 
     def _write_ttl(self, ttl: int) -> int:
         """Spread *ttl* inside the configured jitter band.
@@ -781,7 +803,7 @@ class CachedRepository(
         """
         try:
             return codec.decode(payload)
-        except msgspec.ValidationError as error:
+        except BoundaryValidationError as error:
             self._log.warning(
                 "CacheCustomPayloadMismatch",
                 key=key,
@@ -889,7 +911,7 @@ class CachedRepository(
     async def _refill_cache(self, entries: list[tuple[str, OutputT]]) -> None:
         """Write back only the entities that were missing, leaving warm TTLs alone."""
         ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
-        pairs = [(key, to_payload(item)) for key, item in entries]
+        pairs = [(key, self._entity_payload(item)) for key, item in entries]
         await self._cache.multi_set_values(pairs, ttl=ttl)
 
     async def _fetch_missing_by_ids(
@@ -971,7 +993,7 @@ class CachedRepository(
         pairs: list[tuple[str, Any]] = []
         for (item, entity_id), fingerprint in zip(keyed, fingerprints, strict=True):
             key = entity_key(self.entity_name, entity_id, profile, fingerprint)
-            pairs.append((key, to_payload(item)))
+            pairs.append((key, self._entity_payload(item)))
         await self._cache.multi_set_values(pairs, ttl=ttl)
 
     def _items_with_key(self, items: Sequence[OutputT]) -> list[tuple[OutputT, object]]:
@@ -996,6 +1018,8 @@ class CachedRepository(
             builder = getattr(self._repository, "to_output_from_payload", None)
             if callable(builder):
                 return cast(OutputT, builder(payload))
+            if self._pydantic_output_type is not None:
+                return cast(OutputT, self._pydantic_output_type.from_builtins(payload))
             model = getattr(self._repository, "model", None)
             if isinstance(model, type) and issubclass(model, msgspec.Struct):
                 return cast(OutputT, to_struct(model, payload))
