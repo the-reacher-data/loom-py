@@ -18,12 +18,12 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-import msgspec
 import pytest
 
 from loom.core.cache import CacheConfig, CachedRepository
 from loom.core.cache import repository as repository_module
 from loom.core.cache.result_codec import build_result_codec
+from loom.core.model import BoundaryValidationError
 
 from ._doubles import (
     CachedEnv,
@@ -350,7 +350,7 @@ class TestResultContradictingItsAnnotation:
         self,
         lying_env: CachedEnv[Widget],
     ) -> None:
-        with pytest.raises(msgspec.ValidationError):
+        with pytest.raises(BoundaryValidationError):
             await lying_env.wrapper.wrong_shape()
 
     async def test_a_result_no_payload_can_describe_raises(
@@ -362,7 +362,7 @@ class TestResultContradictingItsAnnotation:
 
     @pytest.mark.parametrize(
         ("method_name", "error"),
-        [("wrong_shape", msgspec.ValidationError), ("unrenderable", TypeError)],
+        [("wrong_shape", BoundaryValidationError), ("unrenderable", TypeError)],
     )
     async def test_nothing_is_stored_so_the_next_call_reaches_the_repository(
         self,

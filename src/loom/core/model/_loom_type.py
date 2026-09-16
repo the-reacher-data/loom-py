@@ -1,13 +1,13 @@
 """Loom-owned boundary type: one contract over msgspec and pydantic.
 
-A :class:`LoomType` is what this slice's two boundaries — agent output and
-agent state — carry once compiled: it validates JSON strictly, builds the
-typed value in the same pass and turns a value back into JSON-mode builtins.
-The cache and REST boundaries are later slices. The two implementations are
-private to this module, so no other module calls ``msgspec.json.Decoder`` or
-``pydantic.TypeAdapter`` on a boundary value; the library is decided once, at
-compile time, and every consumer that needs to branch on it afterwards reads
-the ``library`` tag it was constructed with.
+A :class:`LoomType` is what a boundary carries once compiled: it validates
+JSON strictly, builds the typed value in the same pass and turns a value
+back into JSON-mode builtins. Agent output, agent state, the cache and MCP
+results are served this way; REST is a later slice. The two implementations
+are private to this module, so no other module calls ``msgspec.json.Decoder``
+or ``pydantic.TypeAdapter`` on a boundary value; the library is decided once,
+at compile time, and every consumer that needs to branch on it afterwards
+reads the ``library`` tag it was constructed with.
 
 Pydantic stays optional: the factory only looks at ``sys.modules`` and imports
 ``pydantic`` locally, so a process that never imported it keeps working with
@@ -18,8 +18,10 @@ class untyped: this module never names ``pydantic.BaseModel``, and loom's own
 
 from __future__ import annotations
 
+import functools
 import sys
-from collections.abc import Mapping
+import typing
+from collections.abc import Callable, Mapping
 from typing import Any, Literal, Protocol
 
 import msgspec
@@ -62,14 +64,30 @@ class LoomType(Protocol):
         """Turn a typed value into JSON-mode builtins."""
         ...
 
+    def from_builtins(self, payload: Any, /) -> Any:
+        """Validate builtins already produced by a trusted source and build the typed value.
 
-class BoundaryValidationError(LoomError):
+        Unlike :meth:`decode_json` this takes Python builtins rather than JSON
+        text, and pydantic validates them in its lax mode: it is the entry
+        point for a value that already round-tripped through a cache backend
+        or an MCP client rather than through raw JSON.
+
+        Raises:
+            BoundaryValidationError: ``payload`` does not satisfy the type.
+        """
+        ...
+
+
+class BoundaryValidationError(LoomError, ValueError):
     """A boundary value failed validation.
 
     Raised by every :class:`LoomType` implementation with the library error as
     ``__cause__``. The pydantic message is built field by field and omits the
     input and any documentation URL; the msgspec message is forwarded
-    verbatim, and is one line and free of the input already.
+    verbatim, and is one line and free of the input already. It is also a
+    :class:`ValueError`, so an ``except ValueError`` that used to catch
+    ``msgspec.ValidationError`` or ``pydantic.ValidationError`` keeps
+    catching it.
 
     Args:
         message: One-line description of the failure.
@@ -93,10 +111,12 @@ class UnsupportedBoundaryType(LoomError):
 def loom_type(symbol: type) -> LoomType:
     """Compile an authored class into a :class:`LoomType`.
 
-    The library is decided once, by ``issubclass``, and strictness is checked
-    here for both: a ``msgspec.Struct`` must declare
-    ``forbid_unknown_fields=True`` and a ``pydantic.BaseModel`` must resolve
-    ``model_config["extra"] == "forbid"``.
+    Strictness is a compile-time property of an authored symbol only: a
+    ``msgspec.Struct`` must declare ``forbid_unknown_fields=True`` and a
+    ``pydantic.BaseModel`` must resolve ``model_config["extra"] == "forbid"``.
+    The check happens once, here, before the symbol is handed to
+    :func:`loom_type_of`; a compiler-generated annotation built from an
+    authored symbol never repeats it.
 
     Args:
         symbol: A strict ``msgspec.Struct`` or strict ``pydantic.BaseModel``
@@ -111,13 +131,11 @@ def loom_type(symbol: type) -> LoomType:
     """
     if not isinstance(symbol, type):
         raise UnsupportedBoundaryType(_NOT_A_MODEL_REASON)
-    if issubclass(symbol, msgspec.Struct):
+    if issubclass(symbol, msgspec.Struct) or is_pydantic_model(symbol):
         _require_strict(symbol)
-        return _MsgspecType(symbol)
-    if _is_pydantic_model(symbol):
-        _require_strict(symbol)
-        return _PydanticType(symbol)
-    raise UnsupportedBoundaryType(_NOT_A_MODEL_REASON)
+    else:
+        raise UnsupportedBoundaryType(_NOT_A_MODEL_REASON)
+    return loom_type_of(symbol)
 
 
 def msgspec_type(annotation: Any) -> LoomType:
@@ -132,8 +150,99 @@ def msgspec_type(annotation: Any) -> LoomType:
 
     Returns:
         The boundary type wrapping ``annotation``.
+
+    Raises:
+        UnsupportedBoundaryType: ``msgspec.json.Decoder`` cannot build
+            ``annotation``.
     """
-    return _MsgspecType(annotation)
+    try:
+        return _MsgspecType(annotation)
+    except TypeError as exc:
+        raise UnsupportedBoundaryType(str(exc)) from exc
+
+
+def pydantic_type(annotation: Any) -> LoomType:
+    """Wrap any annotation pydantic can describe in a pydantic-backed :class:`LoomType`.
+
+    Covers a ``BaseModel``, a ``RootModel``, a parameterised generic model, a
+    ``pydantic.dataclasses`` type and ``list``/``tuple``/union of those — the
+    same ``TypeAdapter``-backed implementation the authored ``BaseModel`` case
+    in :func:`loom_type` uses. Strictness is not checked because the
+    annotation is not necessarily an authored root symbol.
+
+    Args:
+        annotation: Any annotation ``pydantic.TypeAdapter`` can build.
+
+    Returns:
+        The boundary type wrapping ``annotation``.
+
+    Raises:
+        UnsupportedBoundaryType: ``pydantic.TypeAdapter`` cannot build
+            ``annotation``.
+    """
+    try:
+        return _PydanticType(annotation)
+    except TypeError as exc:
+        raise UnsupportedBoundaryType(str(exc)) from exc
+
+
+def loom_type_of(annotation: Any) -> LoomType:
+    """Compile any annotation, authored or compiler-generated, into a :class:`LoomType`.
+
+    The single dispatcher every boundary uses once ``loom_type`` has already
+    checked the strictness of an authored root: a ``msgspec.Struct`` class
+    resolves to :func:`msgspec_type`, a ``pydantic.BaseModel`` class or an
+    annotation that mentions one anywhere inside its ``typing.get_args`` walk
+    resolves to :func:`pydantic_type`, an annotation that mentions both
+    libraries is rejected, and anything else resolves to :func:`msgspec_type`.
+
+    The result is memoised by hash/equality of the annotation (typing
+    generics compare structurally); the memo lives for the process, because
+    it is a pure factory: the same annotation always builds the same kind of
+    :class:`LoomType`, and building one is not free — it compiles a decoder or
+    a ``TypeAdapter``. An annotation that is not hashable (for example
+    ``Annotated`` metadata carrying a ``dict``) simply skips the cache.
+
+    Args:
+        annotation: Any annotation, authored or compiler-generated.
+
+    Returns:
+        The boundary type wrapping ``annotation``.
+
+    Raises:
+        UnsupportedBoundaryType: ``annotation`` mentions both a
+            ``msgspec.Struct`` and a ``pydantic.BaseModel``.
+    """
+    try:
+        hash(annotation)
+    except TypeError:
+        return _build_loom_type_of(annotation)
+    return _loom_type_of_cached(annotation)
+
+
+@functools.cache
+def _loom_type_of_cached(annotation: Any) -> LoomType:
+    return _build_loom_type_of(annotation)
+
+
+def _build_loom_type_of(annotation: Any) -> LoomType:
+    has_struct = _mentions(annotation, _is_struct_class)
+    has_model = _mentions(annotation, is_pydantic_model)
+    if has_struct and has_model:
+        raise UnsupportedBoundaryType(f"{annotation!r} mixes msgspec and pydantic types")
+    if has_model:
+        return pydantic_type(annotation)
+    return msgspec_type(annotation)
+
+
+def _mentions(annotation: Any, predicate: Callable[[Any], bool]) -> bool:
+    if predicate(annotation):
+        return True
+    return any(_mentions(argument, predicate) for argument in typing.get_args(annotation))
+
+
+def _is_struct_class(annotation: Any) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, msgspec.Struct)
 
 
 def _require_strict(symbol: type) -> None:
@@ -148,7 +257,22 @@ def _is_strict(symbol: type) -> bool:
     return config.get("extra") == "forbid"
 
 
-def _is_pydantic_model(symbol: type) -> bool:
+def is_pydantic_model(symbol: Any) -> bool:
+    """Report whether *symbol* is a ``pydantic.BaseModel`` subclass.
+
+    Total over any *symbol*: a non-class value answers ``False`` rather than
+    raising, so a caller can probe an annotation argument without first
+    checking it is a class.
+
+    Args:
+        symbol: Value to test.
+
+    Returns:
+        ``True`` when *symbol* is a ``pydantic.BaseModel`` subclass and
+        pydantic is already imported.
+    """
+    if not isinstance(symbol, type):
+        return False
     pydantic = sys.modules.get("pydantic")
     return pydantic is not None and issubclass(symbol, pydantic.BaseModel)
 
@@ -171,6 +295,12 @@ class _MsgspecType:
     def to_builtins(self, obj: Any, /) -> Any:
         return msgspec.to_builtins(obj)
 
+    def from_builtins(self, payload: Any, /) -> Any:
+        try:
+            return msgspec.convert(payload, self.type)
+        except msgspec.ValidationError as exc:
+            raise BoundaryValidationError(str(exc)) from exc
+
 
 class _PydanticType:
     def __init__(self, symbol: Any) -> None:
@@ -182,7 +312,7 @@ class _PydanticType:
         self._validation_error: type[ValidationError] = ValidationError
 
     def schema(self) -> Mapping[str, Any]:
-        schema: dict[str, Any] = self.type.model_json_schema()
+        schema: dict[str, Any] = self._adapter.json_schema()
         schema.pop("title", None)
         return schema
 
@@ -193,7 +323,13 @@ class _PydanticType:
             raise BoundaryValidationError(_pydantic_message(exc)) from exc
 
     def to_builtins(self, obj: Any, /) -> Any:
-        return obj.model_dump(mode="json", by_alias=True)
+        return self._adapter.dump_python(obj, mode="json", by_alias=True)
+
+    def from_builtins(self, payload: Any, /) -> Any:
+        try:
+            return self._adapter.validate_python(payload)
+        except self._validation_error as exc:
+            raise BoundaryValidationError(_pydantic_message(exc)) from exc
 
 
 def _pydantic_message(exc: Any) -> str:

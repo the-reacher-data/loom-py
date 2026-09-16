@@ -25,11 +25,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict, RootModel
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
-from loom.core.cache.result_codec import (
-    _PydanticResultCodec,
-    _TypedResultCodec,
-    build_call_codec,
-)
+from loom.core.cache.result_codec import build_call_codec
 
 T = TypeVar("T")
 
@@ -177,7 +173,9 @@ class TestTheMsgspecGrammarIsTriedFirst:
 
     def test_a_struct_list_uses_the_msgspec_codec(self) -> None:
         """``list[StructDoc]`` is inside the grammar ``build_result_codec`` knows."""
-        assert isinstance(build_call_codec(struct_list), _TypedResultCodec)
+        codec = build_call_codec(struct_list)
+        assert codec is not None
+        assert codec._loom_type.library == "msgspec"
 
     def test_a_struct_list_round_trips(self) -> None:
         """Hit and miss agree on value and type."""
@@ -214,7 +212,9 @@ class TestPydanticReturnTypesRoundTrip:
 
     def test_a_pydantic_model_uses_the_pydantic_codec(self) -> None:
         """The branch is reached, not the msgspec one."""
-        assert isinstance(build_call_codec(pydantic_doc), _PydanticResultCodec)
+        codec = build_call_codec(pydantic_doc)
+        assert codec is not None
+        assert codec._loom_type.library == "pydantic"
 
     def test_an_aliased_model_is_stored_under_its_aliases(self) -> None:
         """``by_alias=True`` is what makes the stored payload readable back."""

@@ -152,7 +152,7 @@ def _schema_to_annotation(
     try:
         annotation = _annotation_for(schema, model_name)
         lt = msgspec_type(annotation)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, UnsupportedBoundaryType) as exc:
         return None, [invalid_issue(component, str(exc))]
     return (MappingProxyType(dict(schema)), lt), []
 

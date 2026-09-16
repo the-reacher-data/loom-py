@@ -89,7 +89,8 @@ def _compile_type_ref(ref: str, component: str) -> _CompileResult:
         return StateShape(schema=MappingProxyType(lt.schema()), loom_type=lt), []
     try:
         schema = msgspec.json.schema(symbol)
-    except TypeError as exc:
+        lt = msgspec_type(symbol)
+    except (TypeError, UnsupportedBoundaryType) as exc:
         return None, [state_type_ref_unsupported(component, ref, str(exc))]
     if _schema_admits_unknown_fields(schema):
         return None, [
@@ -101,7 +102,7 @@ def _compile_type_ref(ref: str, component: str) -> _CompileResult:
                 "exactly as the output side already requires (FR-017)",
             )
         ]
-    return StateShape(schema=MappingProxyType(schema), loom_type=msgspec_type(symbol)), []
+    return StateShape(schema=MappingProxyType(schema), loom_type=lt), []
 
 
 def _schema_admits_unknown_fields(schema: Mapping[str, Any]) -> bool:

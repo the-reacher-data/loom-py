@@ -15,6 +15,12 @@
   raises `BoundaryValidationError`. `pydantic` stays optional: the module
   gates on `sys.modules` and imports it locally, so a process that never
   declares a pydantic type never loads it.
+- **core:** `LoomType` gains `from_builtins(payload)`, the entry point for a
+  value that already arrived as Python builtins — a cache hit, an MCP tool
+  result — rather than as raw JSON. `CachedRepository`,
+  `CacheGateway.get_value`/`multi_get_values`, `@cache_call`/`@cache_query`
+  and `McpHandle.call(expect=...)` accept a strict `pydantic.BaseModel` next
+  to a `msgspec.Struct`; an annotation mixing both libraries is rejected.
 
 ### ai
 
@@ -30,6 +36,17 @@
   builtins, built from the plan's `LoomType`.
 
 ## ⚠ Behaviour changes
+
+### core
+
+- **core:** the miss path of a cached `@cache_query`/`@cache_call` read,
+  `McpHandle.call` and `CacheGateway.get_value`/`multi_get_values` now raise
+  `BoundaryValidationError` — a `ValueError` — on a stale or malformed cached
+  payload or MCP result, instead of `msgspec.ValidationError` or
+  `pydantic.ValidationError` directly; an `except ValueError` keeps catching
+  it. A `@cache_query` argument that is a pydantic instance now contributes
+  its builtins rendering to the cache key rather than the instance's own
+  `repr`, a one-time key change.
 
 ### ai
 
