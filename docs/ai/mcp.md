@@ -154,8 +154,10 @@ behind an address; stdio is for the servers you only consume.
 
 What stdio does not do:
 
-- **it does not reconnect.** A dead subprocess fails the call, exactly as a
-  dead HTTP server does; nothing restarts it;
+- **it does not supervise the child.** A dead subprocess fails the call that
+  finds it, exactly as a dead HTTP server does. A call made through `Mcp()`
+  after that one spawns a new child (see "A session that died after it opened
+  is replaced by the next call"); an agent's own capability does not;
 - **it spawns one process per server, for the whole worker.** Start-up spawns
   it and every agent granted that server speaks to that one child. It dies with
   the last holder of the connection — normally the runtime, briefly a straggler
@@ -584,6 +586,43 @@ reports `ok`** even when that server never connected, and the failure
 surfaces only on the first business request that reaches it, as
 `TOOL_UNAVAILABLE`. Extending the probe to a use-case-only server is future
 work, not something this version does.
+
+### A session that died after it opened is replaced by the next call
+
+A server that connected at start-up can still go away later: a transport error
+under an in-flight call, a redeploy of the server, a stdio child that exits.
+The worker's one session is held open for its whole life, and that holder is
+also what stops the underlying client from ever being re-entered — so before
+this was handled, every call through `Mcp()` failed from then on, in a
+millisecond each, until the worker restarted, while the health probe kept
+answering `ok`.
+
+`_ToolsetSession` now replaces the session itself. Nothing can be asked of the
+client: once its transport is gone it still reports itself connected. The
+evidence is the call. A tool's own error comes back as a result flagged
+`is_error`; **an exception out of the round trip is the transport failing**.
+So:
+
+- **the call that found it dead is raised as it is, and never repeated.** It
+  may have run on the server, and a tool with side effects is not run twice on
+  your behalf. Retrying it is your decision;
+- **the next call opens a new session first**, against the same connection —
+  over stdio, that is a new child process. Concurrent calls that find it dead
+  renew it once;
+- **a renewal that cannot connect raises**, and the call after it tries again:
+  an outage costs one connection attempt per call, bounded by the handshake
+  deadline, and ends with the first call made after the server is back;
+- **suspecting a healthy session costs one reconnection.** A single failed call
+  is not proof the session died; opening another is cheap and harmless, so it
+  is not weighed further.
+
+This covers the `Mcp()` path and whatever else calls through the runtime's
+session. **An agent's own `mcp` capability does not recover yet**: the compiled
+agent holds the toolset it was built with, and swapping that needs the engine
+build to go through an indirection it does not have. Two other things are
+unchanged: a server that never connected at start-up under `optional` is still
+not reconnected (above), and the health probe still does not see a
+use-case-only server.
 
 ### A use case's call runs in parallel with other grant views
 

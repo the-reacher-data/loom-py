@@ -36,7 +36,9 @@ break every deployment that declares no ``mcp`` grant.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -48,6 +50,8 @@ from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
 if TYPE_CHECKING:
     from fastmcp.client.transports import ClientTransport
     from pydantic_ai.mcp import MCPToolset
+
+_logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS: Final[float] = 10.0
 """Fallback handshake deadline, seconds, matching
@@ -74,12 +78,58 @@ class _ToolsetSession(ConcurrentMcpSession):
     ``__aexit__`` to decide when the connection opens and closes; that is a
     connection-lifecycle concern, not what makes concurrent calls safe.
 
+    A session that died after it opened is replaced by the next call. The
+    ``fastmcp`` client still reports itself connected once its transport is
+    gone, so the evidence is the call: a tool's own error is a result flagged
+    ``is_error``, and an exception out of the round trip is the transport
+    failing. That call is raised and never repeated -- it may have run on the
+    server -- and the one after it opens a fresh toolset first.
+
     Args:
         toolset: Already-entered toolset speaking to one server.
+        rebuild: Builds a new, not yet entered toolset for the same
+            connection; ``None`` never replaces the one given.
     """
 
-    def __init__(self, toolset: MCPToolset[Any]) -> None:
+    def __init__(
+        self,
+        toolset: MCPToolset[Any],
+        *,
+        rebuild: Callable[[], MCPToolset[Any]] | None = None,
+    ) -> None:
         self._toolset = toolset
+        self._rebuild = rebuild
+        self._suspect: MCPToolset[Any] | None = None
+        self._renewing = asyncio.Lock()
+        self._renewed: list[MCPToolset[Any]] = []
+
+    async def _live(self) -> MCPToolset[Any]:
+        """Return the toolset to speak through, replacing a suspect one at most once.
+
+        A renewal that cannot connect raises and leaves the suspect in place,
+        so the next call tries again.
+        """
+        toolset = self._toolset
+        if self._rebuild is None or self._suspect is not toolset:
+            return toolset
+        async with self._renewing:
+            if self._toolset is not toolset:
+                return self._toolset
+            fresh = self._rebuild()
+            await fresh.__aenter__()
+            self._renewed.append(fresh)
+            self._toolset = fresh
+            _logger.warning("mcp session renewed after a failed call")
+            return fresh
+
+    async def aclose(self) -> None:
+        """Close the toolsets this session opened itself; the first belongs to its opener."""
+        while self._renewed:
+            toolset = self._renewed.pop()
+            try:
+                await toolset.__aexit__(None, None, None)
+            except Exception:
+                _logger.warning("a renewed mcp session did not close cleanly", exc_info=True)
 
     async def list_tools(self) -> tuple[McpToolInfo, ...]:
         """Return the tools the server exposes, each with its output-schema flag.
@@ -91,7 +141,7 @@ class _ToolsetSession(ConcurrentMcpSession):
         """
         return tuple(
             McpToolInfo(name=tool.name, has_output_schema=tool.output_schema is not None)
-            for tool in await self._toolset.list_tools()
+            for tool in await (await self._live()).list_tools()
         )
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
@@ -125,8 +175,13 @@ class _ToolsetSession(ConcurrentMcpSession):
         Returns:
             The server's own error flag and structured content, verbatim.
         """
-        async with self._toolset:
-            result = await self._toolset.client.call_tool_mcp(name, dict(arguments))
+        toolset = await self._live()
+        try:
+            async with toolset:
+                result = await toolset.client.call_tool_mcp(name, dict(arguments))
+        except Exception:
+            self._suspect = toolset
+            raise
         return McpToolCallResult(ok=not result.is_error, structured=result.structured_content)
 
 
@@ -370,7 +425,14 @@ class SharedMcpToolsets:
         self._opened.add(connection)
         toolset = self._toolset(connection)
         async with toolset:
-            yield _ToolsetSession(toolset)
+            session = _ToolsetSession(
+                toolset,
+                rebuild=lambda: build_mcp_toolset(connection, init_timeout=self._init_timeout),
+            )
+            try:
+                yield session
+            finally:
+                await session.aclose()
 
 
 @asynccontextmanager
