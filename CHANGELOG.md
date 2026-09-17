@@ -123,6 +123,21 @@
   The `etl-polars` extra now requires `polars>=1.24`, the release that
   named that join option `nulls_equal`.
 
+### ai
+
+- **ai:** an MCP session that dies after it opened no longer fails every later
+  call until the worker restarts. The worker holds one session per server for
+  its whole life, and that holder kept the dead client from ever being
+  re-entered: after a transport error under an in-flight call, a redeploy of
+  the server or a stdio child that exited, each call through `Mcp()` failed in
+  a millisecond while the health probe answered `ok`. `_ToolsetSession` now
+  treats an exception out of a call's round trip as the transport failing: that
+  call is raised as it is and never repeated, and the next call opens a new
+  session first, once even under concurrency. A renewal that cannot connect
+  raises and is tried again by the following call. An agent's own `mcp`
+  capability does not recover yet; see "A session that died after it opened is
+  replaced by the next call" in `docs/ai/mcp.md`.
+
 ## ♻️ Refactor
 
 ### etl
