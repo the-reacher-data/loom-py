@@ -7,7 +7,15 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import msgspec
 
 from loom.ai._filters import select_names
-from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, DepsFactory, McpHandle, SqlGrantHandle
+from loom.ai.abc import (
+    AgentAnswer,
+    AgentHandle,
+    AgentUsage,
+    DepsFactory,
+    McpHandle,
+    Prompt,
+    SqlGrantHandle,
+)
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.di import LoomContainer
 from loom.core.engine.compiler import UseCaseCompiler
@@ -28,7 +36,7 @@ cost, one request, so a double never claims work it did not do."""
 class RecordedRun:
     """One call :meth:`AgentHandleDouble.run` received."""
 
-    prompt: str
+    prompt: Prompt
     expect: type[Any] | None
     conversation_id: str | None
     state: object | None = None
@@ -38,7 +46,7 @@ class RecordedRun:
 class RecordedRunText:
     """One call :meth:`AgentHandleDouble.run_text` received."""
 
-    prompt: str
+    prompt: Prompt
     conversation_id: str | None
     state: object | None = None
 
@@ -417,7 +425,7 @@ class AgentHandleDouble:
 
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         expect: type[Any] | None = None,
         conversation_id: str | None = None,
@@ -439,7 +447,7 @@ class AgentHandleDouble:
 
     async def run_text(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         conversation_id: str | None = None,
         state: object | None = None,

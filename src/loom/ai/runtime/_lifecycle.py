@@ -42,6 +42,7 @@ from loom.ai.abc import (
     HealthState,
     McpSession,
     McpToolInfo,
+    Prompt,
     StateShape,
 )
 from loom.ai.compiler._plan import (
@@ -387,7 +388,7 @@ class AgentRuntime:
     async def run(
         self,
         name: str,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation_id: str | None = None,
@@ -475,7 +476,7 @@ class AgentRuntime:
     def run_stream(
         self,
         name: str,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation_id: str | None = None,
@@ -891,7 +892,7 @@ class AgentRuntime:
     async def _run_stream(
         self,
         name: str,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation_id: str | None,
@@ -1138,7 +1139,7 @@ class AgentRuntime:
 
 def _open_engine_stream(
     engine: AgentEngine,
-    prompt: str,
+    prompt: Prompt,
     *,
     identity: Identity,
     conversation: Conversation | None,

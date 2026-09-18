@@ -127,6 +127,22 @@ class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
         return self.cache_read_tokens / self.input_tokens
 
 
+class Attachment(LoomFrozenStruct, frozen=True, kw_only=True):
+    """One binary part of a :data:`Prompt`, alongside its media type.
+
+    Attributes:
+        media_type: IANA media type of ``data``, e.g. ``"image/png"``.
+        data: Raw bytes of the attachment.
+    """
+
+    media_type: str
+    data: bytes
+
+
+Prompt: TypeAlias = str | Sequence[str | Attachment]
+"""A run's prompt: plain text, or an ordered mix of text and attachments."""
+
+
 class Conversation(LoomFrozenStruct, frozen=True, kw_only=True):
     """The conversation a run continues.
 
@@ -350,7 +366,7 @@ class AgentHandle(Protocol[AnswerT]):
     @overload
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         conversation_id: str | None = None,
         state: object | None = None,
@@ -359,7 +375,7 @@ class AgentHandle(Protocol[AnswerT]):
     @overload
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         expect: type[ExpectedT],
         conversation_id: str | None = None,
@@ -368,7 +384,7 @@ class AgentHandle(Protocol[AnswerT]):
 
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         expect: type[ExpectedT] | None = None,
         conversation_id: str | None = None,
@@ -401,7 +417,8 @@ class AgentHandle(Protocol[AnswerT]):
         never what the agent is allowed to do.
 
         Args:
-            prompt: Prompt for this run.
+            prompt: Prompt for this run: text, or text and attachments in
+                order.
             expect: When given, decode this run's answer into this type
                 instead of the artefact's declared output. Applies to this
                 run only.
@@ -428,7 +445,7 @@ class AgentHandle(Protocol[AnswerT]):
 
     async def run_text(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         conversation_id: str | None = None,
         state: object | None = None,
@@ -448,7 +465,8 @@ class AgentHandle(Protocol[AnswerT]):
         instead.
 
         Args:
-            prompt: Prompt for this run.
+            prompt: Prompt for this run: text, or text and attachments in
+                order.
             conversation_id: Identifier of the conversation this run
                 continues; ``None`` runs single-shot.
             state: This run's state, forwarded to :meth:`run` unchanged; see
@@ -627,7 +645,7 @@ class AgentEngine(Protocol):
 
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation: Conversation | None = None,
@@ -636,7 +654,8 @@ class AgentEngine(Protocol):
         """Run the agent to completion.
 
         Args:
-            prompt: Caller prompt.
+            prompt: Prompt for this run: text, or text and attachments in
+                order.
             identity: Verified caller; every capability call runs as them.
             conversation: The conversation this run continues; ``None`` runs
                 single-shot.
@@ -655,7 +674,7 @@ class AgentEngine(Protocol):
 
     def run_stream(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation: Conversation | None = None,
@@ -668,7 +687,8 @@ class AgentEngine(Protocol):
         deterministic on exit instead of being left to the garbage collector.
 
         Args:
-            prompt: Caller prompt.
+            prompt: Prompt for this run: text, or text and attachments in
+                order.
             identity: Verified caller; every capability call runs as them.
             conversation: The conversation this run continues; ``None`` runs
                 single-shot.

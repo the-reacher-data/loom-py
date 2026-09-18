@@ -45,7 +45,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from loom.ai.abc import AgentAnswer, AgentHandle, McpHandle, SqlGrantHandle
+from loom.ai.abc import AgentAnswer, AgentHandle, McpHandle, Prompt, SqlGrantHandle
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.runtime._grants import AgentGrants, McpGrantView, SqlGrantView
 from loom.ai.runtime._lifecycle import AgentRuntime
@@ -93,7 +93,7 @@ class _BoundAgentHandle:
 
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         expect: type[Any] | None = None,
         conversation_id: str | None = None,
@@ -148,7 +148,7 @@ class _BoundAgentHandle:
 
     async def run_text(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         conversation_id: str | None = None,
         state: object | None = None,
