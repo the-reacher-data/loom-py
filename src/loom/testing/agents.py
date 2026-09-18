@@ -24,6 +24,7 @@ from loom.ai.abc import (
     ErrorEvent,
     FinalEvent,
     HealthStatus,
+    Prompt,
     TextDeltaEvent,
 )
 from loom.ai.errors import AgentRunErrorClass, AgentRunErrorCode, is_retriable, run_error_class
@@ -116,7 +117,7 @@ class FakeAgentEngine:
 
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation: Conversation | None = None,
@@ -147,7 +148,7 @@ class FakeAgentEngine:
 
     def run_stream(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation: Conversation | None = None,

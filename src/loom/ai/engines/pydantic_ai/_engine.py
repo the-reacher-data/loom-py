@@ -32,14 +32,14 @@ carries the same gap forward once observed.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import fields
 from time import perf_counter
 from types import MappingProxyType
 from typing import Any, Final, cast
 
-from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
+from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent, BinaryContent
 from pydantic_ai.messages import ModelResponse, PartStartEvent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
@@ -52,6 +52,7 @@ from loom.ai.abc import (
     ErrorEvent,
     FinalEvent,
     HealthStatus,
+    Prompt,
     TextDeltaEvent,
 )
 from loom.ai.compiler import AgentPlan
@@ -178,7 +179,7 @@ class PydanticAIEngine:
 
     async def run(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation: Conversation | None = None,
@@ -231,7 +232,7 @@ class PydanticAIEngine:
 
     def run_stream(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation: Conversation | None = None,
@@ -254,7 +255,7 @@ class PydanticAIEngine:
 
     def run_stream_shaped(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         identity: Identity,
         conversation: Conversation | None = None,
@@ -324,7 +325,7 @@ class PydanticAIEngine:
 
     async def _run_with_retries(
         self,
-        prompt: str,
+        prompt: Prompt,
         identity: Identity,
         spend: RunUsage,
         conversation: RunConversation | None,
@@ -348,7 +349,7 @@ class PydanticAIEngine:
         for attempt in range(self._attempts):
             try:
                 result = await self._agent.run(
-                    prompt,
+                    _user_prompt(prompt),
                     deps=deps,
                     usage=spend,
                     usage_limits=self._usage_limits,
@@ -471,7 +472,7 @@ class PydanticAIEngine:
     @asynccontextmanager
     async def _stream(
         self,
-        prompt: str,
+        prompt: Prompt,
         identity: Identity,
         conversation: Conversation | None,
         *,
@@ -486,7 +487,7 @@ class PydanticAIEngine:
 
     async def _events(
         self,
-        prompt: str,
+        prompt: Prompt,
         identity: Identity,
         conversation: Conversation | None,
         output_type: type[Any] | None,
@@ -552,7 +553,7 @@ class PydanticAIEngine:
 
     async def _one_run(
         self,
-        prompt: str,
+        prompt: Prompt,
         deps: object,
         spend: RunUsage,
         conversation: RunConversation | None,
@@ -587,7 +588,7 @@ class PydanticAIEngine:
         pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
         agent = self._agent if output_type is None else self._shaped_agent
         async with agent.run_stream_events(
-            prompt,
+            _user_prompt(prompt),
             deps=deps,
             usage=spend,
             usage_limits=self._usage_limits,
@@ -730,3 +731,13 @@ def _count_unpriced_responses(result: AgentRunResult[Any]) -> int:
 async def _backoff(attempt: int) -> None:
     """Wait before the next attempt, doubling the base wait per attempt."""
     await asyncio.sleep(RETRY_BACKOFF_MS * (2**attempt) / 1000)
+
+
+def _user_prompt(prompt: Prompt) -> str | Sequence[str | BinaryContent]:
+    """The prompt as pydantic-ai takes it: an attachment becomes ``BinaryContent``."""
+    if isinstance(prompt, str):
+        return prompt
+    return [
+        part if isinstance(part, str) else BinaryContent(data=part.data, media_type=part.media_type)
+        for part in prompt
+    ]

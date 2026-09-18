@@ -12,9 +12,10 @@ from __future__ import annotations
 import inspect
 import typing
 
+import msgspec
 import pytest
 
-from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, McpHandle, SqlGrantHandle
+from loom.ai.abc import AgentAnswer, AgentHandle, AgentUsage, Attachment, McpHandle, SqlGrantHandle
 
 
 def _sample_usage() -> AgentUsage:
@@ -68,6 +69,19 @@ class TestAgentHandleRun:
         registered = typing.get_overloads(AgentHandle.run)
 
         assert len(registered) == 2
+
+
+class TestAttachment:
+    def test_is_frozen(self) -> None:
+        attachment = Attachment(media_type="image/png", data=b"\x89PNG")
+
+        with pytest.raises(AttributeError):
+            attachment.media_type = "image/jpeg"  # type: ignore[misc]
+
+    def test_declares_exactly_media_type_and_data(self) -> None:
+        campos = frozenset(info.name for info in msgspec.structs.fields(Attachment))
+
+        assert campos == {"media_type", "data"}
 
 
 class TestAgentHandleGrants:
