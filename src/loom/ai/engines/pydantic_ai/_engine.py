@@ -42,9 +42,11 @@ from typing import Any, Final, cast
 
 from pydantic_ai import (
     Agent,
+    AgentRun,
     AgentRunResult,
     AgentRunResultEvent,
     BinaryContent,
+    CallToolsNode,
 )
 from pydantic_ai.messages import ModelResponse, PartStartEvent
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -654,18 +656,10 @@ class PydanticAIEngine:
             node = run.next_node
             while not Agent.is_end_node(node):
                 if Agent.is_call_tools_node(node):
-                    # A whole response carries its text already complete, so it is offered
-                    # as the ``PartStartEvent`` a streamed run would have opened it with.
-                    for index, part in enumerate(node.model_response.parts):
-                        start = PartStartEvent(index=index, part=part)
-                        mapped = self._relay_or_buffer(start, self._withhold, pending)
+                    async for event in _whole_response(node, run):
+                        mapped = self._relay_or_buffer(event, self._withhold, pending)
                         if mapped is not None:
                             yield mapped
-                    async with node.stream(run.ctx) as events:
-                        async for event in events:
-                            mapped = self._relay_or_buffer(event, self._withhold, pending)
-                            if mapped is not None:
-                                yield mapped
                 node = await run.next(node)
             # pydantic-ai leaves ``result`` typed optional though the ``End`` node just
             # reached guarantees it; appended unconditionally, so a violated guarantee
@@ -800,6 +794,21 @@ def _count_unpriced_responses(result: AgentRunResult[Any]) -> int:
 async def _backoff(attempt: int) -> None:
     """Wait before the next attempt, doubling the base wait per attempt."""
     await asyncio.sleep(RETRY_BACKOFF_MS * (2**attempt) / 1000)
+
+
+async def _whole_response(
+    node: CallToolsNode[Any, Any], run: AgentRun[Any, Any]
+) -> AsyncIterator[object]:
+    """Every engine event of one whole response: its own parts first, then its tool events.
+
+    A whole response carries its text already complete, so each part is offered as the
+    ``PartStartEvent`` a streamed run would have opened it with.
+    """
+    for index, part in enumerate(node.model_response.parts):
+        yield PartStartEvent(index=index, part=part)
+    async with node.stream(run.ctx) as events:
+        async for event in events:
+            yield event
 
 
 def _user_prompt(prompt: Prompt) -> str | Sequence[str | BinaryContent]:
