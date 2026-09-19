@@ -116,6 +116,27 @@ class TestModelBindingValidation:
 
         assert config.models["default"].output_mode == mode
 
+    def test_a_binding_can_ask_for_whole_answers_instead_of_streamed_ones(self) -> None:
+        """``streaming: false`` loads for that role alone; every other binding streams."""
+        document = b"""
+engine: pydantic-ai
+specs: ["ai/agents/*/agent.yaml"]
+models:
+  reporting:
+    provider: openai
+    model: gpt-test
+    streaming: false
+  default:
+    provider: openai
+    model: gpt-test
+"""
+
+        config = msgspec.yaml.decode(document, type=AiConfig)
+
+        assert config.models["reporting"].streaming is False
+        assert config.models["default"].streaming is True
+        assert "streaming=False" in repr(config.models["reporting"])
+
     def test_fails_with_output_mode_unknown_when_the_mode_arrives_via_yaml(self) -> None:
         """The decode path reports the loom issue, not a raw msgspec error.
 

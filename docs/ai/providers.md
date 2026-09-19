@@ -127,7 +127,7 @@ redacts itself:
 
 ```pycon
 >>> print(target)
-InferenceTarget(provider='bedrock', model='anthropic.claude-sonnet-4-...', region='eu-west-1', endpoint=None, output_mode=None, credentials_ref=<redacted>, options=<redacted>)
+InferenceTarget(provider='bedrock', model='anthropic.claude-sonnet-4-...', region='eu-west-1', endpoint=None, output_mode=None, streaming=True, credentials_ref=<redacted>, options=<redacted>)
 ```
 
 and **refuses** to be serialised at all when it carries a secret reference —
@@ -194,6 +194,34 @@ loom does not infer it per provider. Two consequences follow from that:
   in the logs; the caller sees the code. Loom cannot check a mode against a
   model before the first request, so a wrong pin is found there, not at
   start-up.
+
+## Asking for the answer whole, not as a stream
+
+Loom streams every run, so it can supervise it as it happens; the provider
+is asked to stream too. Some models stream badly: on Bedrock, one family
+delivers a short tool call with its opening characters missing, one answer
+in two, while the same answer asked without streaming arrives whole -- the
+provider parses it before sending it. A binding can ask for that instead:
+
+```yaml
+ai:
+  models:
+    reasoning:
+      provider: bedrock
+      model: <model id>
+      streaming: false
+```
+
+What changes for that role, and only for it: each model request is answered in
+one piece. A run loses nothing else — the answer is validated and retried the
+same way, the usage is the same, and a `run_stream` caller still receives what
+the model said and every tool call and result, in order; the text simply
+arrives as one delta per response instead of many. The policies
+(`run_timeout_ms`, `max_iterations`, `max_requests`) apply as before.
+
+It is the choice pydantic-ai offers between `run` and `run_stream`, made per
+model binding rather than per call: the artifact never has to know which model
+serves it, and a role can be moved back by deleting the line.
 
 ## What does not happen
 

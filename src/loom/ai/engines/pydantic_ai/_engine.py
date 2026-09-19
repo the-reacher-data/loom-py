@@ -39,7 +39,14 @@ from time import perf_counter
 from types import MappingProxyType
 from typing import Any, Final, cast
 
-from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent, BinaryContent
+from pydantic_ai import (
+    Agent,
+    AgentRun,
+    AgentRunResult,
+    AgentRunResultEvent,
+    BinaryContent,
+    CallToolsNode,
+)
 from pydantic_ai.messages import ModelResponse, PartStartEvent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
@@ -582,26 +589,85 @@ class PydanticAIEngine:
         :attr:`_shaped_agent`, carrying no output validator, when given —
         pydantic-ai refuses a run-level ``output_type`` on an agent holding
         one — and :attr:`_agent`, the plan's own checked agent, otherwise.
+
+        A binding that declares ``streaming: false`` is served by
+        :meth:`_one_run_whole` instead, which relays the same events.
         """
-        withhold = self._withhold
         pending: list[AgentEvent] = []
         pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
         agent = self._agent if output_type is None else self._shaped_agent
-        async with agent.run_stream_events(
-            _user_prompt(prompt),
-            deps=deps,
-            usage=spend,
-            usage_limits=self._usage_limits,
+        run_args: dict[str, Any] = {
+            "deps": deps,
+            "usage": spend,
+            "usage_limits": self._usage_limits,
             **run_kwargs(conversation),
             **pinned,
-        ) as stream:
+        }
+        if not self._plan.inference.streaming:
+            async for relayed in self._one_run_whole(prompt, agent, run_args, pending, outcome):
+                yield relayed
+            return
+        async with agent.run_stream_events(_user_prompt(prompt), **run_args) as stream:
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
                     outcome.append(event.result)
                     for held in pending:
                         yield held
                     return
-                mapped = self._relay_or_buffer(event, withhold, pending)
+                mapped = self._relay_or_buffer(event, self._withhold, pending)
+                if mapped is not None:
+                    yield mapped
+
+    async def _one_run_whole(
+        self,
+        prompt: Prompt,
+        agent: Agent[Any, Any],
+        run_args: dict[str, Any],
+        pending: list[AgentEvent],
+        outcome: list[AgentRunResult[Any]],
+    ) -> AsyncIterator[AgentEvent]:
+        """One attempt whose model requests are answered whole, never streamed.
+
+        The run is driven node by node, as pydantic-ai's own ``run`` drives it,
+        so every request is answered in one piece -- parsed by the provider
+        before it is sent -- and the attempt keeps its validation, its tool
+        retries and its usage. Nothing a streamed attempt relays is lost: each
+        response's text reaches the caller as a single delta, and every tool
+        call and result as it happens.
+        """
+        async with agent.iter(_user_prompt(prompt), **run_args) as run:
+            node = run.next_node
+            while not Agent.is_end_node(node):
+                if Agent.is_call_tools_node(node):
+                    async for event in self._answered(node, run, pending):
+                        yield event
+                node = await run.next(node)
+            if run.result is not None:
+                outcome.append(run.result)
+        for held in pending:
+            yield held
+
+    async def _answered(
+        self,
+        node: CallToolsNode[Any, Any],
+        run: AgentRun[Any, Any],
+        pending: list[AgentEvent],
+    ) -> AsyncIterator[AgentEvent]:
+        """One whole response as loom events: its text first, then its tool calls.
+
+        A whole response carries its text already complete, so it is offered as
+        the ``PartStartEvent`` a streamed run would have opened it with -- the
+        one event the buffering policy reads to tell a replay from a first
+        attempt.
+        """
+        for index, part in enumerate(node.model_response.parts):
+            start = PartStartEvent(index=index, part=part)
+            mapped = self._relay_or_buffer(start, self._withhold, pending)
+            if mapped is not None:
+                yield mapped
+        async with node.stream(run.ctx) as events:
+            async for event in events:
+                mapped = self._relay_or_buffer(event, self._withhold, pending)
                 if mapped is not None:
                     yield mapped
 
