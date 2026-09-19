@@ -38,6 +38,7 @@ from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
 from loom.ai.engines.pydantic_ai._native import supported_native_tools
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
+from loom.ai.errors import AgentCompilationError, streaming_required_by_capability
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.model import LoomType
@@ -149,7 +150,9 @@ class PydanticAIEngineProvider:
             AgentCompilationError: When the vendor SDK the binding needs is not
                 installed, a required provider setting is missing, a
                 templated instruction block needs the templating extra and
-                it is not installed, or a templated block fails to compile.
+                it is not installed, a templated block fails to compile, or
+                the plan sets ``streaming: false`` while a built capability
+                overrides ``wrap_run_event_stream``.
         """
         if not isinstance(plan, AgentPlan):
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
@@ -161,6 +164,10 @@ class PydanticAIEngineProvider:
         )
         toolsets = build_toolsets(plan, container, mcp=self._mcp)
         capabilities = build_capabilities(plan, container)
+        if not plan.inference.streaming and any(
+            capability.has_wrap_run_event_stream for capability in capabilities
+        ):
+            raise AgentCompilationError([streaming_required_by_capability(plan.name)])
         output_type = build_output_type(plan)
         # The keyword is absent, not ``None``, when no mode is pinned: the
         # engine's default for ``output_type`` is ``str``, and passing ``None``

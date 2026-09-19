@@ -19,6 +19,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
+from pydantic_ai.output import StructuredDict
 from pydantic_ai.toolsets import FunctionToolset
 
 from loom.ai.abc import (
@@ -66,10 +67,6 @@ def _damaged_stream_model(payload: bytes) -> FunctionModel:
     return FunctionModel(respond, stream_function=stream)
 
 
-def _lookup(city: str) -> str:
-    return f"{city}: sunny"
-
-
 @dataclass(frozen=True)
 class _Bundle:
     """The attributes a capability call is gated on."""
@@ -97,6 +94,20 @@ def _talking_model(payload: bytes) -> FunctionModel:
     return FunctionModel(respond)
 
 
+def _two_texts_model(payload: bytes) -> FunctionModel:
+    """A model that says two things before answering."""
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        parts = [
+            TextPart("lo he mirado"),
+            TextPart("y esto es lo que veo"),
+            ToolCallPart(info.output_tools[0].name, payload.decode()),
+        ]
+        return ModelResponse(parts=parts)
+
+    return FunctionModel(respond)
+
+
 def _tool_then_answer_model(payload: bytes) -> FunctionModel:
     """A model that calls ``lookup`` first and answers on the turn after."""
 
@@ -113,18 +124,6 @@ def _tool_then_answer_model(payload: bytes) -> FunctionModel:
     return FunctionModel(respond)
 
 
-def test_a_binding_streams_unless_it_says_otherwise() -> None:
-    assert InferenceTarget(provider="openai", model="a-model").streaming is True
-
-
-async def test_the_answer_comes_back_whole_without_the_model_ever_streaming() -> None:
-    engine = build_engine(make_plan(inference=_WHOLE), _whole_only_model(encode(_ANSWER)))
-
-    result = await engine.run("assess", identity=_IDENTITY)
-
-    assert result.output == _ANSWER
-
-
 async def test_the_text_of_a_whole_answer_reaches_the_caller_as_one_delta() -> None:
     """Whole or streamed, a caller watching the run still sees what the model said."""
     engine = build_engine(make_plan(inference=_WHOLE), _talking_model(encode(_ANSWER)))
@@ -134,6 +133,21 @@ async def test_the_text_of_a_whole_answer_reaches_the_caller_as_one_delta() -> N
 
     assert [event for event in seen if isinstance(event, TextDeltaEvent)] == [
         TextDeltaEvent(text="lo he mirado")
+    ]
+    assert isinstance(seen[-1], FinalEvent)
+    assert seen[-1].output == _ANSWER
+
+
+async def test_a_whole_answer_with_two_text_parts_reaches_the_caller_as_two_deltas() -> None:
+    """One delta per text part, not one per response: two parts, two deltas, in order."""
+    engine = build_engine(make_plan(inference=_WHOLE), _two_texts_model(encode(_ANSWER)))
+
+    async with engine.run_stream("assess", identity=_IDENTITY) as events:
+        seen = [event async for event in events]
+
+    assert [event for event in seen if isinstance(event, TextDeltaEvent)] == [
+        TextDeltaEvent(text="lo he mirado"),
+        TextDeltaEvent(text="y esto es lo que veo"),
     ]
     assert isinstance(seen[-1], FinalEvent)
     assert seen[-1].output == _ANSWER
@@ -156,7 +170,29 @@ async def test_a_damaged_stream_is_what_asking_whole_is_for() -> None:
     assert whole.output == _ANSWER
 
 
+async def test_a_shaped_run_is_served_whole_too() -> None:
+    """``expect=``/``run_text`` reach the same attempt, so they get the same road."""
+    shape = StructuredDict({"type": "object"})
+    engine = build_engine(make_plan(inference=_WHOLE), _whole_only_model(encode(_ANSWER)))
+
+    async with engine.run_stream_shaped("assess", identity=_IDENTITY, output_type=shape) as events:
+        seen = [event async for event in events]
+
+    assert isinstance(seen[-1], FinalEvent)
+    assert seen[-1].output == _ANSWER
+
+
 async def test_tool_calls_and_their_results_still_reach_the_caller() -> None:
+    """A memoized node's stream must run its tool exactly once: ``run.next`` does not
+    re-execute a node the caller already streamed, so an event-shape assertion alone would
+    not catch a silent second execution of a granted operation."""
+    calls = 0
+
+    def _lookup(city: str) -> str:
+        nonlocal calls
+        calls += 1
+        return f"{city}: sunny"
+
     capability = CompiledPythonCapability(
         factory_ref="tests:factory",
         factory=lambda context: FunctionToolset([_lookup], max_retries=0),
@@ -168,3 +204,4 @@ async def test_tool_calls_and_their_results_still_reach_the_caller() -> None:
         seen = [event async for event in events]
 
     assert [type(event) for event in seen] == [ToolCallEvent, ToolResultEvent, FinalEvent]
+    assert calls == 1

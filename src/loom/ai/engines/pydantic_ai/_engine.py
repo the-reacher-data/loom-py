@@ -32,6 +32,7 @@ carries the same gap forward once observed.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import fields
@@ -41,11 +42,9 @@ from typing import Any, Final, cast
 
 from pydantic_ai import (
     Agent,
-    AgentRun,
     AgentRunResult,
     AgentRunResultEvent,
     BinaryContent,
-    CallToolsNode,
 )
 from pydantic_ai.messages import ModelResponse, PartStartEvent
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -76,12 +75,17 @@ from loom.ai.errors import AgentRunError, AgentRunErrorCode, is_retriable
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 
+_logger = logging.getLogger(__name__)
+
 RETRY_BACKOFF_MS = 200
 """Base wait before a retried attempt; doubled per attempt (FR-028).
 
 A constant rather than a policy field: ``policies`` describes what the agent
 is allowed to spend, and no requirement asks the artifact to tune the wait.
 """
+
+MAX_LOGGED_CAUSE_CHARS = 500
+"""Cap on a logged failure cause: it is model-authored text, unbounded at the source."""
 
 _HEALTHY = HealthStatus(status="ok")
 
@@ -365,6 +369,7 @@ class PydanticAIEngine:
             except Exception as exc:
                 error = as_run_error(exc)
                 self._record(error.code)
+                self._log_cause(error, exc)
                 if self._may_retry(error.code, attempt):
                     await _backoff(attempt)
                     continue
@@ -419,7 +424,19 @@ class PydanticAIEngine:
         """
         error = as_run_error(exc)
         self._record(error.code)
+        self._log_cause(error, exc)
         return error, not emitted and self._may_retry(error.code, attempt)
+
+    def _log_cause(self, error: AgentRunError, exc: Exception) -> None:
+        """Log what the published failure cannot carry: the answer that caused it, truncated."""
+        if exc.__cause__ is not None:
+            cause = str(exc.__cause__)[:MAX_LOGGED_CAUSE_CHARS]
+            _logger.warning(
+                "agent %s failed with %s, raised from: %s",
+                self._plan.name,
+                error.code.value,
+                cause,
+            )
 
     def _apply_unpriced_spend_policy(self, result: AgentRunResult[Any]) -> int:
         """Act on this run's responses that pydantic-ai could not price.
@@ -544,7 +561,7 @@ class PydanticAIEngine:
             if not outcome:
                 raise AssertionError(
                     "unreachable: the engine's own event stream always ends with a "
-                    "trailing AgentRunResultEvent"
+                    "trailing AgentRunResultEvent, or, for a whole run, its own result"
                 )
             try:
                 final = self._conclude(outcome[0], spend, started, output_type)
@@ -579,8 +596,8 @@ class PydanticAIEngine:
         than relayed live, and flushed only once this attempt's
         ``AgentRunResultEvent`` arrives: an ``output_check`` rejection and a
         pydantic validation failure alike replay the model request inside
-        this same call, each replay's ``PartStartEvent`` starts again at
-        ``index=0``, and a delta already relayed cannot be un-sent. A plan
+        this same call, and each replay opens with a new response's first
+        part, at ``index=0``, so a delta already relayed cannot be un-sent. A plan
         that withholds nothing never buffers: *pending* stays empty and every
         mapped event is yielded as it arrives, exactly as before
         ``output_check`` existed.
@@ -631,45 +648,31 @@ class PydanticAIEngine:
         The run is driven node by node, as pydantic-ai's own ``run`` drives it,
         so every request is answered in one piece -- parsed by the provider
         before it is sent -- and the attempt keeps its validation, its tool
-        retries and its usage. Nothing a streamed attempt relays is lost: each
-        response's text reaches the caller as a single delta, and every tool
-        call and result as it happens.
+        retries and its usage.
         """
         async with agent.iter(_user_prompt(prompt), **run_args) as run:
             node = run.next_node
             while not Agent.is_end_node(node):
                 if Agent.is_call_tools_node(node):
-                    async for event in self._answered(node, run, pending):
-                        yield event
+                    # A whole response carries its text already complete, so it is offered
+                    # as the ``PartStartEvent`` a streamed run would have opened it with.
+                    for index, part in enumerate(node.model_response.parts):
+                        start = PartStartEvent(index=index, part=part)
+                        mapped = self._relay_or_buffer(start, self._withhold, pending)
+                        if mapped is not None:
+                            yield mapped
+                    async with node.stream(run.ctx) as events:
+                        async for event in events:
+                            mapped = self._relay_or_buffer(event, self._withhold, pending)
+                            if mapped is not None:
+                                yield mapped
                 node = await run.next(node)
-            if run.result is not None:
-                outcome.append(run.result)
+            # pydantic-ai leaves ``result`` typed optional though the ``End`` node just
+            # reached guarantees it; appended unconditionally, so a violated guarantee
+            # surfaces through ``_conclude``'s own classified failure, not a skipped outcome.
+            outcome.append(cast("AgentRunResult[Any]", run.result))
         for held in pending:
             yield held
-
-    async def _answered(
-        self,
-        node: CallToolsNode[Any, Any],
-        run: AgentRun[Any, Any],
-        pending: list[AgentEvent],
-    ) -> AsyncIterator[AgentEvent]:
-        """One whole response as loom events: its text first, then its tool calls.
-
-        A whole response carries its text already complete, so it is offered as
-        the ``PartStartEvent`` a streamed run would have opened it with -- the
-        one event the buffering policy reads to tell a replay from a first
-        attempt.
-        """
-        for index, part in enumerate(node.model_response.parts):
-            start = PartStartEvent(index=index, part=part)
-            mapped = self._relay_or_buffer(start, self._withhold, pending)
-            if mapped is not None:
-                yield mapped
-        async with node.stream(run.ctx) as events:
-            async for event in events:
-                mapped = self._relay_or_buffer(event, self._withhold, pending)
-                if mapped is not None:
-                    yield mapped
 
     @staticmethod
     def _relay_or_buffer(
@@ -677,11 +680,11 @@ class PydanticAIEngine:
     ) -> AgentEvent | None:
         """Translate one non-terminal stream *event* and apply the buffering policy.
 
-        A fresh replay's ``PartStartEvent`` at ``index=0`` discards whatever
-        this attempt had buffered so far. A mapped text delta is appended to
-        *pending* instead of returned when *withhold* is set, so the caller
-        never yields it directly; every other mapped event is returned as-is
-        for the caller to yield.
+        A new response's first part -- ``PartStartEvent`` at ``index=0`` --
+        discards whatever this attempt had buffered so far. A mapped text
+        delta is appended to *pending* instead of returned when *withhold*
+        is set, so the caller never yields it directly; every other mapped
+        event is returned as-is for the caller to yield.
         """
         if withhold and isinstance(event, PartStartEvent) and event.index == 0:
             pending.clear()

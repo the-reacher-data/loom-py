@@ -216,7 +216,7 @@ What changes for that role, and only for it: each model request is answered in
 one piece. A run loses nothing else — the answer is validated and retried the
 same way, the usage is the same, and a `run_stream` caller still receives what
 the model said and every tool call and result, in order; the text simply
-arrives as one delta per response instead of many. The policies
+arrives as one delta per text part instead of many. The policies
 (`run_timeout_ms`, `max_iterations`, `max_requests`) apply as before.
 
 It is the choice pydantic-ai offers between `run` and `run_stream`, made per
