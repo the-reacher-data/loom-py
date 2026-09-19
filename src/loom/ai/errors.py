@@ -95,6 +95,7 @@ class AgentErrorCode(StrEnum):
 
     # Capabilities
     CAPABILITY_KIND_UNSUPPORTED = "CAPABILITY_KIND_UNSUPPORTED"
+    STREAMING_REQUIRED_BY_CAPABILITY = "STREAMING_REQUIRED_BY_CAPABILITY"
     NATIVE_TOOL_UNSUPPORTED = "NATIVE_TOOL_UNSUPPORTED"
     NATIVE_TOOL_DUPLICATE = "NATIVE_TOOL_DUPLICATE"
     CAPABILITY_EMPTY = "CAPABILITY_EMPTY"
@@ -574,6 +575,19 @@ def capability_kind_unsupported(component: str, kind: str, engine: str) -> Agent
         message=f"{component}: engine '{engine}' does not support capability kind '{kind}'",
         component=component,
         field="capabilities",
+    )
+
+
+def streaming_required_by_capability(component: str) -> AgentCompilationIssue:
+    """A granted capability keeps streaming, so ``streaming: false`` cannot be honoured."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.STREAMING_REQUIRED_BY_CAPABILITY,
+        message=(
+            f"{component}: bound with 'streaming: false', but a granted capability requires a "
+            "streamed run, so the binding cannot ask for whole answers"
+        ),
+        component=component,
+        field="ai.models",
     )
 
 

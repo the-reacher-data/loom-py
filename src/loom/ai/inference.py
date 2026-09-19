@@ -96,9 +96,9 @@ class _RedactedOptions(Mapping[str, Any]):
 class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
     """One resolved model binding for a model role (``ai.models.<role>``).
 
-    ``repr``/``str`` show ``provider``, ``model``, ``region``, ``endpoint``
-    and ``output_mode``
-    but never the values of ``credentials_ref`` or ``options`` — the plan
+    ``repr``/``str`` show ``provider``, ``model``, ``region``, ``endpoint``,
+    ``output_mode`` and ``streaming``, but never the values of
+    ``credentials_ref`` or ``options`` — the plan
     carries this struct, so an unredacted repr in a start-up traceback is the
     concrete leak path.  Encoding the struct with msgspec raises when either
     secret-bearing field is set (see the module docstring for the rationale).
@@ -116,6 +116,12 @@ class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
             would surface as a raw ``ValidationError`` instead of the
             ``OUTPUT_MODE_UNKNOWN`` issue naming the role.  The set is
             enforced by ``loom.ai.config._validate_model_binding``.
+        streaming: Whether the engine asks the provider for its answers as a
+            stream. ``False`` asks for each answer whole instead -- for a
+            model whose streamed tool calls arrive damaged -- and the
+            model's text then reaches the caller as one delta per text part
+            rather than many. ``AgentEngine.run`` has always been served
+            whole; only its streamed entry points change with this flag.
         credentials_ref: Reference resolved by the existing secrets resolver.
             Never a literal secret (FR-018).
         options: Vendor-specific settings.  Confined here; never reaches the
@@ -127,6 +133,7 @@ class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
     region: str | None = None
     endpoint: str | None = None
     output_mode: str | None = None
+    streaming: bool = True
     credentials_ref: str | None = None
     options: Mapping[str, Any] = field(default_factory=dict)
 
@@ -145,6 +152,7 @@ class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
             f" region={self.region!r},"
             f" endpoint={self.endpoint!r},"
             f" output_mode={self.output_mode!r},"
+            f" streaming={self.streaming!r},"
             f" credentials_ref={credentials},"
             f" options={options})"
         )

@@ -8,14 +8,17 @@ so the translation never drifts silently.
 
 from __future__ import annotations
 
+import logging
 import typing
+from collections.abc import AsyncIterator, Mapping
 
 import pytest
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
-from pydantic_ai.messages import AgentStreamEvent
+from pydantic_ai.messages import AgentStreamEvent, ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 
-from loom.ai.abc import AgentEngine
-from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
+from loom.ai.abc import AgentEngine, ErrorEvent
+from loom.ai.engines.pydantic_ai._engine import MAX_LOGGED_CAUSE_CHARS, PydanticAIEngine
 from loom.ai.engines.pydantic_ai._errors import classify
 from loom.ai.engines.pydantic_ai._events import IGNORED_EVENT_KINDS, MAPPED_EVENT_KINDS
 from loom.ai.errors import AgentRunErrorClass, AgentRunErrorCode, is_retriable, run_error_class
@@ -32,6 +35,7 @@ from tests.helpers.pydantic_ai_engine import (
 )
 
 _IDENTITY = Identity(subject="caller")
+_ANSWER: Mapping[str, str] = {"answer": "ok"}
 
 
 def _http(status: int) -> ModelHTTPError:
@@ -152,6 +156,77 @@ class TestTheUnreachableGuardStaysUnclassified:
             async with engine.run_stream("hi", identity=_IDENTITY) as stream:
                 async for _ in stream:
                     pass
+
+
+def _damaged_stream_model(payload: bytes) -> FunctionModel:
+    """A model whose stream drops the first two characters of every tool call."""
+    text = payload.decode()
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, text)])
+
+    async def stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[DeltaToolCalls]:
+        name = info.output_tools[0].name
+        damaged = DeltaToolCall(name=name, json_args=text[2:], tool_call_id="c")
+        yield {0: damaged}
+
+    return FunctionModel(respond, stream_function=stream)
+
+
+def _damaged_whole_model(payload: bytes) -> FunctionModel:
+    """A model whose whole response drops the first two characters of its tool call."""
+    text = payload.decode()
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, text[2:])])
+
+    return FunctionModel(respond)
+
+
+async def test_the_answer_that_broke_the_schema_is_logged_and_never_published(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The caller is told the code; the operator is told which answer broke it."""
+    engine = build_engine(make_plan(), _damaged_stream_model(encode(_ANSWER)))
+
+    with caplog.at_level(logging.WARNING):
+        async with engine.run_stream("assess", identity=_IDENTITY) as events:
+            failure = [event async for event in events][-1]
+
+    assert isinstance(failure, ErrorEvent)
+    assert "answer" not in failure.message
+    assert any('answer":"ok"}' in record.getMessage() for record in caplog.records)
+
+
+async def test_the_logged_cause_is_truncated(caplog: pytest.LogCaptureFixture) -> None:
+    """A run's damaged answer is model-authored text, so the log caps how much it keeps."""
+    huge_payload = encode({"answer": "x" * (MAX_LOGGED_CAUSE_CHARS * 2)})
+    engine = build_engine(make_plan(), _damaged_stream_model(huge_payload))
+
+    with caplog.at_level(logging.WARNING):
+        async with engine.run_stream("assess", identity=_IDENTITY) as events:
+            async for _ in events:
+                pass
+
+    cause_records = [
+        record.getMessage() for record in caplog.records if "raised from" in record.getMessage()
+    ]
+    assert cause_records
+    assert all(len(record) < MAX_LOGGED_CAUSE_CHARS * 2 for record in cause_records)
+
+
+async def test_the_answer_that_broke_the_schema_on_a_plain_run_is_logged_too(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``engine.run`` shares ``_log_cause`` with the streamed path; this pins its own call site."""
+    engine = build_engine(make_plan(), _damaged_whole_model(encode(_ANSWER)))
+
+    with caplog.at_level(logging.WARNING), pytest.raises(AgentRunError):
+        await engine.run("assess", identity=_IDENTITY)
+
+    assert any("raised from" in record.getMessage() for record in caplog.records)
 
 
 class _AttemptCounter:
