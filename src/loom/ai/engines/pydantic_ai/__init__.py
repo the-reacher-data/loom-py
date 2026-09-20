@@ -20,12 +20,24 @@ free function, because the session it opens is the very toolset the run path
 uses: one connection per server for the whole worker. :func:`create_mcp_client`
 opens a session of its own and is for diagnostics, never for wiring the
 runtime.
+
+:func:`native_agent` is the escape hatch out of loom: the agent this adapter
+built, handed to calling code so it can drive pydantic-ai directly for what
+loom's neutral surface does not serve. Being *this* package's export is the
+point — a caller reaching it has imported an engine on purpose.
 """
 
 from __future__ import annotations
 
 from loom.ai.engines.pydantic_ai._a2a import create_a2a_client
+from loom.ai.engines.pydantic_ai._escape import NativeAgent, native_agent
 from loom.ai.engines.pydantic_ai._mcp import create_mcp_client
 from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
 
-__all__ = ["PydanticAIEngineProvider", "create_a2a_client", "create_mcp_client"]
+__all__ = [
+    "NativeAgent",
+    "PydanticAIEngineProvider",
+    "create_a2a_client",
+    "create_mcp_client",
+    "native_agent",
+]

@@ -365,6 +365,15 @@ class TestAgentMarkerFailsClosedWithoutADouble:
 class TestAgentHandleDoubleRequiresNoNetworkModelOrDatabase:
     """The closing criterion of T401: the whole example use case, doubled fully."""
 
+    async def test_the_escape_hatch_says_a_double_has_no_engine_behind_it(self) -> None:
+        """``native()`` is the one call a double cannot honour."""
+        triage = AgentHandleDouble("incident-triage")
+
+        with pytest.raises(NotImplementedError) as excinfo:
+            triage.native()
+
+        assert "no engine behind it" in str(excinfo.value)
+
     async def test_the_full_example_use_case_runs_with_no_network_no_model_no_database(
         self,
     ) -> None:

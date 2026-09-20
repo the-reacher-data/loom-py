@@ -761,3 +761,64 @@ class TestTheMarkerResolver:
             answer = await handle.run("hola")
 
         assert answer.output == {"ok": True}
+
+
+class TestTheNativeEscapeHatch:
+    """``AgentHandle.native``: the engine's own objects, on the handle's terms."""
+
+    async def test_an_engine_without_a_native_form_says_so(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """``_OneShotEngine`` implements the contract and nothing else."""
+        runtime = await _agent_runtime(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(NotImplementedError) as excinfo:
+                handle.native()
+
+        assert "no 'native'" in str(excinfo.value)
+
+    async def test_an_anonymous_caller_is_refused_before_the_engine_is_asked(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """The hatch never hands out what ``run`` would have refused."""
+        runtime = await _agent_runtime(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=ANONYMOUS,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                handle.native()
+
+        assert excinfo.value.code is AgentRunErrorCode.UNAUTHORIZED
+
+    async def test_state_is_resolved_against_the_artefacts_shape(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Undeclared state is refused here exactly as it is on a run."""
+        runtime = await _agent_runtime(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                handle.native(state={"ticket": "INC-1"})
+
+        assert excinfo.value.code is AgentRunErrorCode.STATE_UNDECLARED

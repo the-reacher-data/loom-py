@@ -172,6 +172,32 @@ class _BoundAgentHandle:
         answer = await self.run(prompt, expect=str, conversation_id=conversation_id, state=state)
         return answer
 
+    def native(self, *, state: object | None = None) -> object:
+        """Return the engine's own objects for this agent, bound to this caller.
+
+        Opens no span and takes no admission slot: nothing is run here, and
+        what the caller then does with the returned objects is outside this
+        runtime's supervision. See :meth:`~loom.ai.abc.AgentHandle.native`.
+
+        Args:
+            state: This run's state, resolved against the artefact's declared
+                shape exactly as :meth:`run` resolves it.
+
+        Returns:
+            The engine-native objects, in the engine's own types.
+
+        Raises:
+            AgentRunError: With ``UNAUTHORIZED`` when this handle's identity is
+                anonymous — the same refusal :meth:`run` makes, so the hatch
+                never yields a bundle the run path would have refused; with
+                ``STATE_UNDECLARED`` when *state* is given and the artefact
+                declares no state shape.
+            NotImplementedError: When the engine serving this agent declares
+                no native form.
+        """
+        self._require_authenticated()
+        return self._runtime.native(self._name, identity=self._identity, state=state)
+
     def mcp(self, server: str) -> McpHandle:
         """Return this artefact's own filtered view of one ``mcp`` grant.
 

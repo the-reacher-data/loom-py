@@ -65,6 +65,7 @@ from loom.ai.abc import (
 )
 from loom.ai.compiler import AgentPlan
 from loom.ai.engines.pydantic_ai._errors import as_run_error
+from loom.ai.engines.pydantic_ai._escape import NativeAgent
 from loom.ai.engines.pydantic_ai._events import translate
 from loom.ai.engines.pydantic_ai._history import (
     RunConversation,
@@ -334,7 +335,41 @@ class PydanticAIEngine:
             return _UNPRICED_SPEND_HEALTH
         return _HEALTHY
 
+    def native(self, *, identity: Identity, state: object | None = None) -> NativeAgent:
+        """Return this engine's own objects, for a caller driving the run itself.
+
+        Serves :meth:`~loom.ai.abc.AgentHandle.native` through
+        :meth:`~loom.ai.runtime.AgentRuntime.native`; the accessor that names
+        the returned type for calling code is
+        :func:`~loom.ai.engines.pydantic_ai.native_agent`.
+
+        Args:
+            identity: Verified caller the dependency bundle is built for.
+            state: This run's state, already resolved against the plan's
+                declared shape by :class:`~loom.ai.runtime.AgentRuntime`.
+
+        Returns:
+            The plan's own agent, this caller's dependency bundle and the
+            plan's projected spend caps.
+        """
+        return NativeAgent(
+            agent=self._agent,
+            deps=self._build_deps(identity, state),
+            usage_limits=self._usage_limits,
+        )
+
     # -- internals ---------------------------------------------------------
+
+    def _build_deps(self, identity: Identity, state: object | None) -> object:
+        """Build one invocation's dependency bundle for *identity*.
+
+        *state* arrives already resolved against the plan's declared shape; it
+        is cast, never re-validated, into the mapping
+        :class:`~loom.ai.abc.DepsFactory` declares (FR-009).
+        """
+        return self._deps.build(
+            identity, self._container, state=cast("Mapping[str, Any] | None", state)
+        )
 
     async def _run_with_retries(
         self,
@@ -350,15 +385,8 @@ class PydanticAIEngine:
         run cost even when the call raises — and it accumulates across retried
         attempts, because a retry spends the provider's tokens again. The
         decoded history, by contrast, is the same list on every attempt.
-
-        *state* is already resolved by
-        :class:`~loom.ai.runtime.AgentRuntime` against the plan's declared
-        shape; it is cast, never re-validated, into the mapping
-        :class:`~loom.ai.abc.DepsFactory` declares (FR-009).
         """
-        deps = self._deps.build(
-            identity, self._container, state=cast("Mapping[str, Any] | None", state)
-        )
+        deps = self._build_deps(identity, state)
         for attempt in range(self._attempts):
             try:
                 result = await self._agent.run(
@@ -535,9 +563,7 @@ class PydanticAIEngine:
         except AgentRunError as rejected:
             yield ErrorEvent(code=rejected.code, message=str(rejected))
             return
-        deps = self._deps.build(
-            identity, self._container, state=cast("Mapping[str, Any] | None", state)
-        )
+        deps = self._build_deps(identity, state)
         spend = RunUsage()
         started = perf_counter()
         for attempt in range(self._attempts):

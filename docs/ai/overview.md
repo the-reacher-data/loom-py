@@ -207,6 +207,45 @@ place with no models starts the application with a WARNING that names
 `persistence.backend: none` as the way out, and still requires a reachable
 database.
 
+## When loom is not enough: the escape hatch
+
+Loom is a wrapper over pydantic-ai, and a wrapper you cannot step around is a
+ceiling. `native_agent` is the step around it: it hands back the very `Agent`
+this deployment runs, the dependency bundle of the calling identity, and the
+artifact's spend caps already projected, so calling code can drive pydantic-ai
+with its own API — `iter()`, `run(event_stream_handler=...)`,
+`capture_run_messages()`, a capability of its own.
+
+```python
+from loom.ai.engines.pydantic_ai import native_agent
+
+async def execute(self, triage: AgentHandle[Assessment] = Agent("incident-triage")):
+    access = native_agent(triage)
+    async with access.agent.iter("classify this page", deps=access.deps) as run:
+        async for node in run:
+            ...  # your own decision between nodes
+```
+
+It lives in `loom.ai.engines.pydantic_ai`, not in `loom.ai`: importing an engine
+is the explicit act of leaving loom's neutral surface, and the neutral
+`AgentHandle.native()` returns `object` precisely so the engine package is the
+one that names the type.
+
+**What still holds.** The caller's verified identity and the artifact's grants
+are already built into what you receive, so a run driven this way reaches
+exactly what the artifact granted, as that caller and no one else. An anonymous
+caller is refused here exactly as it is on `run()`.
+
+**What no longer holds.** Everything loom wraps around its *own* runs:
+admission (`max_concurrent_runs`), the agent-chain depth bound,
+`run_timeout_ms`, `tool_timeout_ms`, `max_iterations`, the `on_output` hook,
+the `conversation` loader and the event projection. Whoever drives, answers.
+
+**One rule.** The `agent` you receive is the single object serving every run of
+that agent in this worker. Read it, run it, never mutate it: registering a tool,
+a validator or a capability on it changes every other run, including the ones
+loom itself drives.
+
 ## Where to go next
 
 - **[Artifact reference](artifacts.md)** — the complete `spec_version: 1`

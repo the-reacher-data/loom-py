@@ -519,6 +519,42 @@ class AgentHandle(Protocol[AnswerT]):
         """
         ...
 
+    def native(self, *, state: object | None = None) -> object:
+        """Return the engine's own objects for this agent, outside loom's supervision.
+
+        The escape hatch: whatever the engine serving this agent was built
+        from, handed over so calling code can drive the underlying library
+        itself when loom's neutral surface does not cover what it needs.
+        Typed as ``object`` because this module names no engine; the engine
+        package publishes the accessor that narrows it — for the pydantic-ai
+        engine, :func:`loom.ai.engines.pydantic_ai.native_agent`.
+
+        The identity bound to this handle and the artefact's grants survive:
+        they are already built into what is returned, so a run driven this
+        way still reaches exactly what the artefact granted, as this caller.
+        Loom's own supervision does not: admission, the agent-chain depth
+        bound, ``run_timeout_ms``, ``tool_timeout_ms``, ``max_iterations``,
+        the ``on_output`` hook, the ``conversation`` loader and the event
+        projection all belong to :meth:`run`, and none of them wraps a run
+        started from here.
+
+        Args:
+            state: This run's state, resolved against the artefact's declared
+                shape exactly as :meth:`run` resolves it.
+
+        Returns:
+            The engine-native objects, in the engine's own types.
+
+        Raises:
+            AgentRunError: With ``UNAUTHORIZED`` when this handle's identity
+                is anonymous, so the hatch never yields what :meth:`run`
+                would have refused; with ``STATE_UNDECLARED`` when *state* is
+                given and the artefact declares no state shape.
+            NotImplementedError: When the engine serving this agent publishes
+                no native form.
+        """
+        ...
+
     def grants(self) -> tuple[str, ...]:
         """Return every grant name reachable through :meth:`mcp` and :meth:`sql`.
 

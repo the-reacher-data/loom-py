@@ -466,6 +466,23 @@ class AgentHandleDouble:
             "call .on_run_text(...) before running the use case",
         )
 
+    def native(self, *, state: object | None = None) -> object:
+        """Refuse the escape hatch: a double has no engine behind it.
+
+        :meth:`~loom.ai.abc.AgentHandle.native` hands back the objects of a
+        live engine, and there is none here. A use case that reaches for it
+        is driving the underlying library itself, which is exactly the code
+        this double cannot stand in for: test it against a real runtime.
+
+        Raises:
+            NotImplementedError: Always.
+        """
+        del state
+        raise NotImplementedError(
+            f"agent {self._name!r} double received native(); a double has no engine behind it, "
+            "so a use case driving the engine itself needs a real runtime to test against"
+        )
+
     def mcp(self, server: str) -> McpHandleDouble:
         """Return this agent's own double for the ``mcp`` grant named *server*.
 
