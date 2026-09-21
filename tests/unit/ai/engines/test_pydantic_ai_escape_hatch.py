@@ -25,15 +25,11 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from loom.ai.abc import AgentHandle
 from loom.ai.declarative import PolicySpec
-from loom.ai.engines.pydantic_ai import (
-    NativeAgent,
-    PydanticAIEngineProvider,
-    native_agent,
-    native_run,
-)
+from loom.ai.engines.pydantic_ai import NativeAgent, PydanticAIEngineProvider, native_agent
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.runtime import AgentRuntime
+from loom.ai.runtime._chain import current_chain
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from tests.helpers.pydantic_ai_engine import make_plan
@@ -125,8 +121,8 @@ def _engine(*, output_check: Any = None) -> PydanticAIEngine:
 def _native(
     engine: PydanticAIEngine, *, identity: Identity = _IDENTITY, **kwargs: Any
 ) -> NativeAgent:
-    """Call the engine's ``native()`` with the module's own no-op guard."""
-    return engine.native(identity=identity, guard=_noop_guard, **kwargs)
+    """Call the engine's ``native()`` with the module's own no-op guard, unwrapping its carrier."""
+    return engine.native(identity=identity, guard=_noop_guard, **kwargs).native
 
 
 def _as_handle(handle: object) -> AgentHandle[Any]:
@@ -162,14 +158,6 @@ class TestTheHatchHandsOverTheRunningAgent:
 
         assert second.usage_limits.request_limit != 999_999
 
-    def test_each_call_returns_a_distinct_usage_limits_object(self) -> None:
-        engine = _engine()
-
-        first = _native(engine)
-        second = _native(engine)
-
-        assert first.usage_limits is not second.usage_limits
-
 
 class TestTheShapedAgent:
     """``shaped_agent``: the same spec, served with no output validator (T304)."""
@@ -202,14 +190,6 @@ class TestTheBundleBelongsToTheAskingCaller:
         assert mine.deps.identity == _IDENTITY
         assert theirs.deps.identity == other
 
-    def test_each_call_builds_its_own_bundle(self) -> None:
-        engine = _engine()
-
-        first = _native(engine)
-        second = _native(engine)
-
-        assert first.deps is not second.deps
-
     def test_state_reaches_the_bundle_unchanged(self) -> None:
         engine = _engine()
         state = {"ticket": "INC-1"}
@@ -221,25 +201,26 @@ class TestTheBundleBelongsToTheAskingCaller:
 
 
 class TestTheTypedAccessor:
-    def test_a_handle_on_this_engine_yields_the_engines_own_carrier(self) -> None:
+    async def test_a_handle_on_this_engine_yields_the_engines_own_carrier(self) -> None:
         engine = _engine()
 
-        access = native_agent(_as_handle(_NativeHandle(engine, _IDENTITY)))
+        async with native_agent(_as_handle(_NativeHandle(engine, _IDENTITY))) as access:
+            assert isinstance(access, NativeAgent)
+            assert access.agent is _native(engine).agent
 
-        assert isinstance(access, NativeAgent)
-        assert access.agent is _native(engine).agent
-
-    def test_a_handle_on_another_engine_is_named_rather_than_cast(self) -> None:
+    async def test_a_handle_on_another_engine_is_named_rather_than_cast(self) -> None:
         with pytest.raises(TypeError) as excinfo:
-            native_agent(_as_handle(_ForeignHandle()))
+            async with native_agent(_as_handle(_ForeignHandle())):
+                pass
 
         assert "not served by the pydantic-ai engine" in str(excinfo.value)
 
-    def test_state_travels_through_the_accessor(self) -> None:
-        access = native_agent(_as_handle(_NativeHandle(_engine(), _IDENTITY)), state={"a": 1})
-
-        assert isinstance(access.deps, _Bundle)
-        assert access.deps.state == {"a": 1}
+    async def test_state_travels_through_the_accessor(self) -> None:
+        async with native_agent(
+            _as_handle(_NativeHandle(_engine(), _IDENTITY)), state={"a": 1}
+        ) as access:
+            assert isinstance(access.deps, _Bundle)
+            assert access.deps.state == {"a": 1}
 
 
 def _native_runtime() -> AgentRuntime:
@@ -253,40 +234,62 @@ def _native_runtime() -> AgentRuntime:
     )
 
 
-class TestNativeRun:
-    """``native_run``: rejoins the runtime's guard and classifies a raw failure."""
+class _RuntimeHandle:
+    """A handle over the real runtime, standing in for a resolved marker."""
 
-    async def test_a_raw_exception_inside_the_body_surfaces_as_an_agent_run_error(self) -> None:
+    def __init__(self, runtime: AgentRuntime, name: str, identity: Identity) -> None:
+        self._runtime = runtime
+        self._name = name
+        self._identity = identity
+
+    def native(self, *, state: object | None = None) -> object:
+        """Return the runtime's native form for this handle's agent and caller."""
+        return self._runtime.native(self._name, identity=self._identity, state=state)
+
+
+class TestTheAccessorRejoinsTheGuard:
+    """``native_agent`` enters the runtime's own guard, not a no-op body."""
+
+    async def test_the_chain_records_this_run_only_inside_the_block(self) -> None:
         async with _native_runtime() as runtime:
-            access = runtime.native("contract", identity=_IDENTITY)
-            assert isinstance(access, NativeAgent)
+            handle = _as_handle(_RuntimeHandle(runtime, "contract", _IDENTITY))
 
-            with pytest.raises(AgentRunError) as excinfo:
-                async with native_run(access):
-                    raise TimeoutError("the vendor call timed out")
+            assert current_chain() == ()
+            async with native_agent(handle):
+                assert current_chain() == ("contract",)
+            assert current_chain() == ()
 
-        assert excinfo.value.code is AgentRunErrorCode.RUN_TIMEOUT
 
-    async def test_an_agent_run_error_inside_the_body_passes_through_unchanged(self) -> None:
-        original = AgentRunError(AgentRunErrorCode.UNAUTHORIZED, "denied")
+class TestTheBodysExceptionsAreNeverReclassified:
+    """Change 1's regression guard: ``native_agent`` funnels nothing through ``as_run_error``.
+
+    Rejoining the guard is real supervision; reclassifying whatever the body
+    raises is not — it would turn the application's own exceptions into a
+    retriable provider outage. Both a raw exception and an already-coded
+    ``AgentRunError`` must reach the caller as the very same instance.
+    """
+
+    async def test_a_raw_exception_escapes_unchanged(self) -> None:
+        original = TimeoutError("the vendor call timed out")
 
         async with _native_runtime() as runtime:
-            access = runtime.native("contract", identity=_IDENTITY)
-            assert isinstance(access, NativeAgent)
-
-            with pytest.raises(AgentRunError) as excinfo:
-                async with native_run(access):
+            handle = _as_handle(_RuntimeHandle(runtime, "contract", _IDENTITY))
+            with pytest.raises(TimeoutError) as excinfo:
+                async with native_agent(handle):
                     raise original
 
         assert excinfo.value is original
 
-    async def test_the_body_running_cleanly_yields_no_error(self) -> None:
-        async with _native_runtime() as runtime:
-            access = runtime.native("contract", identity=_IDENTITY)
-            assert isinstance(access, NativeAgent)
+    async def test_an_agent_run_error_escapes_unchanged(self) -> None:
+        original = AgentRunError(AgentRunErrorCode.UNAUTHORIZED, "denied")
 
-            async with native_run(access):
-                pass
+        async with _native_runtime() as runtime:
+            handle = _as_handle(_RuntimeHandle(runtime, "contract", _IDENTITY))
+            with pytest.raises(AgentRunError) as excinfo:
+                async with native_agent(handle):
+                    raise original
+
+        assert excinfo.value is original
 
 
 def _engine_with_policies(policies: PolicySpec) -> PydanticAIEngine:

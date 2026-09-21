@@ -73,11 +73,11 @@ class TestTheHatchOverTheRealRuntime:
                 runtime, sql_query_service=NullSqlQueryService(), observability=None
             )
             handle = resolver(_AGENT_NAME, _ANALYST)
-            access = native_agent(_as_handle(handle))
 
-            engine = runtime._slots[_AGENT_NAME].engine  # noqa: SLF001
-            assert isinstance(engine, PydanticAIEngine)
-            assert access.agent is engine._agent  # noqa: SLF001
+            async with native_agent(_as_handle(handle)) as access:
+                engine = runtime._slots[_AGENT_NAME].engine  # noqa: SLF001
+                assert isinstance(engine, PydanticAIEngine)
+                assert access.agent is engine._agent  # noqa: SLF001
 
     async def test_a_capability_call_made_with_the_bundle_runs_as_the_authenticated_caller(
         self,
@@ -89,9 +89,9 @@ class TestTheHatchOverTheRealRuntime:
                 runtime, sql_query_service=NullSqlQueryService(), observability=None
             )
             handle = resolver(_AGENT_NAME, _ANALYST)
-            access = native_agent(_as_handle(handle))
 
-            await access.agent.run("hello", deps=access.deps)
+            async with native_agent(_as_handle(handle)) as access:
+                await access.agent.run("hello", deps=access.deps)
 
         assert _ANALYST.subject in model.shown
 
@@ -115,7 +115,7 @@ class TestTheHatchOverTheRealRuntime:
             access = engine.native(identity=ANONYMOUS, guard=_noop_guard)
 
             with pytest.raises(AgentRunError) as excinfo:
-                await access.agent.run("hello", deps=access.deps)
+                await access.native.agent.run("hello", deps=access.native.deps)
 
         assert excinfo.value.code is AgentRunErrorCode.UNAUTHORIZED
         assert _ANALYST.subject not in model.shown

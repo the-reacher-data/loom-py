@@ -190,8 +190,8 @@ class _BoundAgentHandle:
             AgentRunError: With ``UNAUTHORIZED`` when this handle's identity is
                 anonymous — the same refusal :meth:`run` makes, so the hatch
                 never yields a bundle the run path would have refused; with
-                ``STATE_UNDECLARED`` when *state* is given and the artefact
-                declares no state shape.
+                ``STATE_UNDECLARED`` or ``STATE_REQUIRED`` when *state* does
+                not match the artefact's declared shape.
             RuntimeError: When this handle's runtime was never entered.
             NotImplementedError: When the engine serving this agent declares
                 no native form.

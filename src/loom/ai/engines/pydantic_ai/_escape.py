@@ -46,20 +46,32 @@ class NativeAgent:
             own type and copied for this call: mutating the returned value
             never changes what the engine enforces on its own, loom-supervised
             runs. Passing it on to a driven run is the caller's own choice.
-        guard: Zero-argument factory of the async context manager that
-            rejoins this runtime's agent-chain and admission bounds for a
-            driven run's body; enter it through :func:`native_run`.
     """
 
     agent: Agent[Any, Any]
     shaped_agent: Agent[Any, Any]
     deps: object
     usage_limits: UsageLimits
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeAccess:
+    """The carrier :meth:`~loom.ai.engines.pydantic_ai._engine.PydanticAIEngine.native`
+    returns: this engine's own objects, plus how to rejoin loom's bounds.
+
+    Not published: :func:`native_agent` is the one accessor calling code
+    reaches, and it is the one place this carrier is unpacked.
+    """
+
+    native: NativeAgent
     guard: Callable[[], AbstractAsyncContextManager[None]]
 
 
-def native_agent(handle: AgentHandle[Any], *, state: object | None = None) -> NativeAgent:
-    """Return the pydantic-ai objects behind one agent handle.
+@asynccontextmanager
+async def native_agent(
+    handle: AgentHandle[Any], *, state: object | None = None
+) -> AsyncIterator[NativeAgent]:
+    """Drive one agent handle's engine-native objects inside loom's chain and admission bounds.
 
     Args:
         handle: Handle an ``Agent()`` marker filled, already bound to the
@@ -67,58 +79,40 @@ def native_agent(handle: AgentHandle[Any], *, state: object | None = None) -> Na
         state: This run's state, resolved against the artefact's declared
             shape exactly as :meth:`~loom.ai.abc.AgentHandle.run` resolves it.
 
-    Returns:
+    Yields:
         This engine's own objects; see :class:`NativeAgent`.
 
     Raises:
-        TypeError: When the agent behind *handle* is served by another engine,
-            whose native form this function cannot name.
+        TypeError: When the agent behind *handle* is served by an engine
+            other than pydantic-ai.
         NotImplementedError: When that engine publishes no native form at all.
         AgentRunError: With ``UNAUTHORIZED`` when *handle*'s identity is
             anonymous; with ``STATE_UNDECLARED`` or ``STATE_REQUIRED`` when
-            *state* does not match the artefact's declared shape.
+            *state* does not match the artefact's declared shape; with
+            ``AGENT_CALL_CYCLE`` or ``AGENT_CALL_TOO_DEEP`` when entering the
+            guard refuses this run; with ``TOO_MANY_RUNS`` when no admission
+            permit is free.
+        RuntimeError: When the runtime serving *handle* was never entered.
 
     Example::
 
-        access = native_agent(handle)
         async with (
-            native_run(access),
-            access.agent.iter("triage this", deps=access.deps) as run,
+            native_agent(handle) as access,
+            access.agent.iter(
+                "triage this", deps=access.deps, usage_limits=access.usage_limits
+            ) as run,
         ):
             async for node in run:
                 ...
     """
-    native = handle.native(state=state)
-    if not isinstance(native, NativeAgent):
+    access = handle.native(state=state)
+    if not isinstance(access, _NativeAccess):
         raise TypeError(
             "this agent is not served by the pydantic-ai engine: its native form is "
-            f"{type(native).__name__}, not NativeAgent"
+            f"{type(access).__name__}, not the pydantic-ai engine's own carrier"
         )
-    return native
-
-
-@asynccontextmanager
-async def native_run(access: NativeAgent) -> AsyncIterator[None]:
-    """Rejoin loom's chain and admission bounds around a hand-driven run.
-
-    Args:
-        access: The carrier returned by :func:`native_agent`.
-
-    Yields:
-        Nothing; the caller drives the agent inside this block.
-
-    Raises:
-        AgentRunError: ``AGENT_CALL_CYCLE`` or ``AGENT_CALL_TOO_DEEP`` when
-            entering the guard refuses this run; ``TOO_MANY_RUNS`` when no
-            admission permit is free; otherwise, whatever coded failure
-            :func:`~loom.ai.engines.pydantic_ai._errors.as_run_error`
-            classifies a raw exception raised inside the block into.
-    """
     async with access.guard():
-        try:
-            yield
-        except Exception as exc:
-            raise as_run_error(exc) from exc
+        yield access.native
 
 
-__all__ = ["NativeAgent", "as_run_error", "native_agent", "native_run"]
+__all__ = ["NativeAgent", "as_run_error", "native_agent"]

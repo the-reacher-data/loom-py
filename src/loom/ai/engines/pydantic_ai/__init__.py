@@ -21,21 +21,21 @@ uses: one connection per server for the whole worker. :func:`create_mcp_client`
 opens a session of its own and is for diagnostics, never for wiring the
 runtime.
 
-:func:`native_agent` is the escape hatch out of loom: the agent this adapter
-built, handed to calling code so it can drive pydantic-ai directly for what
-loom's neutral surface does not serve. Being *this* package's export is the
-point — a caller reaching it has imported an engine on purpose. See
-:meth:`~loom.ai.abc.AgentHandle.native` for what a driven run keeps and
-loses; :func:`native_run` rejoins loom's chain and admission bounds around
-one, and :func:`as_run_error` is exported alone for a driver that wants
-loom's error classification without that context manager.
+:func:`native_agent` is the escape hatch out of loom: an async context
+manager over the agent this adapter built, handed to calling code so it can
+drive pydantic-ai directly for what loom's neutral surface does not serve.
+Being *this* package's export is the point — a caller reaching it has
+imported an engine on purpose. It rejoins loom's chain and admission bounds
+around its body; see :meth:`~loom.ai.abc.AgentHandle.native` for what a
+driven run keeps and loses. :func:`as_run_error` is exported alone for a
+driver that wants loom's error classification without that context manager.
 """
 
 from __future__ import annotations
 
 from loom.ai.engines.pydantic_ai._a2a import create_a2a_client
 from loom.ai.engines.pydantic_ai._errors import as_run_error
-from loom.ai.engines.pydantic_ai._escape import NativeAgent, native_agent, native_run
+from loom.ai.engines.pydantic_ai._escape import NativeAgent, native_agent
 from loom.ai.engines.pydantic_ai._mcp import create_mcp_client
 from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
 
@@ -46,5 +46,4 @@ __all__ = [
     "create_a2a_client",
     "create_mcp_client",
     "native_agent",
-    "native_run",
 ]

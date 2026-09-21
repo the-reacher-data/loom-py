@@ -65,7 +65,7 @@ from loom.ai.abc import (
 )
 from loom.ai.compiler import AgentPlan
 from loom.ai.engines.pydantic_ai._errors import as_run_error
-from loom.ai.engines.pydantic_ai._escape import NativeAgent
+from loom.ai.engines.pydantic_ai._escape import NativeAgent, _NativeAccess
 from loom.ai.engines.pydantic_ai._events import translate
 from loom.ai.engines.pydantic_ai._history import (
     RunConversation,
@@ -341,7 +341,7 @@ class PydanticAIEngine:
         identity: Identity,
         state: object | None = None,
         guard: Callable[[], AbstractAsyncContextManager[None]],
-    ) -> NativeAgent:
+    ) -> _NativeAccess:
         """Return this engine's own objects, for a caller driving the run itself.
 
         Serves :meth:`~loom.ai.abc.AgentHandle.native` through
@@ -357,18 +357,21 @@ class PydanticAIEngine:
             guard: Zero-argument factory of the async context manager a
                 driven run enters to rejoin this runtime's chain and
                 admission bounds; built by
-                :meth:`~loom.ai.runtime.AgentRuntime.native` and stored on
-                the returned :class:`NativeAgent` unchanged.
+                :meth:`~loom.ai.runtime.AgentRuntime.native` and carried on
+                the returned carrier unchanged.
 
         Returns:
             The plan's own agent, its shaped counterpart, this caller's
-            dependency bundle, the plan's projected spend caps and *guard*.
+            dependency bundle and the plan's projected spend caps, paired
+            with *guard*.
         """
-        return NativeAgent(
-            agent=self._agent,
-            shaped_agent=self._shaped_agent,
-            deps=self._build_deps(identity, state),
-            usage_limits=replace(self._usage_limits),
+        return _NativeAccess(
+            native=NativeAgent(
+                agent=self._agent,
+                shaped_agent=self._shaped_agent,
+                deps=self._build_deps(identity, state),
+                usage_limits=replace(self._usage_limits),
+            ),
             guard=guard,
         )
 

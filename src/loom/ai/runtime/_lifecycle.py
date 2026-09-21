@@ -40,6 +40,7 @@ from loom.ai.abc import (
     HealthState,
     McpSession,
     McpToolInfo,
+    NativeCapableEngine,
     Prompt,
     StateShape,
 )
@@ -1056,12 +1057,13 @@ class AgentRuntime:
         """
         slot = self._require_slot(name)
         resolved_state = _resolve_state(name, slot.plan.state, state)
-        native = getattr(slot.engine, "native", None)
-        if native is None:
+        if not isinstance(slot.engine, NativeCapableEngine):
             raise NotImplementedError(
                 f"{type(slot.engine).__name__} publishes no native form: it declares no 'native'"
             )
-        return native(identity=identity, state=resolved_state, guard=self._native_guard(name))
+        return slot.engine.native(
+            identity=identity, state=resolved_state, guard=self._native_guard(name)
+        )
 
     def _native_guard(self, name: str) -> Callable[[], AbstractAsyncContextManager[None]]:
         """Build the guard a hand-driven run of *name* enters to rejoin this runtime's bounds.
@@ -1070,9 +1072,9 @@ class AgentRuntime:
         :meth:`_run_stream` does, so a run entered through the returned
         factory is subject to the same cycle, depth and admission bounds as
         one this runtime drives itself. Handed to the engine's own
-        ``native()`` rather than entered here: whether a hand-driven run
-        enters it at all is the caller's choice, made through
-        :func:`~loom.ai.engines.pydantic_ai.native_run`.
+        ``native()`` rather than entered here: the engine pairs it with its
+        own objects, and :func:`~loom.ai.engines.pydantic_ai.native_agent`
+        is the one place it is entered, around the whole hand-driven run.
         """
 
         @asynccontextmanager

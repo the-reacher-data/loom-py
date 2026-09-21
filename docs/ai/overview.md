@@ -210,19 +210,19 @@ database.
 ## When loom is not enough: the escape hatch
 
 Loom is a wrapper over pydantic-ai, and a wrapper you cannot step around is a
-ceiling. `native_agent` is the step around it: it hands back the very `Agent`
-this deployment runs, the dependency bundle of the calling identity, and the
-artifact's spend caps already projected, so calling code can drive pydantic-ai
-with its own API — `iter()`, `run(event_stream_handler=...)`,
-`capture_run_messages()`, a capability of its own.
+ceiling. `native_agent` is the step around it: an async context manager that
+hands back the very `Agent` this deployment runs, the dependency bundle of
+the calling identity, and the artifact's spend caps already projected, so
+calling code can drive pydantic-ai with its own API — `iter()`,
+`run(event_stream_handler=...)`, `capture_run_messages()`, a capability of
+its own.
 
 ```python
-from loom.ai.engines.pydantic_ai import native_agent, native_run
+from loom.ai.engines.pydantic_ai import native_agent
 
 async def execute(self, triage: AgentHandle[Assessment] = Agent("incident-triage")):
-    access = native_agent(triage)
     async with (
-        native_run(access),
+        native_agent(triage) as access,
         access.agent.iter(
             "classify this page", deps=access.deps, usage_limits=access.usage_limits
         ) as run,
@@ -231,12 +231,12 @@ async def execute(self, triage: AgentHandle[Assessment] = Agent("incident-triage
             ...  # your own decision between nodes
 ```
 
-`native_run` rejoins loom's chain-cycle, depth and admission bounds around the
-block; skip it only when you also accept losing those three. Pass
-`access.usage_limits` explicitly — pydantic-ai enforces no cap you do not pass
-it yourself. To add a tool for this one run only, pass `toolsets=`/`capabilities=`
-to `iter()` rather than registering it on the shared agent (see the rule
-below).
+Loom's chain-cycle, depth and admission bounds hold for the whole block —
+there is no supported way to drive the hatch outside them, so skipping
+`max_concurrent_runs` is never the default path. Pass `access.usage_limits`
+explicitly — pydantic-ai enforces no cap you do not pass it yourself. To add
+a tool for this one run only, pass `toolsets=`/`capabilities=` to `iter()`
+rather than registering it on the shared agent (see the rule below).
 
 It lives in `loom.ai.engines.pydantic_ai`, not in `loom.ai`: importing an engine
 is the explicit act of leaving loom's neutral surface, and the neutral
@@ -250,10 +250,10 @@ for anything beyond the sketch above.
 **One rule.** The `agent` you receive is the single object serving every run of
 that agent in this worker. Read it, run it, never mutate it: registering a tool,
 a validator or a capability on it changes every other run, including the ones
-loom itself drives. Use `access.shaped_agent` instead of `access.agent` when
-the plan declares `output_check` and this run overrides the output shape:
-pydantic-ai refuses a run-level `output_type` on an agent holding an output
-validator.
+loom itself drives. `access.shaped_agent` — the same spec with no output
+validator registered — stands in for it when the plan declares `output_check`
+and this run overrides the output shape: pydantic-ai refuses a run-level
+`output_type` on an agent holding one.
 
 ## Where to go next
 
