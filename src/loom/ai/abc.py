@@ -19,7 +19,18 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from decimal import Decimal
-from typing import Any, ClassVar, Final, Generic, Literal, Protocol, TypeAlias, TypeVar, overload
+from typing import (
+    Any,
+    ClassVar,
+    Final,
+    Generic,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    overload,
+    runtime_checkable,
+)
 
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
@@ -519,6 +530,62 @@ class AgentHandle(Protocol[AnswerT]):
         """
         ...
 
+    def native(self, *, state: object | None = None) -> object:
+        """Return the engine's own objects for this agent, outside loom's supervision.
+
+        The escape hatch: whatever the engine serving this agent was built
+        from, handed over so calling code can drive the underlying library
+        itself when loom's neutral surface does not cover what it needs.
+        Typed as ``object`` because this module names no engine; the engine
+        package publishes the accessor that narrows it — for the pydantic-ai
+        engine, :func:`loom.ai.engines.pydantic_ai.native_agent`. This is the
+        one place the full what-holds/what-is-lost list is written; every
+        other mention of it points back here.
+
+        **What still holds.** The identity bound to this handle and the
+        artefact's grants: already built into what is returned, so a run
+        driven this way still reaches exactly what the artefact granted, as
+        this caller. ``policies.tool_timeout_ms`` still bounds every
+        capability call, because it is compiled into the tools the returned
+        agent already carries. The artefact's ``output_check`` validator
+        still runs, for the same reason. So do loom's chain-cycle and
+        agent-chain-depth bounds and its admission limit
+        (``max_concurrent_runs``): the returned engine-native objects are
+        reachable only inside the accessor's own ``async with`` block
+        (:func:`loom.ai.engines.pydantic_ai.native_agent` for the
+        pydantic-ai engine), which rejoins those bounds for the whole body.
+
+        **What is lost**, always: loom's own retry policy (including the
+        rule that an agent holding a capability never retries), ``run_timeout_ms``,
+        ``max_iterations``, ``policies.on_unpriced_spend`` and the
+        ``COST_NOT_MEASURABLE`` refusal it can raise, the ``on_output`` hook,
+        the ``conversation`` loader, the event projection, loom's own output
+        decoding (:func:`~loom.ai.engines.pydantic_ai._output.decode_output`
+        for a ``msgspec.Struct`` artefact — a native run returns pydantic-ai's
+        own answer, a mapping, not the artefact's declared type) and
+        ``max_history_bytes``. An application using this hatch is also pinned
+        to the engine it names: nothing here is portable across engines.
+
+        Args:
+            state: This run's state, resolved against the artefact's declared
+                shape exactly as :meth:`run` resolves it.
+
+        Returns:
+            The engine-native objects, in the engine's own types.
+
+        Raises:
+            AgentRunError: With ``UNAUTHORIZED`` when this handle's identity
+                is anonymous, so the hatch never yields what :meth:`run`
+                would have refused; with ``STATE_UNDECLARED`` or
+                ``STATE_REQUIRED`` when *state* does not match the
+                artefact's declared shape.
+            RuntimeError: When the runtime serving this handle was never
+                entered.
+            NotImplementedError: When the engine serving this agent publishes
+                no native form.
+        """
+        ...
+
     def grants(self) -> tuple[str, ...]:
         """Return every grant name reachable through :meth:`mcp` and :meth:`sql`.
 
@@ -704,6 +771,38 @@ class AgentEngine(Protocol):
         Returns:
             The engine's state, derived from outcomes it has already observed
             rather than from a probe issued on this call.
+        """
+        ...
+
+
+@runtime_checkable
+class NativeCapableEngine(Protocol):
+    """An :class:`AgentEngine` that also publishes its own native form.
+
+    ``native`` is optional on :class:`AgentEngine` itself; this Protocol
+    exists only so :meth:`~loom.ai.runtime.AgentRuntime.native` can narrow to
+    it with ``isinstance`` instead of reflecting over ``getattr``.
+    """
+
+    def native(
+        self,
+        *,
+        identity: Identity,
+        state: object | None = None,
+        guard: Callable[[], AbstractAsyncContextManager[None]],
+    ) -> object:
+        """Return this engine's own objects, bound to *identity*.
+
+        Args:
+            identity: Verified caller the returned objects are built for.
+            state: This run's state, already resolved against the plan's
+                declared shape.
+            guard: Zero-argument factory of the async context manager a
+                driven run enters to rejoin the runtime's chain and
+                admission bounds.
+
+        Returns:
+            The engine's own objects, in the engine's own types.
         """
         ...
 

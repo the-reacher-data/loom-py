@@ -18,7 +18,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from loom.ai.abc import AgentEvent, AgentResult, Conversation, FinalEvent, HealthStatus
+from loom.ai.abc import AgentEvent, AgentResult, Conversation, FinalEvent, HealthStatus, StateShape
 from loom.ai.compiler._plan import CompiledOutputHook
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.runtime import AgentRuntime
@@ -26,6 +26,7 @@ from loom.ai.runtime._handle import _BoundAgentHandle, agent_marker_resolver
 from loom.core.command import Command
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
+from loom.core.model import msgspec_type
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.sql.service import NullSqlQueryService
 from loom.core.use_case import Caller, Input, UseCase
@@ -88,6 +89,28 @@ _AUTHENTICATED = Identity(subject="ada", mechanism="test")
 _AGENT_NAME = "triage"
 
 
+class _DefaultedState(msgspec.Struct, forbid_unknown_fields=True):
+    """A state shape whose every field carries a declared default."""
+
+    marca: str = ""
+    km: int = 0
+
+
+_DEFAULTED_STATE = StateShape(schema={"type": "object"}, loom_type=msgspec_type(_DefaultedState))
+
+
+class _RequiredState(msgspec.Struct, forbid_unknown_fields=True):
+    """A state shape with one field carrying no declared default."""
+
+    marca: str
+
+
+_REQUIRED_STATE = StateShape(
+    schema={"type": "object", "properties": {"marca": {"type": "string"}}, "required": ["marca"]},
+    loom_type=msgspec_type(_RequiredState),
+)
+
+
 @pytest.fixture
 def deps() -> StubDepsFactory:
     """Per-invocation dependency factory carrying only the caller identity."""
@@ -138,6 +161,30 @@ class _OneShotEngine:
     ) -> AgentResult:
         del prompt, identity, conversation, state
         return AgentResult(output={"ok": True}, usage=DEFAULT_USAGE)
+
+    async def health(self) -> HealthStatus:
+        return HealthStatus(status="ok")
+
+
+class _NativeRecordingEngine:
+    """An engine whose ``native()`` records the resolved state it received.
+
+    A mutation to :meth:`AgentRuntime.native` that passes the caller's raw
+    ``state`` straight through instead of the value ``_resolve_state``
+    computed leaves every test pinning ``STATE_UNDECLARED`` alone green: that
+    refusal fires whichever value is forwarded. This double is what a test
+    needs to tell the two apart.
+    """
+
+    def __init__(self) -> None:
+        self.states: list[object | None] = []
+
+    def native(
+        self, *, identity: Identity, state: object | None = None, guard: Any = None
+    ) -> object:
+        del identity, guard
+        self.states.append(state)
+        return object()
 
     async def health(self) -> HealthStatus:
         return HealthStatus(status="ok")
@@ -761,3 +808,126 @@ class TestTheMarkerResolver:
             answer = await handle.run("hola")
 
         assert answer.output == {"ok": True}
+
+
+class TestTheNativeEscapeHatch:
+    """``AgentHandle.native``: the engine's own objects, on the handle's terms."""
+
+    async def test_an_engine_without_a_native_form_says_so(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """``_OneShotEngine`` implements the contract and nothing else."""
+        runtime = await _agent_runtime(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(NotImplementedError) as excinfo:
+                handle.native()
+
+        assert "no 'native'" in str(excinfo.value)
+
+    async def test_an_anonymous_caller_is_refused_before_the_engine_is_asked(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """The hatch never hands out what ``run`` would have refused."""
+        runtime = await _agent_runtime(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=ANONYMOUS,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                handle.native()
+
+        assert excinfo.value.code is AgentRunErrorCode.UNAUTHORIZED
+
+    async def test_state_is_resolved_against_the_artefacts_shape(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Undeclared state is refused here exactly as it is on a run."""
+        runtime = await _agent_runtime(deps, container)
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                handle.native(state={"ticket": "INC-1"})
+
+        assert excinfo.value.code is AgentRunErrorCode.STATE_UNDECLARED
+
+    async def test_a_none_state_carries_the_shapes_declared_defaults(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """A ``None`` state on a stateful artefact resolves to its declared defaults.
+
+        Pins the exact value :meth:`AgentRuntime.native` must forward: a
+        mutation that passes the caller's raw ``state`` straight through
+        instead of the shape's resolved defaults would leave this green only
+        by accident, so it is checked against the recorded value, not merely
+        against "no error".
+        """
+        engine = _NativeRecordingEngine()
+        runtime = AgentRuntime(
+            plans=[make_plan(_AGENT_NAME, state=_DEFAULTED_STATE)],
+            config=make_ai_config(),
+            engine_provider=CountingEngineProvider(  # type: ignore[arg-type]
+                engines={_AGENT_NAME: engine}  # type: ignore[dict-item]
+            ),
+            deps=deps,
+            container=container,
+        )
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            handle.native()
+
+        assert engine.states == [{"marca": "", "km": 0}]
+
+    async def test_a_none_state_against_a_required_field_raises_state_required(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        engine = _NativeRecordingEngine()
+        runtime = AgentRuntime(
+            plans=[make_plan(_AGENT_NAME, state=_REQUIRED_STATE)],
+            config=make_ai_config(),
+            engine_provider=CountingEngineProvider(  # type: ignore[arg-type]
+                engines={_AGENT_NAME: engine}  # type: ignore[dict-item]
+            ),
+            deps=deps,
+            container=container,
+        )
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as excinfo:
+                handle.native()
+
+        assert excinfo.value.code is AgentRunErrorCode.STATE_REQUIRED
+        assert engine.states == []

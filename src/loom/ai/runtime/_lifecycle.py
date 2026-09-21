@@ -40,6 +40,7 @@ from loom.ai.abc import (
     HealthState,
     McpSession,
     McpToolInfo,
+    NativeCapableEngine,
     Prompt,
     StateShape,
 )
@@ -1030,6 +1031,58 @@ class AgentRuntime:
         """
         self._require_plan(name)
         return self._grants[name]
+
+    def native(self, name: str, *, identity: Identity, state: object | None = None) -> object:
+        """Return one agent's engine-native objects, outside this runtime's supervision.
+
+        Serves :meth:`~loom.ai.abc.AgentHandle.native`; see it for what a run
+        driven through the returned objects keeps and what it loses.
+
+        Args:
+            name: Agent whose engine is asked for its native form.
+            identity: Verified caller the returned objects are bound to.
+            state: This run's state, resolved against *name*'s declared shape
+                exactly as :meth:`run` resolves it.
+
+        Returns:
+            The engine's own objects, in the engine's own types.
+
+        Raises:
+            KeyError: When no agent is named *name*.
+            RuntimeError: When this runtime was never entered.
+            AgentRunError: With ``STATE_UNDECLARED`` or ``STATE_REQUIRED``
+                when *state* does not match *name*'s declared shape.
+            NotImplementedError: When the engine serving *name* declares no
+                ``native``.
+        """
+        slot = self._require_slot(name)
+        resolved_state = _resolve_state(name, slot.plan.state, state)
+        if not isinstance(slot.engine, NativeCapableEngine):
+            raise NotImplementedError(
+                f"{type(slot.engine).__name__} publishes no native form: it declares no 'native'"
+            )
+        return slot.engine.native(
+            identity=identity, state=resolved_state, guard=self._native_guard(name)
+        )
+
+    def _native_guard(self, name: str) -> Callable[[], AbstractAsyncContextManager[None]]:
+        """Build the guard a hand-driven run of *name* enters to rejoin this runtime's bounds.
+
+        Composes :meth:`_chain_bound` and :meth:`_admitted` in the same order
+        :meth:`_run_stream` does, so a run entered through the returned
+        factory is subject to the same cycle, depth and admission bounds as
+        one this runtime drives itself. Handed to the engine's own
+        ``native()`` rather than entered here: the engine pairs it with its
+        own objects, and :func:`~loom.ai.engines.pydantic_ai.native_agent`
+        is the one place it is entered, around the whole hand-driven run.
+        """
+
+        @asynccontextmanager
+        async def _guard() -> AsyncIterator[None]:
+            async with self._chain_bound(name), self._admitted(name):
+                yield
+
+        return _guard
 
     def _build_grants(self) -> dict[str, AgentGrants]:
         """Resolve every plan's grants once, right after its engine is built."""
