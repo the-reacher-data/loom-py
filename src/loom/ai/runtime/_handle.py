@@ -192,6 +192,7 @@ class _BoundAgentHandle:
                 never yields a bundle the run path would have refused; with
                 ``STATE_UNDECLARED`` when *state* is given and the artefact
                 declares no state shape.
+            RuntimeError: When this handle's runtime was never entered.
             NotImplementedError: When the engine serving this agent declares
                 no native form.
         """

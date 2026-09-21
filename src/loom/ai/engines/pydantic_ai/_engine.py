@@ -33,9 +33,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import fields
+from dataclasses import fields, replace
 from time import perf_counter
 from types import MappingProxyType
 from typing import Any, Final, cast
@@ -335,27 +335,41 @@ class PydanticAIEngine:
             return _UNPRICED_SPEND_HEALTH
         return _HEALTHY
 
-    def native(self, *, identity: Identity, state: object | None = None) -> NativeAgent:
+    def native(
+        self,
+        *,
+        identity: Identity,
+        state: object | None = None,
+        guard: Callable[[], AbstractAsyncContextManager[None]],
+    ) -> NativeAgent:
         """Return this engine's own objects, for a caller driving the run itself.
 
         Serves :meth:`~loom.ai.abc.AgentHandle.native` through
         :meth:`~loom.ai.runtime.AgentRuntime.native`; the accessor that names
         the returned type for calling code is
-        :func:`~loom.ai.engines.pydantic_ai.native_agent`.
+        :func:`~loom.ai.engines.pydantic_ai.native_agent`. What a driver keeps
+        and loses is stated once, on :meth:`~loom.ai.abc.AgentHandle.native`.
 
         Args:
             identity: Verified caller the dependency bundle is built for.
             state: This run's state, already resolved against the plan's
                 declared shape by :class:`~loom.ai.runtime.AgentRuntime`.
+            guard: Zero-argument factory of the async context manager a
+                driven run enters to rejoin this runtime's chain and
+                admission bounds; built by
+                :meth:`~loom.ai.runtime.AgentRuntime.native` and stored on
+                the returned :class:`NativeAgent` unchanged.
 
         Returns:
-            The plan's own agent, this caller's dependency bundle and the
-            plan's projected spend caps.
+            The plan's own agent, its shaped counterpart, this caller's
+            dependency bundle, the plan's projected spend caps and *guard*.
         """
         return NativeAgent(
             agent=self._agent,
+            shaped_agent=self._shaped_agent,
             deps=self._build_deps(identity, state),
-            usage_limits=self._usage_limits,
+            usage_limits=replace(self._usage_limits),
+            guard=guard,
         )
 
     # -- internals ---------------------------------------------------------

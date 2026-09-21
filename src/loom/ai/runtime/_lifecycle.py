@@ -1048,6 +1048,7 @@ class AgentRuntime:
 
         Raises:
             KeyError: When no agent is named *name*.
+            RuntimeError: When this runtime was never entered.
             AgentRunError: With ``STATE_UNDECLARED`` or ``STATE_REQUIRED``
                 when *state* does not match *name*'s declared shape.
             NotImplementedError: When the engine serving *name* declares no
@@ -1060,7 +1061,26 @@ class AgentRuntime:
             raise NotImplementedError(
                 f"{type(slot.engine).__name__} publishes no native form: it declares no 'native'"
             )
-        return native(identity=identity, state=resolved_state)
+        return native(identity=identity, state=resolved_state, guard=self._native_guard(name))
+
+    def _native_guard(self, name: str) -> Callable[[], AbstractAsyncContextManager[None]]:
+        """Build the guard a hand-driven run of *name* enters to rejoin this runtime's bounds.
+
+        Composes :meth:`_chain_bound` and :meth:`_admitted` in the same order
+        :meth:`_run_stream` does, so a run entered through the returned
+        factory is subject to the same cycle, depth and admission bounds as
+        one this runtime drives itself. Handed to the engine's own
+        ``native()`` rather than entered here: whether a hand-driven run
+        enters it at all is the caller's choice, made through
+        :func:`~loom.ai.engines.pydantic_ai.native_run`.
+        """
+
+        @asynccontextmanager
+        async def _guard() -> AsyncIterator[None]:
+            async with self._chain_bound(name), self._admitted(name):
+                yield
+
+        return _guard
 
     def _build_grants(self) -> dict[str, AgentGrants]:
         """Resolve every plan's grants once, right after its engine is built."""

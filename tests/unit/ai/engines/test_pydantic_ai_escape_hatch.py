@@ -1,16 +1,21 @@
 """``PydanticAIEngine.native`` and ``native_agent``: the escape hatch out of loom.
 
-Pins the two properties the hatch is worth having for: it hands over the very
-agent the engine runs — not a copy, not a rebuild — and the dependency bundle
-it comes with is built for the asking caller, so a run driven through it stays
-inside the artefact's grants as that caller. The refusal pins the other half:
-a foreign engine's native form is named as such rather than cast into ours.
+Pins the properties the hatch is worth having for: it hands over the very
+agent the engine runs — not a copy, not a rebuild — the dependency bundle it
+comes with is built for the asking caller, the artefact's spend caps come
+back as a copy no caller can use to raise the engine's own enforced cap, and
+a plan declaring ``output_check`` is served by two distinct agents, one for
+its own declared shape and one for a per-run override. The refusal pins the
+other half: a foreign engine's native form is named as such rather than cast
+into ours.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, cast
 
 import pytest
@@ -19,13 +24,33 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from loom.ai.abc import AgentHandle
-from loom.ai.engines.pydantic_ai import NativeAgent, PydanticAIEngineProvider, native_agent
+from loom.ai.declarative import PolicySpec
+from loom.ai.engines.pydantic_ai import (
+    NativeAgent,
+    PydanticAIEngineProvider,
+    native_agent,
+    native_run,
+)
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
+from loom.ai.errors import AgentRunError, AgentRunErrorCode
+from loom.ai.runtime import AgentRuntime
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from tests.helpers.pydantic_ai_engine import make_plan
+from tests.integration.ai.conftest import make_ai_config
 
 _IDENTITY = Identity(subject="caller")
+
+
+@asynccontextmanager
+async def _noop_guard() -> AsyncIterator[None]:
+    """A guard entered by no test in this module: their runs stay unsupervised on purpose."""
+    yield
+
+
+def _accept(_: Mapping[str, Any]) -> str | None:
+    """An ``output_check`` that never rejects; only its presence matters here."""
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +93,7 @@ class _NativeHandle:
 
     def native(self, *, state: object | None = None) -> object:
         """Return the engine's native form for this handle's caller."""
-        return self._engine.native(identity=self._identity, state=state)
+        return self._engine.native(identity=self._identity, state=state, guard=_noop_guard)
 
 
 def _silent_model() -> Model:
@@ -85,12 +110,23 @@ def _silent_model() -> Model:
     return FunctionModel(respond, stream_function=stream)
 
 
-def _engine() -> PydanticAIEngine:
+def _engine(*, output_check: Any = None) -> PydanticAIEngine:
     model = _silent_model()
     provider = PydanticAIEngineProvider(model_resolver=lambda target: model)
-    engine = provider.create_engine(make_plan(), deps=_RecordingDeps(), container=LoomContainer())
+    engine = provider.create_engine(
+        make_plan(output_check=output_check),
+        deps=_RecordingDeps(),
+        container=LoomContainer(),
+    )
     assert isinstance(engine, PydanticAIEngine)
     return engine
+
+
+def _native(
+    engine: PydanticAIEngine, *, identity: Identity = _IDENTITY, **kwargs: Any
+) -> NativeAgent:
+    """Call the engine's ``native()`` with the module's own no-op guard."""
+    return engine.native(identity=identity, guard=_noop_guard, **kwargs)
 
 
 def _as_handle(handle: object) -> AgentHandle[Any]:
@@ -102,17 +138,55 @@ class TestTheHatchHandsOverTheRunningAgent:
     def test_the_agent_is_the_one_the_engine_itself_runs(self) -> None:
         engine = _engine()
 
-        first = engine.native(identity=_IDENTITY)
-        second = engine.native(identity=_IDENTITY)
+        first = _native(engine)
+        second = _native(engine)
 
         assert first.agent is second.agent
 
     def test_the_spend_caps_are_the_artefacts_own_projected_ones(self) -> None:
+        policies = PolicySpec(max_requests=7, max_usd=Decimal("1.50"))
+        engine = _engine_with_policies(policies)
+
+        access = _native(engine)
+
+        assert access.usage_limits.request_limit == 7
+        assert access.usage_limits.cost_limit == Decimal("1.50")
+
+    def test_mutating_the_returned_caps_never_reaches_the_engines_own(self) -> None:
+        """A caller raising its own copy's cap must not raise every supervised run's."""
         engine = _engine()
 
-        access = engine.native(identity=_IDENTITY)
+        first = _native(engine)
+        first.usage_limits.request_limit = 999_999
+        second = _native(engine)
 
-        assert access.usage_limits.request_limit == make_plan().policies.max_requests
+        assert second.usage_limits.request_limit != 999_999
+
+    def test_each_call_returns_a_distinct_usage_limits_object(self) -> None:
+        engine = _engine()
+
+        first = _native(engine)
+        second = _native(engine)
+
+        assert first.usage_limits is not second.usage_limits
+
+
+class TestTheShapedAgent:
+    """``shaped_agent``: the same spec, served with no output validator (T304)."""
+
+    def test_with_no_output_check_both_agents_are_the_same_object(self) -> None:
+        engine = _engine(output_check=None)
+
+        access = _native(engine)
+
+        assert access.agent is access.shaped_agent
+
+    def test_with_an_output_check_the_two_agents_differ(self) -> None:
+        engine = _engine(output_check=_accept)
+
+        access = _native(engine)
+
+        assert access.agent is not access.shaped_agent
 
 
 class TestTheBundleBelongsToTheAskingCaller:
@@ -120,8 +194,8 @@ class TestTheBundleBelongsToTheAskingCaller:
         engine = _engine()
         other = Identity(subject="someone-else")
 
-        mine = engine.native(identity=_IDENTITY)
-        theirs = engine.native(identity=other)
+        mine = _native(engine, identity=_IDENTITY)
+        theirs = _native(engine, identity=other)
 
         assert isinstance(mine.deps, _Bundle)
         assert isinstance(theirs.deps, _Bundle)
@@ -131,8 +205,8 @@ class TestTheBundleBelongsToTheAskingCaller:
     def test_each_call_builds_its_own_bundle(self) -> None:
         engine = _engine()
 
-        first = engine.native(identity=_IDENTITY)
-        second = engine.native(identity=_IDENTITY)
+        first = _native(engine)
+        second = _native(engine)
 
         assert first.deps is not second.deps
 
@@ -140,7 +214,7 @@ class TestTheBundleBelongsToTheAskingCaller:
         engine = _engine()
         state = {"ticket": "INC-1"}
 
-        access = engine.native(identity=_IDENTITY, state=state)
+        access = _native(engine, state=state)
 
         assert isinstance(access.deps, _Bundle)
         assert access.deps.state == state
@@ -153,7 +227,7 @@ class TestTheTypedAccessor:
         access = native_agent(_as_handle(_NativeHandle(engine, _IDENTITY)))
 
         assert isinstance(access, NativeAgent)
-        assert access.agent is engine.native(identity=_IDENTITY).agent
+        assert access.agent is _native(engine).agent
 
     def test_a_handle_on_another_engine_is_named_rather_than_cast(self) -> None:
         with pytest.raises(TypeError) as excinfo:
@@ -166,3 +240,60 @@ class TestTheTypedAccessor:
 
         assert isinstance(access.deps, _Bundle)
         assert access.deps.state == {"a": 1}
+
+
+def _native_runtime() -> AgentRuntime:
+    provider = PydanticAIEngineProvider(model_resolver=lambda target: _silent_model())
+    return AgentRuntime(
+        plans=[make_plan()],
+        config=make_ai_config(),
+        engine_provider=provider,
+        deps=_RecordingDeps(),
+        container=LoomContainer(),
+    )
+
+
+class TestNativeRun:
+    """``native_run``: rejoins the runtime's guard and classifies a raw failure."""
+
+    async def test_a_raw_exception_inside_the_body_surfaces_as_an_agent_run_error(self) -> None:
+        async with _native_runtime() as runtime:
+            access = runtime.native("contract", identity=_IDENTITY)
+            assert isinstance(access, NativeAgent)
+
+            with pytest.raises(AgentRunError) as excinfo:
+                async with native_run(access):
+                    raise TimeoutError("the vendor call timed out")
+
+        assert excinfo.value.code is AgentRunErrorCode.RUN_TIMEOUT
+
+    async def test_an_agent_run_error_inside_the_body_passes_through_unchanged(self) -> None:
+        original = AgentRunError(AgentRunErrorCode.UNAUTHORIZED, "denied")
+
+        async with _native_runtime() as runtime:
+            access = runtime.native("contract", identity=_IDENTITY)
+            assert isinstance(access, NativeAgent)
+
+            with pytest.raises(AgentRunError) as excinfo:
+                async with native_run(access):
+                    raise original
+
+        assert excinfo.value is original
+
+    async def test_the_body_running_cleanly_yields_no_error(self) -> None:
+        async with _native_runtime() as runtime:
+            access = runtime.native("contract", identity=_IDENTITY)
+            assert isinstance(access, NativeAgent)
+
+            async with native_run(access):
+                pass
+
+
+def _engine_with_policies(policies: PolicySpec) -> PydanticAIEngine:
+    model = _silent_model()
+    provider = PydanticAIEngineProvider(model_resolver=lambda target: model)
+    engine = provider.create_engine(
+        make_plan(policies=policies), deps=_RecordingDeps(), container=LoomContainer()
+    )
+    assert isinstance(engine, PydanticAIEngine)
+    return engine

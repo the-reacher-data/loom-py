@@ -527,16 +527,32 @@ class AgentHandle(Protocol[AnswerT]):
         itself when loom's neutral surface does not cover what it needs.
         Typed as ``object`` because this module names no engine; the engine
         package publishes the accessor that narrows it — for the pydantic-ai
-        engine, :func:`loom.ai.engines.pydantic_ai.native_agent`.
+        engine, :func:`loom.ai.engines.pydantic_ai.native_agent`. This is the
+        one place the full what-holds/what-is-lost list is written; every
+        other mention of it points back here.
 
-        The identity bound to this handle and the artefact's grants survive:
-        they are already built into what is returned, so a run driven this
-        way still reaches exactly what the artefact granted, as this caller.
-        Loom's own supervision does not: admission, the agent-chain depth
-        bound, ``run_timeout_ms``, ``tool_timeout_ms``, ``max_iterations``,
-        the ``on_output`` hook, the ``conversation`` loader and the event
-        projection all belong to :meth:`run`, and none of them wraps a run
-        started from here.
+        **What still holds.** The identity bound to this handle and the
+        artefact's grants: already built into what is returned, so a run
+        driven this way still reaches exactly what the artefact granted, as
+        this caller. ``policies.tool_timeout_ms`` still bounds every
+        capability call, because it is compiled into the tools the returned
+        agent already carries. The artefact's ``output_check`` validator
+        still runs, for the same reason. So do loom's chain-cycle and
+        agent-chain-depth bounds and its admission limit
+        (``max_concurrent_runs``) — but only for a run driven inside
+        ``native_run(access)`` (:func:`loom.ai.engines.pydantic_ai.native_run`
+        for the pydantic-ai engine); a driver that skips it loses all three.
+
+        **What is lost**, always: loom's own retry policy (including the
+        rule that an agent holding a capability never retries), ``run_timeout_ms``,
+        ``max_iterations``, ``policies.on_unpriced_spend`` and the
+        ``COST_NOT_MEASURABLE`` refusal it can raise, the ``on_output`` hook,
+        the ``conversation`` loader, the event projection, loom's own output
+        decoding (:func:`~loom.ai.engines.pydantic_ai._output.decode_output`
+        for a ``msgspec.Struct`` artefact — a native run returns pydantic-ai's
+        own answer, a mapping, not the artefact's declared type) and
+        ``max_history_bytes``. An application using this hatch is also pinned
+        to the engine it names: nothing here is portable across engines.
 
         Args:
             state: This run's state, resolved against the artefact's declared
@@ -550,6 +566,8 @@ class AgentHandle(Protocol[AnswerT]):
                 is anonymous, so the hatch never yields what :meth:`run`
                 would have refused; with ``STATE_UNDECLARED`` when *state* is
                 given and the artefact declares no state shape.
+            RuntimeError: When the runtime serving this handle was never
+                entered.
             NotImplementedError: When the engine serving this agent publishes
                 no native form.
         """

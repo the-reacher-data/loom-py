@@ -217,34 +217,43 @@ with its own API — `iter()`, `run(event_stream_handler=...)`,
 `capture_run_messages()`, a capability of its own.
 
 ```python
-from loom.ai.engines.pydantic_ai import native_agent
+from loom.ai.engines.pydantic_ai import native_agent, native_run
 
 async def execute(self, triage: AgentHandle[Assessment] = Agent("incident-triage")):
     access = native_agent(triage)
-    async with access.agent.iter("classify this page", deps=access.deps) as run:
+    async with (
+        native_run(access),
+        access.agent.iter(
+            "classify this page", deps=access.deps, usage_limits=access.usage_limits
+        ) as run,
+    ):
         async for node in run:
             ...  # your own decision between nodes
 ```
+
+`native_run` rejoins loom's chain-cycle, depth and admission bounds around the
+block; skip it only when you also accept losing those three. Pass
+`access.usage_limits` explicitly — pydantic-ai enforces no cap you do not pass
+it yourself. To add a tool for this one run only, pass `toolsets=`/`capabilities=`
+to `iter()` rather than registering it on the shared agent (see the rule
+below).
 
 It lives in `loom.ai.engines.pydantic_ai`, not in `loom.ai`: importing an engine
 is the explicit act of leaving loom's neutral surface, and the neutral
 `AgentHandle.native()` returns `object` precisely so the engine package is the
 one that names the type.
 
-**What still holds.** The caller's verified identity and the artifact's grants
-are already built into what you receive, so a run driven this way reaches
-exactly what the artifact granted, as that caller and no one else. An anonymous
-caller is refused here exactly as it is on `run()`.
-
-**What no longer holds.** Everything loom wraps around its *own* runs:
-admission (`max_concurrent_runs`), the agent-chain depth bound,
-`run_timeout_ms`, `tool_timeout_ms`, `max_iterations`, the `on_output` hook,
-the `conversation` loader and the event projection. Whoever drives, answers.
+The full account of what still holds and what is lost is written once, on
+`AgentHandle.native()`'s own docstring — read it before relying on this hatch
+for anything beyond the sketch above.
 
 **One rule.** The `agent` you receive is the single object serving every run of
 that agent in this worker. Read it, run it, never mutate it: registering a tool,
 a validator or a capability on it changes every other run, including the ones
-loom itself drives.
+loom itself drives. Use `access.shaped_agent` instead of `access.agent` when
+the plan declares `output_check` and this run overrides the output shape:
+pydantic-ai refuses a run-level `output_type` on an agent holding an output
+validator.
 
 ## Where to go next
 
