@@ -32,6 +32,11 @@
   fills a TypeSafe output by tool alone, so a binding pinning `output_mode:
   native` fails start-up with the new `OUTPUT_MODE_UNSUPPORTED`, instead of
   being refused by the model on every request.
+- **ai:** `AgentAnswer`, `AgentResult` and the `final` event carry `provider_details`: what
+  the provider reported about the final answer beyond the answer itself,
+  verbatim — Jev's confidence and probabilities per field, another
+  provider's finish reason — or `None`. In process only: the `/run` body and
+  the `final` frame keep their four keys, as `messages` taught them to.
 - **ai:** `output.type_ref` and `deps_type` accept a strict
   `pydantic.BaseModel` (`model_config["extra"] == "forbid"`) wherever they
   accept a `msgspec.Struct`. A pydantic output is handed to pydantic-ai as

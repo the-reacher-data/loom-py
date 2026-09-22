@@ -132,6 +132,13 @@ binding whose `output_mode` loom can check before the first request: pinning
 the provider serves. `endpoint`, when set, replaces the API's base URL.
 `streaming` changes nothing: Jev returns each answer whole.
 
+What makes the answer worth having — the probability behind each field and
+the margin by which it cleared its threshold — comes back on
+`AgentAnswer.provider_details`, verbatim as pydantic-ai reports it
+(`confidence`, `probabilities`, `scores`, `requests`), so a use case can act
+on a firm verdict and escalate a doubtful one. In process only; see
+[what the caller receives](artifacts.md#what-the-caller-receives).
+
 ## Credentials never live in the artifact — or in the config
 
 `credentials_ref` is a **reference**, never the secret itself: an AWS profile

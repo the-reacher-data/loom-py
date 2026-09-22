@@ -391,15 +391,26 @@ class AgentHandleDouble:
         *,
         usage: AgentUsage | None = None,
         interaction_id: str | None = None,
+        provider_details: Mapping[str, Any] | None = None,
     ) -> AgentHandleDouble:
         """Schedule the next :meth:`run` call's answer, declared or per-run shape alike.
+
+        Args:
+            output: The answer the next call returns.
+            usage: Its accounting; a default when omitted.
+            interaction_id: Its interaction id, when the test pins one.
+            provider_details: What the provider reported about the answer,
+                for a use case that reads a decision model's confidence.
 
         Returns:
             ``self`` for chaining.
         """
         self._run_answers.append(
             AgentAnswer(
-                output=output, usage=usage or _DEFAULT_AGENT_USAGE, interaction_id=interaction_id
+                output=output,
+                usage=usage or _DEFAULT_AGENT_USAGE,
+                interaction_id=interaction_id,
+                provider_details=provider_details,
             )
         )
         return self

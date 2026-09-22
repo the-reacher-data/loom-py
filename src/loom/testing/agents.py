@@ -132,7 +132,8 @@ class FakeAgentEngine:
             state: This run's state; ignored, the script is fixed.
 
         Returns:
-            The terminal ``FinalEvent``'s output, usage and messages.
+            The terminal ``FinalEvent``'s output, usage, messages and
+            provider details.
 
         Raises:
             FakeAgentRunError: If the script ends in an ``ErrorEvent``.
@@ -144,6 +145,7 @@ class FakeAgentEngine:
             output=self._terminal.output,
             usage=self._terminal.usage,
             messages=self._terminal.messages,
+            provider_details=self._terminal.provider_details,
         )
 
     def run_stream(

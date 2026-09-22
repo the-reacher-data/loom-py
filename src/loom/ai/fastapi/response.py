@@ -52,8 +52,9 @@ def result_payload(result: AgentResult | FinalEvent) -> Mapping[str, object]:
     Both surfaces publish the same four keys, always present (``null`` when
     absent: a fixed shape). The result is projected rather than encoded
     wholesale so a field added to :class:`~loom.ai.abc.AgentResult` or
-    :class:`~loom.ai.abc.FinalEvent` for the runtime's own use — the run's new
-    ``messages`` — can never reach the wire by accident.
+    :class:`~loom.ai.abc.FinalEvent` for in-process use — the run's new
+    ``messages``, the provider's own ``provider_details`` of the answer — can
+    never reach the wire by accident.
 
     Args:
         result: The completed run, or its terminal stream event.
