@@ -41,8 +41,12 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fi
         ttl: Per-entity TTL overrides keyed by entity name.  Append ``_list``
             for list overrides (e.g. ``{"user": 300, "user_list": 150}``).
         max_size: Maximum number of entries for ``aiocache.SimpleMemoryCache``
-            backends.  Injected automatically when calling
-            :meth:`~loom.core.cache.CacheGateway.apply_config`.
+            backends.  :meth:`~loom.core.cache.CacheGateway.apply_config` turns
+            such an alias into a :class:`~loom.core.cache.memory.BoundedMemoryCache`
+            that evicts least-recently-used entries past the bound.
+            Has no effect on Redis or other non-memory backends.
+        max_bytes: Maximum bytes the stored payloads of a memory alias may
+            occupy, applied the same way as ``max_size``; both may be set.
             Has no effect on Redis or other non-memory backends.
 
     Example YAML (Redis + separate counter backend)::
@@ -97,11 +101,15 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fi
     ttl_jitter: float = 0.1
     ttl: dict[str, int] = msgspec.field(default_factory=dict)
     max_size: int | None = None
+    max_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.ttl_jitter < 1.0:
             msg = f"ttl_jitter must be in [0, 1), got {self.ttl_jitter}"
             raise ValueError(msg)
+        for name, bound in (("max_size", self.max_size), ("max_bytes", self.max_bytes)):
+            if bound is not None and bound < 1:
+                raise ValueError(f"{name} must be at least 1, got {bound}")
 
     @property
     def effective_counter_alias(self) -> str:
@@ -120,6 +128,7 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fi
         """
         raw_counter_alias = data.get("counter_alias")
         raw_max_size = data.get("max_size")
+        raw_max_bytes = data.get("max_bytes")
         return cls(
             enabled=bool(data.get("enabled", True)),
             aiocache_alias=str(data.get("aiocache_alias", "default")),
@@ -130,6 +139,7 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fi
             ttl_jitter=float(data.get("ttl_jitter", 0.1)),
             ttl={str(k): int(v) for k, v in dict(data.get("ttl", {})).items()},
             max_size=int(raw_max_size) if raw_max_size is not None else None,
+            max_bytes=int(raw_max_bytes) if raw_max_bytes is not None else None,
         )
 
     def ttl_for_single(self, entity: str) -> int:

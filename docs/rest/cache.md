@@ -59,7 +59,8 @@ cache:
   ttl:                      # per-entity overrides; append _list for the list side
     user: 600
     user_list: 300
-  max_size: 1000            # injected into every aiocache.SimpleMemoryCache alias
+  max_size: 1000            # entry cap for every aiocache.SimpleMemoryCache alias
+  max_bytes: 33554432       # byte cap for the same aliases; either or both
   aiocache_alias: data      # alias that stores entities (default: "default")
   counter_alias: counters   # alias that stores the generation counters (default: same as aiocache_alias)
   aiocache_config:
@@ -80,6 +81,7 @@ cache:
 | `ttl_jitter` | `0.1` | Random spread applied per write so a burst does not expire at once; `0` disables it |
 | `ttl` | `{}` | Per-entity overrides; `user` for the entity read, `user_list` for the list side |
 | `max_size` | none | Entry cap for `aiocache.SimpleMemoryCache` aliases; ignored by Redis |
+| `max_bytes` | none | Byte cap on the stored payloads of the same aliases; ignored by Redis |
 | `aiocache_alias` | `default` | Alias of the data backend |
 | `counter_alias` | none | Alias of the counter backend; falls back to `aiocache_alias` |
 | `aiocache_config` | `{}` | Alias map handed to `aiocache`, one entry per alias |
@@ -93,6 +95,16 @@ Redis `INCR`), and a serializer in front of them would break that. When
 `counter_alias` is omitted the counters share the data alias and the increment
 falls back to a non-atomic get-and-set, which is fine for a single process and
 not for several.
+
+`aiocache.SimpleMemoryCache` itself accepts no bound: it only shrinks by TTL.
+An alias configured with that class and a bound — `max_size` or `max_bytes` at
+the `cache:` level, or its own inside `aiocache_config`, which win — is served by
+`loom.core.cache.memory.BoundedMemoryCache` instead, which evicts the least
+recently used entries the moment a write crosses either bound. Bytes are
+measured on the stored payload, so on the data alias they are the serialized
+size, exactly. A single value larger than `max_bytes` is kept and evicts
+everything else, because a `get` right after a `set` must not miss. Redis and
+every other server backend are forwarded unchanged and bound their own memory.
 
 The YAML reads `aiocache_config:` only. `CacheConfig.from_mapping` also accepts
 the short key `aiocache:` for callers building the config by hand; from the
@@ -410,7 +422,7 @@ cache:
 
 Keep a separate counter alias for any multi-process deployment: with one alias
 the counters share the data serializer and lose the atomic increment.
-`max_size` has no effect on Redis.
+`max_size` and `max_bytes` have no effect on Redis.
 
 ## Failures
 
