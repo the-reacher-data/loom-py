@@ -24,6 +24,14 @@
 
 ### ai
 
+- **ai:** `provider: typesafe` binds TypeSafe's Jev, a decision model that
+  fills a typed output from the state it is given and never writes text, so a
+  role whose answer is a choice or a verdict can run on it. Extra
+  `ai-typesafe` (pydantic-ai 2.45 or later); `credentials_ref` names the
+  variable holding the API key, `endpoint` overrides the base URL. pydantic-ai
+  fills a TypeSafe output by tool alone, so a binding pinning `output_mode:
+  native` fails start-up with the new `OUTPUT_MODE_UNSUPPORTED`, instead of
+  being refused by the model on every request.
 - **ai:** `output.type_ref` and `deps_type` accept a strict
   `pydantic.BaseModel` (`model_config["extra"] == "forbid"`) wherever they
   accept a `msgspec.Struct`. A pydantic output is handed to pydantic-ai as

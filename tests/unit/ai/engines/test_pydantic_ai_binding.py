@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from pydantic_ai import NativeOutput, ToolOutput
 from pydantic_ai.models.bedrock import BedrockConverseModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.models.typesafe import TypeSafeModel
 
 from loom.ai.compiler._plan import AgentPlan, CompiledInstruction
 from loom.ai.engines.pydantic_ai._models import SUPPORTED_PROVIDERS, resolve_model
@@ -33,6 +34,11 @@ from tests.helpers.pydantic_ai_engine import (
 def _vendor_client(model: object) -> Any:
     """Return the vendor SDK client a resolved model wraps."""
     return cast(Any, model).client
+
+
+def _typesafe_config(model: object) -> Any:
+    """Return the configuration the TypeSafe SDK client was built with."""
+    return _vendor_client(model)._config
 
 
 @pytest.fixture
@@ -93,6 +99,60 @@ class TestModelBinding:
 
         assert _vendor_client(model).api_key == "the-real-key"
 
+    def test_typesafe_carries_the_key_and_the_endpoint_when_resolved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The TypeSafe binding follows the API-key convention; ``endpoint`` is its base URL."""
+        monkeypatch.setenv("VENDOR_API_KEY", "the-real-key")
+        target = InferenceTarget(
+            provider="typesafe",
+            model="jev-latest",
+            endpoint="https://gateway.example.com/v1",
+            credentials_ref="VENDOR_API_KEY",
+        )
+
+        model = resolve_model(target)
+
+        assert isinstance(model, TypeSafeModel)
+        assert model.model_name == "jev-latest"
+        assert _typesafe_config(model).api_key == "the-real-key"
+        assert _typesafe_config(model).base_url == "https://gateway.example.com/v1"
+
+    def test_typesafe_reads_the_sdks_default_variable_when_there_is_no_credentials_ref(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a reference the TypeSafe SDK reads ``TYPESAFE_API_KEY`` itself."""
+        monkeypatch.setenv("TYPESAFE_API_KEY", "sdk-default")
+        target = InferenceTarget(provider="typesafe", model="jev-latest")
+
+        assert _typesafe_config(resolve_model(target)).api_key == "sdk-default"
+
+    def test_typesafe_refuses_a_native_output_pin_at_start_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Jev fills an output by tool only: a ``native`` pin fails before any request."""
+        monkeypatch.setenv("TYPESAFE_API_KEY", "a-key")
+        target = InferenceTarget(provider="typesafe", model="jev-latest", output_mode="native")
+
+        with pytest.raises(AgentCompilationError) as failure:
+            resolve_model(target)
+
+        issue = failure.value.issues[0]
+        assert issue.code is AgentErrorCode.OUTPUT_MODE_UNSUPPORTED
+        assert "native" in issue.message
+        assert "tool" in issue.message
+        assert issue.field == "output_mode"
+
+    @pytest.mark.parametrize("output_mode", ["tool", None])
+    def test_typesafe_serves_a_tool_pin_and_an_unpinned_binding(
+        self, output_mode: str | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``tool`` is what pydantic-ai fills a TypeSafe output with, so both pins resolve."""
+        monkeypatch.setenv("TYPESAFE_API_KEY", "a-key")
+        target = InferenceTarget(provider="typesafe", model="jev-latest", output_mode=output_mode)
+
+        assert isinstance(resolve_model(target), TypeSafeModel)
+
     def test_reads_the_sdks_default_variable_when_there_is_no_credentials_ref(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -102,7 +162,7 @@ class TestModelBinding:
 
         assert _vendor_client(resolve_model(target)).api_key == "sdk-default"
 
-    @pytest.mark.parametrize("provider", ["openai", "anthropic", "gateway"])
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "gateway", "typesafe"])
     def test_fails_naming_the_variable_when_it_is_unset(
         self, provider: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -147,7 +207,10 @@ class TestModelBinding:
 
     def test_the_supported_providers_are_the_documented_ones(self) -> None:
         """The dispatch map is the whole vendor surface of this release."""
-        assert frozenset({"bedrock", "openai", "anthropic", "gateway"}) == SUPPORTED_PROVIDERS
+        assert (
+            frozenset({"bedrock", "openai", "anthropic", "gateway", "typesafe"})
+            == SUPPORTED_PROVIDERS
+        )
 
 
 class TestSpecTranslation:

@@ -12,9 +12,14 @@ Credential conventions, deliberately explicit (FR-018):
 
 * ``bedrock`` — ``credentials_ref`` is an **AWS profile name**; when absent the
   standard boto3 chain (environment, role, instance profile) applies.
-* ``openai``, ``anthropic``, ``gateway`` — ``credentials_ref`` is the **name of
-  the environment variable** holding the API key; absent, the provider SDK reads
-  its own default variable.
+* ``openai``, ``anthropic``, ``gateway``, ``typesafe`` — ``credentials_ref``
+  is the **name of the environment variable** holding the API key; absent, the
+  provider SDK reads its own default variable.
+
+``typesafe`` binds TypeSafe's Jev, a decision model: it fills a typed output
+from the state it is given and never writes text. pydantic-ai fills that output
+through tool mode only, so a binding pinning ``output_mode: native`` is refused
+here, at start-up, instead of by the model on every request.
 
 ``options`` is handed to the model as pydantic-ai ``ModelSettings`` — the
 engine's own vendor-settings vocabulary — so loom introduces no second
@@ -32,7 +37,7 @@ from typing import NamedTuple, Protocol, cast
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from loom.ai.errors import AgentCompilationError, provider_unknown
+from loom.ai.errors import AgentCompilationError, output_mode_unsupported, provider_unknown
 from loom.ai.inference import InferenceTarget
 from loom.ai.registry import require_provider_sdk, require_provider_setting
 
@@ -122,6 +127,24 @@ def _anthropic_model(target: InferenceTarget) -> Model:
     return AnthropicModel(target.model, provider=provider, settings=_model_settings(target))
 
 
+_TYPESAFE_OUTPUT_MODES: tuple[str, ...] = ("tool",)
+"""The output modes pydantic-ai serves on a TypeSafe model: it fills an output by tool only."""
+
+
+def _typesafe_model(target: InferenceTarget) -> Model:
+    """TypeSafe's Jev; ``endpoint`` overrides the API's base URL when set."""
+    if target.output_mode is not None and target.output_mode not in _TYPESAFE_OUTPUT_MODES:
+        raise AgentCompilationError(
+            [output_mode_unsupported("typesafe", target.output_mode, _TYPESAFE_OUTPUT_MODES)]
+        )
+    require_provider_sdk("typesafe", "pydantic_ai.models.typesafe", "ai-typesafe")
+    from pydantic_ai.models.typesafe import TypeSafeModel
+    from pydantic_ai.providers.typesafe import TypeSafeProvider
+
+    provider = TypeSafeProvider(api_key=_api_key(target), base_url=target.endpoint)
+    return TypeSafeModel(target.model, provider=provider, settings=_model_settings(target))
+
+
 def _gateway_model(target: InferenceTarget) -> Model:
     """OpenAI-compatible gateway; its ``endpoint`` is required by config."""
     require_provider_setting("gateway", "endpoint", target.endpoint)
@@ -154,6 +177,9 @@ _BINDINGS: Mapping[str, _Binding] = MappingProxyType(
             "anthropic", "pydantic_ai.models.anthropic", "AnthropicModel", _anthropic_model
         ),
         "gateway": _Binding("openai", _OPENAI_MODULE, "OpenAIChatModel", _gateway_model),
+        "typesafe": _Binding(
+            "typesafe", "pydantic_ai.models.typesafe", "TypeSafeModel", _typesafe_model
+        ),
     }
 )
 

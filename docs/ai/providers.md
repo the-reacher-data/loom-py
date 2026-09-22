@@ -25,6 +25,7 @@ with `MODEL_ROLE_UNBOUND`. It is never deferred to the first request.
 | `openai` | `ai-openai` | — | the **name of the environment variable** holding the API key; omit it and the SDK reads its own default | OpenAI's own API |
 | `anthropic` | `ai-anthropic` | — | the **name of the environment variable** holding the API key; omit it and the SDK reads its own default | Anthropic's own API |
 | `gateway` | `ai-openai` | `endpoint` | the **name of the environment variable** holding the API key the endpoint expects | **any OpenAI-compatible endpoint** — see below |
+| `typesafe` | `ai-typesafe` | — | the **name of the environment variable** holding the API key; omit it and the SDK reads `TYPESAFE_API_KEY` | TypeSafe's Jev — a decision model, see below |
 
 Which **provider-run tools** each binding admits — web search, web fetch, code
 execution — is decided by the model class of the installed engine, not by this
@@ -107,6 +108,30 @@ An artifact then picks one with `model_role: reasoning`. Moving that agent to a
 cheaper model later is a one-line config change with no artifact edit and no
 redeploy of the agent definition.
 
+## `typesafe` fills an output, it never writes text
+
+Jev, TypeSafe's model, is not a language model: given a state, it answers
+typed questions about it with a calibrated probability each, and pydantic-ai
+turns the agent's `output_type` into those questions. Bind it to a role whose
+output is a strict class of `bool`, `Literal`/`Enum`, bounded `float` or
+`IntEnum` fields; a `str` field, a text answer, a file in the prompt or a
+tool taking arguments is refused by pydantic-ai before any request.
+
+```yaml
+ai:
+  models:
+    verdict:
+      provider: typesafe
+      model: jev-latest
+      credentials_ref: TYPESAFE_API_KEY
+```
+
+pydantic-ai fills a TypeSafe output through tool mode only, so this is the one
+binding whose `output_mode` loom can check before the first request: pinning
+`native` fails **start-up** with `OUTPUT_MODE_UNSUPPORTED`, naming the mode
+the provider serves. `endpoint`, when set, replaces the API's base URL.
+`streaming` changes nothing: Jev returns each answer whole.
+
 ## Credentials never live in the artifact — or in the config
 
 `credentials_ref` is a **reference**, never the secret itself: an AWS profile
@@ -114,7 +139,7 @@ name for `bedrock`, and for the API-key providers the **name of an environment
 variable** loom reads at start-up. An unset variable fails start-up with
 `PROVIDER_SETTING_MISSING` naming it, instead of a 401 on the first call; omit
 `credentials_ref` and each SDK reads its own default variable
-(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`).
 
 The value is validated fail-closed at start-up — a value shaped like literal
 secret material (`AKIA…`, `sk-…`, `ghp_…`, a URL with credentials in its
@@ -193,7 +218,9 @@ loom does not infer it per provider. Two consequences follow from that:
   surfaces as `PROVIDER_UNAVAILABLE`. The provider's detail stays server-side,
   in the logs; the caller sees the code. Loom cannot check a mode against a
   model before the first request, so a wrong pin is found there, not at
-  start-up.
+  start-up. The one exception is `typesafe`, whose models pydantic-ai serves
+  by tool alone, so a `native` pin on it fails start-up with
+  `OUTPUT_MODE_UNSUPPORTED`.
 
 ## Asking for the answer whole, not as a stream
 
