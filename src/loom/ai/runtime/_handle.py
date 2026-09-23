@@ -144,6 +144,7 @@ class _BoundAgentHandle:
             output=result.output,
             usage=result.usage,
             interaction_id=result.interaction_id,
+            provider_details=result.provider_details,
         )
 
     async def run_text(

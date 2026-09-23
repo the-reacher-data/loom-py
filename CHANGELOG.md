@@ -31,6 +31,43 @@
 
 ### ai
 
+- **ai:** `provider: typesafe` binds TypeSafe's Jev, a decision model that
+  fills a typed output from the state it is given and never writes text, so a
+  role whose answer is a choice or a verdict can run on it. Extra
+  `ai-typesafe` (pydantic-ai 2.45 or later); `credentials_ref` names the
+  variable holding the API key, `endpoint` overrides the base URL. pydantic-ai
+  fills a TypeSafe output by tool alone, so a binding pinning `output_mode:
+  native` fails start-up with the new `OUTPUT_MODE_UNSUPPORTED`, instead of
+  being refused by the model on every request.
+- **core:** `loom.core.plugins.optional.import_optional` is the one way loom
+  loads a module that needs an optional extra: the island imports its SDK
+  at the top, the selector loads the island by name, and the island's
+  `ImportError` becomes a `MissingExtraError` naming the extra. The rule is
+  written in `docs/architecture/clean-architecture.md`.
+- **ai:** each pydantic-ai provider is an island under
+  `loom.ai.engines.pydantic_ai.providers` (`bedrock`, `openai`, `anthropic`,
+  `gateway`, `typesafe`), and each optional extra of the engine one under
+  `loom.ai.engines.pydantic_ai.extras` (`mcp`, `a2a`, `skills`,
+  `handlebars`): the one module importing its SDK. `_models.py` keeps the
+  binding table and loads the island through `require_provider_sdk`, now a
+  reading of `import_optional`; the MCP toolset, the A2A client, the skills
+  capability and the templating check load theirs the same way. No
+  behaviour change: `PROVIDER_UNKNOWN`, `PROVIDER_NOT_INSTALLED`,
+  `PROVIDER_SETTING_MISSING` and `TEMPLATE_EXTRA_MISSING` fire exactly as
+  before.
+- **core:** boto3 is an island too, `loom.core.config._boto3`: the SSM and
+  Secrets Manager resolvers load it on first use and fail with `ConfigError`
+  naming `config-ssm` when it is absent, instead of a module-level `None`
+  sentinel checked later. `aiocache` and `prometheus-client` are required
+  dependencies, so `CacheGateway` and `ObservabilityRuntime` import them at
+  the top like any other, dropping an `importlib.import_module("aiocache")`
+  and a `None` sentinel that guarded nothing. Tests that stood in for an
+  absent or stubbed SDK now go through `tests/helpers/extras.py`.
+- **ai:** `AgentAnswer`, `AgentResult` and the `final` event carry `provider_details`: what
+  the provider reported about the final answer beyond the answer itself,
+  verbatim — Jev's confidence and probabilities per field, another
+  provider's finish reason — or `None`. In process only: the `/run` body and
+  the `final` frame keep their four keys, as `messages` taught them to.
 - **ai:** `output.type_ref` and `deps_type` accept a strict
   `pydantic.BaseModel` (`model_config["extra"] == "forbid"`) wherever they
   accept a `msgspec.Struct`. A pydantic output is handed to pydantic-ai as

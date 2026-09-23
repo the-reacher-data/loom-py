@@ -466,6 +466,7 @@ class AgentRuntime:
                         interaction_id=event.interaction_id,
                         hook_result=event.hook_result,
                         messages=event.messages,
+                        provider_details=event.provider_details,
                     )
         if result is None:
             # Defensive only: ``hooked_events`` closes every exhausted stream

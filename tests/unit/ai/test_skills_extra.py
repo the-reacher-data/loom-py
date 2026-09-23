@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -12,13 +11,14 @@ from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai._capabilities import build_capabilities
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.core.di import LoomContainer
+from tests.helpers.extras import ENGINE_EXTRAS, without_extra
 
 
 def test_names_the_ai_harness_extra_when_the_harness_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The message names ``ai-harness``, not the missing module."""
-    monkeypatch.setitem(sys.modules, "pydantic_ai_harness", None)
+    without_extra(monkeypatch, ["pydantic_ai_harness"], [f"{ENGINE_EXTRAS}.skills"])
     plan = _plan_with_skills(tmp_path)
     container = LoomContainer()
 

@@ -197,7 +197,8 @@ class TestStartScrapeServer:
         runtime = ObservabilityRuntime([], _scrape_port=None)
         called: list[int] = []
         monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server", lambda p: called.append(p)
+            "loom.core.observability.runtime.start_http_server",
+            lambda p, addr=None: called.append(p),
         )
 
         runtime.start_scrape_server()
@@ -210,8 +211,8 @@ class TestStartScrapeServer:
         runtime = ObservabilityRuntime([], _scrape_port=9090, _scrape_addr="127.0.0.1")
         calls: list[tuple[int, str]] = []
         monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server",
-            lambda p, addr="": calls.append((p, addr)),
+            "loom.core.observability.runtime.start_http_server",
+            lambda p, addr=None: calls.append((p, addr)),
         )
 
         runtime.start_scrape_server()
@@ -222,23 +223,14 @@ class TestStartScrapeServer:
         runtime = ObservabilityRuntime([], _scrape_port=9090)
         called: list[int] = []
         monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server",
-            lambda p, addr="": called.append(p),
+            "loom.core.observability.runtime.start_http_server",
+            lambda p, addr=None: called.append(p),
         )
 
         runtime.start_scrape_server()
         runtime.start_scrape_server()
 
         assert len(called) == 1
-
-    def test_raises_import_error_when_prometheus_not_installed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        runtime = ObservabilityRuntime([], _scrape_port=9090)
-        monkeypatch.setattr("loom.core.observability.runtime._start_http_server", None)
-
-        with pytest.raises(ImportError, match="prometheus-client"):
-            runtime.start_scrape_server()
 
     def test_noop_runtime_start_scrape_server_is_safe(self) -> None:
         runtime = ObservabilityRuntime.noop()
@@ -254,7 +246,7 @@ class TestStartScrapeServer:
             )
         )
         monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server", lambda p, addr="": None
+            "loom.core.observability.runtime.start_http_server", lambda p, addr=None: None
         )
 
         runtime = ObservabilityRuntime.from_config(config)

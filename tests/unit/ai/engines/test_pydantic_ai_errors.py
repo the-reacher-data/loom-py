@@ -20,7 +20,7 @@ import warnings
 from typing import Any
 
 import pytest
-from pydantic_ai import _cost as pydantic_ai_cost
+from pydantic_ai import _genai_prices as pydantic_ai_cost
 from pydantic_ai import _warnings as pydantic_ai_warnings
 from pydantic_ai.exceptions import CostCalculationFailedWarning
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
@@ -94,7 +94,7 @@ def _model_counting_calls(payload: bytes, calls: list[int]) -> FunctionModel:
 
 
 class TestSurvivesCostCalculationFailedWarningElevatedToAnError:
-    """``pydantic_ai._cost.best_effort_price`` degrades ``LookupError`` and
+    """``pydantic_ai._genai_prices.best_effort_price`` degrades ``LookupError`` and
     ``ValueError`` silently, but anything else it catches is re-emitted as
     ``CostCalculationFailedWarning`` — a bare ``Warning``, exactly like its
     sibling ``CostNotFoundWarning``. Unlike that sibling, this one is not

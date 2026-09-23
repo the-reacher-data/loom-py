@@ -12,7 +12,6 @@ against what was captured, rather than re-deriving those rules locally.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +30,7 @@ from loom.ai.engines.pydantic_ai._instructions import (
 from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.core.di import LoomContainer
+from tests.helpers.extras import ENGINE_EXTRAS, without_extra
 from tests.helpers.pydantic_ai_engine import NullDeps, make_plan
 
 _SCHEMA: dict[str, Any] = {
@@ -74,7 +74,7 @@ class TestTemplatingExtraCheck:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An artifact with no templated block never attempts the import."""
-        monkeypatch.setitem(sys.modules, "pydantic_handlebars", None)
+        without_extra(monkeypatch, ["pydantic_handlebars"], [f"{ENGINE_EXTRAS}.handlebars"])
         plan = _plan_with((CompiledInstruction(text="Be terse."),), None)
 
         ensure_templating_available(plan)  # does not raise
@@ -83,7 +83,7 @@ class TestTemplatingExtraCheck:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A templated block with the extra absent fails start-up, not the first request."""
-        monkeypatch.setitem(sys.modules, "pydantic_handlebars", None)
+        without_extra(monkeypatch, ["pydantic_handlebars"], [f"{ENGINE_EXTRAS}.handlebars"])
         plan = _plan_with(
             (CompiledInstruction(text="Hi {{marca}}.", name="greeting", template="handlebars"),),
             _schema_state(),
@@ -113,7 +113,7 @@ class TestTemplatingExtraCheck:
         """The other half of AC-007: a stateless, template-free artifact is unaffected."""
         from pydantic_ai.models.test import TestModel
 
-        monkeypatch.setitem(sys.modules, "pydantic_handlebars", None)
+        without_extra(monkeypatch, ["pydantic_handlebars"], [f"{ENGINE_EXTRAS}.handlebars"])
         provider = PydanticAIEngineProvider(model_resolver=lambda target: TestModel())
 
         engine = provider.create_engine(make_plan(), deps=NullDeps(), container=LoomContainer())

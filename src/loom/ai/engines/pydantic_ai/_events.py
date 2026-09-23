@@ -77,6 +77,11 @@ IGNORED_EVENT_KINDS: frozenset[str] = frozenset(
         "realtime_input_transcription_error",
         "realtime_session_reconnect",
         "realtime_session_error",
+        # An application's own event and a capability's typed event, emitted into
+        # the engine's stream by code loom never runs; the closed loom union has
+        # no member for either (FR-035).
+        "custom",
+        "capability",
     }
 )
 """Engine event kinds with no loom counterpart; carried by no consumer."""

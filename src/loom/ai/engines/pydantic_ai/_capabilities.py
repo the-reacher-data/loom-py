@@ -26,7 +26,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Final, NamedTuple, cast
+from typing import Any, Final, NamedTuple, Protocol, cast
 
 from pydantic_ai import ToolReturn
 from pydantic_ai.capabilities import AbstractCapability
@@ -78,11 +78,11 @@ from loom.ai.errors import (
     AgentCompilationError,
     AgentRunError,
     AgentRunErrorCode,
-    provider_not_installed,
     python_factory_failed,
     python_factory_not_callable,
     python_remote_not_granted,
 )
+from loom.ai.registry import require_provider_sdk
 from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.plan import ExecutionPlan
@@ -528,16 +528,20 @@ def _skills_capability(
         AgentCompilationError: When the ``ai-harness`` extra is not installed.
     """
     del context
-    # Local import: the skills harness ships behind the optional ``ai-harness``
-    # extra, and importing it at module load would break every deployment that
-    # declares no ``skills`` grant.
-    try:
-        from pydantic_ai_harness import Skills
-    except ImportError as exc:
-        raise AgentCompilationError([provider_not_installed("skills", "ai-harness")]) from exc
-    return cast(
-        "AbstractCapability[Any]", Skills(capability.directory, include=list(capability.names))
+    sdk = cast(
+        _SkillsSdk,
+        require_provider_sdk("skills", "loom.ai.engines.pydantic_ai.extras.skills", "ai-harness"),
     )
+    return cast(
+        "AbstractCapability[Any]",
+        sdk.Skills(capability.directory, include=list(capability.names)),
+    )
+
+
+class _SkillsSdk(Protocol):
+    """The one name the skills island publishes."""
+
+    Skills: type[Any]
 
 
 _KINDS: Final[Mapping[type[CompiledCapability], _KindBinding]] = MappingProxyType(

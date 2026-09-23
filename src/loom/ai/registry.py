@@ -18,7 +18,6 @@ if TYPE_CHECKING:  # import cycle at runtime: runtime.py imports the compiler,
     # which imports abc; the aliases are only needed for annotations.
     from loom.ai.runtime import A2AClientFactory, McpClientFactory
 
-from importlib import import_module
 from types import ModuleType
 
 from loom.ai.abc import AgentEngineProvider, NativeToolSupport
@@ -38,6 +37,7 @@ from loom.core.plugins.entrypoints import (
     check_api_version,
     load_entry_point,
 )
+from loom.core.plugins.optional import MissingExtraError, import_optional
 
 _logger = logging.getLogger(__name__)
 
@@ -90,23 +90,27 @@ def resolve_engine_provider(name: str) -> AgentEngineProvider:
 
 
 def require_provider_sdk(provider: str, module: str, extra: str) -> ModuleType:
-    """Import a provider SDK module, failing with the extra to install.
+    """Import an island that needs a provider SDK, failing with the extra to install.
+
+    The engine's reading of :func:`loom.core.plugins.optional.import_optional`:
+    the same load, with the failure translated to this layer's coded issue.
 
     Args:
         provider: Provider identifier the error should name.
-        module: Importable module path of the SDK.
+        module: Importable path of the island — the loom module that imports
+            the SDK at its top.
         extra: Loom extra whose installation brings the SDK.
 
     Returns:
-        The imported module.
+        The imported island.
 
     Raises:
         AgentCompilationError: With ``PROVIDER_NOT_INSTALLED`` naming the
-            extra when the import fails.
+            extra when the island cannot be imported.
     """
     try:
-        return import_module(module)
-    except ImportError as exc:
+        return import_optional(module, extra=extra)
+    except MissingExtraError as exc:
         raise AgentCompilationError([provider_not_installed(provider, extra)]) from exc
 
 

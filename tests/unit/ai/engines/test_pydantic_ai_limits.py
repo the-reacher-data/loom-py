@@ -42,7 +42,7 @@ def _gateway_reported_as_openai(target: InferenceTarget) -> Model:
     """Stand in for ``_gateway_model``: same provider class, no network at init.
 
     A ``gateway`` binding builds an ``OpenAIProvider`` and reaches it through
-    ``OpenAIChatModel``, exactly as ``_models.py:_gateway_model`` does; the
+    ``OpenAIChatModel``, exactly as the ``gateway`` provider island does; the
     real model name travels through, only the credentials are stubbed.
     """
     return OpenAIChatModel(target.model, provider=OpenAIProvider(api_key="test-key"))

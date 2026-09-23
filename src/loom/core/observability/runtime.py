@@ -22,6 +22,7 @@ from time import perf_counter
 from typing import Self
 
 from opentelemetry.trace import Link, NoOpTracer, Span, Tracer
+from prometheus_client import start_http_server
 
 from loom.core.logger.config import configure_logging_from_values
 from loom.core.observability.config import (
@@ -42,11 +43,6 @@ from loom.core.observability.span import (
 from loom.core.observability.topology import ROOT_SCOPES
 from loom.core.tracing.context import active_trace_id
 from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
-
-try:
-    from prometheus_client import start_http_server as _start_http_server
-except ImportError:
-    _start_http_server = None  # type: ignore[assignment]
 
 
 def _resolve_scrape_port(cfg: PrometheusObservabilityConfig) -> int | None:
@@ -203,17 +199,11 @@ class ObservabilityRuntime:
         HTTP server to mount ``/metrics`` on. Safe to call multiple times.
 
         Raises:
-            ImportError: If ``prometheus-client`` is not installed.
             OSError: If the port is already in use by another process.
         """
         if self._scrape_port is None or self._scrape_server_started:
             return
-        if _start_http_server is None:
-            raise ImportError(
-                "Prometheus scrape server requires 'prometheus-client'. "
-                "Install it with: pip install 'loom-py[prometheus]'"
-            )
-        _start_http_server(self._scrape_port, addr=self._scrape_addr)
+        start_http_server(self._scrape_port, addr=self._scrape_addr)
         self._scrape_server_started = True
 
     def emit(self, event: LifecycleEvent) -> None:

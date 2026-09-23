@@ -40,18 +40,40 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 from loom.ai.abc import ConcurrentMcpSession, McpToolCallResult, McpToolInfo
 from loom.ai.compiler import CompiledMcpCapability, mcp_connection
-from loom.ai.errors import AgentCompilationError, mcp_transport_invalid, provider_not_installed
+from loom.ai.errors import AgentCompilationError, mcp_transport_invalid
+from loom.ai.registry import require_provider_sdk
 from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
 
 if TYPE_CHECKING:
-    from fastmcp.client.transports import ClientTransport
+    from fastmcp.client.transports import ClientTransport, StdioTransport
     from pydantic_ai.mcp import MCPToolset
 
 _logger = logging.getLogger(__name__)
+
+_ISLAND = "loom.ai.engines.pydantic_ai.extras.mcp"
+_EXTRA = "mcp"
+
+
+class _McpSdk(Protocol):
+    """The two names the MCP island publishes."""
+
+    MCPToolset: type[MCPToolset[Any]]
+    StdioTransport: type[StdioTransport]
+
+
+def _sdk() -> _McpSdk:
+    """Load the island; the cast records the contract every island keeps.
+
+    Raises:
+        AgentCompilationError: With ``PROVIDER_NOT_INSTALLED`` naming the
+            ``mcp`` extra when the client is not installed.
+    """
+    return cast(_McpSdk, require_provider_sdk("mcp", _ISLAND, _EXTRA))
+
 
 DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS: Final[float] = 10.0
 """Fallback handshake deadline, seconds, matching
@@ -221,10 +243,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability, *, init_timeout: float)
 
         toolset = build_mcp_toolset(capability, init_timeout=10.0)
     """
-    try:
-        from pydantic_ai.mcp import MCPToolset
-    except ImportError as exc:
-        raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
+    sdk = _sdk()
     component = f"mcp server '{capability.server}'"
     client = _mcp_client(component, capability)
     headers = headers_from_ref(component, capability.headers_ref) or None
@@ -235,7 +254,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability, *, init_timeout: float)
     # transport: its ``_set_auth`` special-cases only ``"oauth"``, ``OAuth``, the
     # OAuth providers and ``str``, and hands anything else to its ``httpx2`` client
     # untouched — including the callable loom's own strategies return.
-    toolset: MCPToolset[Any] = MCPToolset(
+    toolset: MCPToolset[Any] = sdk.MCPToolset(
         client,
         headers=headers,
         auth=cast("Any", auth),
@@ -271,11 +290,7 @@ def _stdio_transport(command: str, capability: CompiledMcpCapability) -> ClientT
     Raises:
         AgentCompilationError: When the stdio client library is not installed.
     """
-    try:
-        from fastmcp.client.transports import StdioTransport
-    except ImportError as exc:
-        raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
-    return StdioTransport(
+    return _sdk().StdioTransport(
         command=command,
         args=list(capability.args),
         env=dict(capability.env) or None,

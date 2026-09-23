@@ -130,6 +130,7 @@ class AgentErrorCode(StrEnum):
     MODEL_ROLE_UNBOUND = "MODEL_ROLE_UNBOUND"
     INFERENCE_TARGET_INCOMPLETE = "INFERENCE_TARGET_INCOMPLETE"
     OUTPUT_MODE_UNKNOWN = "OUTPUT_MODE_UNKNOWN"
+    OUTPUT_MODE_UNSUPPORTED = "OUTPUT_MODE_UNSUPPORTED"
     POLICY_OUT_OF_RANGE = "POLICY_OUT_OF_RANGE"
 
     # Deployment resolution
@@ -981,6 +982,31 @@ def output_mode_unknown(role: str, value: str, valid: Sequence[str]) -> AgentCom
         code=AgentErrorCode.OUTPUT_MODE_UNKNOWN,
         message=(f"model role '{role}': output_mode '{value}' is not one of {', '.join(valid)}"),
         component=f"model role '{role}'",
+        field="output_mode",
+    )
+
+
+def output_mode_unsupported(
+    provider: str, mode: str, supported: Sequence[str]
+) -> AgentCompilationIssue:
+    """A binding pins an ``output_mode`` the bound provider cannot serve.
+
+    Distinct from ``OUTPUT_MODE_UNKNOWN``: the mode is one loom offers, but
+    this provider's models refuse it on every request, so the pin is known
+    to be wrong before the first one.
+
+    Args:
+        provider: Provider identifier the binding named.
+        mode: The pinned mode.
+        supported: Modes the provider does serve.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.OUTPUT_MODE_UNSUPPORTED,
+        message=(
+            f"provider '{provider}': output_mode '{mode}' is not served by its models; "
+            f"supported modes: {', '.join(supported)}"
+        ),
+        component=provider,
         field="output_mode",
     )
 

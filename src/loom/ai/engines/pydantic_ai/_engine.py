@@ -242,6 +242,7 @@ class PydanticAIEngine:
                 agent=self._plan.name,
                 max_history_bytes=self._plan.policies.max_history_bytes,
             ),
+            provider_details=result.response.provider_details,
         )
 
     def run_stream(
@@ -783,6 +784,7 @@ class PydanticAIEngine:
                 agent=self._plan.name,
                 max_history_bytes=self._plan.policies.max_history_bytes,
             ),
+            provider_details=result.response.provider_details,
         )
 
 

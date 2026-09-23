@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 import msgspec
-
-_ = importlib.import_module("aiocache.serializers")
 
 
 class MsgspecSerializer:

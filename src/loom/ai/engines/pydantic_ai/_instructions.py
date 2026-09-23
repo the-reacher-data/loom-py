@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from types import MappingProxyType
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, Protocol, TypeAlias, cast
 
 from pydantic_ai import RunContext
 from pydantic_ai.messages import InstructionPart
@@ -26,8 +26,11 @@ from loom.ai.errors import (
     template_compilation_failed,
     template_extra_missing,
 )
+from loom.core.plugins.optional import MissingExtraError, import_optional
 
 TEMPLATING_EXTRA: Final[str] = "ai-templates"
+_HANDLEBARS_ISLAND: Final[str] = "loom.ai.engines.pydantic_ai.extras.handlebars"
+"""The one module of the engine importing ``pydantic_handlebars``."""
 """``pyproject.toml`` optional-dependency extra installing ``pydantic_handlebars``."""
 
 AgentInstructionItem: TypeAlias = InstructionPart | Callable[[RunContext[Any]], Awaitable[str]]
@@ -85,10 +88,29 @@ def ensure_templating_available(plan: AgentPlan) -> None:
 
 def _pydantic_handlebars_importable() -> bool:
     try:
-        import pydantic_handlebars  # noqa: F401
-    except ImportError:
+        _handlebars()
+    except MissingExtraError:
         return False
     return True
+
+
+class _Handlebars(Protocol):
+    """The two names the templating island publishes."""
+
+    HandlebarsError: type[Exception]
+
+    def compile_checked(
+        self, text: str, schema: Mapping[str, Any] | None
+    ) -> Callable[[Any], str]: ...
+
+
+def _handlebars() -> _Handlebars:
+    """Load the island; the cast records the contract every island keeps.
+
+    Raises:
+        MissingExtraError: When ``pydantic_handlebars`` is not installed.
+    """
+    return cast(_Handlebars, import_optional(_HANDLEBARS_ISLAND, extra=TEMPLATING_EXTRA))
 
 
 def build_instructions(plan: AgentPlan) -> list[AgentInstructionItem]:
@@ -210,22 +232,17 @@ def _handlebars_instruction(
         AgentCompilationError: The template fails to parse, or fails the
             compatibility check against its declared schema.
     """
-    import pydantic_handlebars
-
+    handlebars = _handlebars()
     schema = None if state is None else state.schema
     try:
-        if schema is not None:
-            pydantic_handlebars.check_template_compatibility(
-                block.text, dict(schema), raise_on_error=True
-            )
-        compiled = pydantic_handlebars.compile(block.text)
-    except pydantic_handlebars.HandlebarsError as exc:
+        rendered = handlebars.compile_checked(block.text, schema)
+    except handlebars.HandlebarsError as exc:
         raise AgentCompilationError(
             [template_compilation_failed(component, label, str(exc))]
         ) from exc
 
     async def render(ctx: RunContext[Any]) -> str:
-        return compiled.render(ctx.deps.state)
+        return rendered(ctx.deps.state)
 
     return render
 

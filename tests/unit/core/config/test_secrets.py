@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from loom.core.config.errors import ConfigError
 from loom.core.config.resolver import ConfigResolver
 from loom.core.config.secrets import SecretsManagerResolver
+from tests.helpers.extras import BOTO3_ISLAND
 
 
 @pytest.fixture
@@ -384,7 +386,7 @@ class TestSecretsManagerResolverErrors:
     def test_raises_config_error_when_boto3_not_installed(self) -> None:
         resolver = SecretsManagerResolver()
         with (
-            patch("loom.core.config.secrets._boto3_module", None),
+            patch.dict(sys.modules, {"boto3": None, BOTO3_ISLAND: None}),
             pytest.raises(ConfigError, match="boto3 is required"),
         ):
             resolver.resolve("/some/secret")

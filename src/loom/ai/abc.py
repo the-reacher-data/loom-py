@@ -179,6 +179,12 @@ class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
         messages: New messages of this run in the engine's own serialised
             form; ``None`` when they are longer than
             ``policies.max_history_bytes``.
+        provider_details: What the provider reported about the final answer
+            beyond the answer itself, verbatim and opaque to loom — a
+            decision model's confidence and probabilities per field, another
+            provider's finish reason. ``None`` when it reported nothing. In
+            process only: the ``/run`` body and the ``final`` frame never
+            carry it.
     """
 
     output: object
@@ -186,6 +192,7 @@ class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
     interaction_id: str | None = None
     hook_result: object | None = None
     messages: bytes | None = None
+    provider_details: Mapping[str, Any] | None = None
 
 
 class AgentAnswer(LoomFrozenStruct, Generic[AnswerT], frozen=True, kw_only=True):
@@ -205,11 +212,16 @@ class AgentAnswer(LoomFrozenStruct, Generic[AnswerT], frozen=True, kw_only=True)
             overrode it for this call only.
         usage: Resource accounting of this run only.
         interaction_id: Identifier the runtime minted for this run.
+        provider_details: What the provider reported about this answer beyond
+            the answer itself, verbatim and opaque to loom — a decision
+            model's confidence and probabilities per field, another
+            provider's finish reason — or ``None`` when it reported nothing.
     """
 
     output: AnswerT
     usage: AgentUsage
     interaction_id: str | None = None
+    provider_details: Mapping[str, Any] | None = None
 
 
 class McpHandle(Protocol):
@@ -678,6 +690,9 @@ class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_f
         messages: New messages of this run in the engine's own serialised
             form; ``None`` when they are longer than
             ``policies.max_history_bytes``.
+        provider_details: What the provider reported about the final answer
+            beyond the answer itself, as on :class:`AgentResult`; the
+            runtime copies it there, and no wire surface publishes it.
     """
 
     output: object
@@ -685,6 +700,7 @@ class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_f
     interaction_id: str | None = None
     hook_result: object | None = None
     messages: bytes | None = None
+    provider_details: Mapping[str, Any] | None = None
 
 
 AgentEvent = TextDeltaEvent | ToolCallEvent | ToolResultEvent | ErrorEvent | FinalEvent

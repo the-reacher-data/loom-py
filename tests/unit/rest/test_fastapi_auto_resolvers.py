@@ -9,6 +9,7 @@ import pytest
 
 from loom.core.config import ConfigError
 from loom.rest.fastapi.auto import create_app
+from tests.helpers.extras import with_boto3, without_boto3
 from tests.unit._resolver_stubs import MappingResolver
 from tests.unit.rest._fixture_app import write_project
 
@@ -16,8 +17,7 @@ pytestmark = pytest.mark.usefixtures("clear_builtin_resolvers")
 
 
 def _without_boto3(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("loom.core.config.secrets._boto3_module", None)
-    monkeypatch.setattr("loom.core.config.ssm._boto3_module", None)
+    without_boto3(monkeypatch)
 
 
 def test_user_resolver_reaches_the_app(tmp_path: Path) -> None:
@@ -42,8 +42,7 @@ def test_no_aws_client_without_placeholders(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     boto3 = MagicMock()
-    monkeypatch.setattr("loom.core.config.secrets._boto3_module", boto3)
-    monkeypatch.setattr("loom.core.config.ssm._boto3_module", boto3)
+    with_boto3(monkeypatch, boto3)
     config_path = write_project(tmp_path)
 
     assert create_app(config_path) is not None

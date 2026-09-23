@@ -8,7 +8,7 @@ declared shape, and the grant lookups' not-yet-implemented failure mode.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -126,9 +126,10 @@ def container() -> LoomContainer:
 class _OneShotEngine:
     """A single successful turn, for tests that only need the happy path."""
 
-    def __init__(self) -> None:
+    def __init__(self, provider_details: Mapping[str, Any] | None = None) -> None:
         self.run_stream_calls = 0
         self.identities: list[Identity] = []
+        self.provider_details = provider_details
 
     def run_stream(
         self,
@@ -145,7 +146,11 @@ class _OneShotEngine:
         @asynccontextmanager
         async def _stream() -> AsyncIterator[AsyncIterator[AgentEvent]]:
             async def _events() -> AsyncIterator[AgentEvent]:
-                yield FinalEvent(output={"ok": True}, usage=DEFAULT_USAGE)
+                yield FinalEvent(
+                    output={"ok": True},
+                    usage=DEFAULT_USAGE,
+                    provider_details=self.provider_details,
+                )
 
             yield _events()
 
@@ -160,7 +165,9 @@ class _OneShotEngine:
         state: object | None = None,
     ) -> AgentResult:
         del prompt, identity, conversation, state
-        return AgentResult(output={"ok": True}, usage=DEFAULT_USAGE)
+        return AgentResult(
+            output={"ok": True}, usage=DEFAULT_USAGE, provider_details=self.provider_details
+        )
 
     async def health(self) -> HealthStatus:
         return HealthStatus(status="ok")
@@ -313,6 +320,35 @@ class TestAnonymousIdentity:
 
         assert answer.output == {"ok": True}
         assert engine.identities == [_AUTHENTICATED]
+
+
+class TestProviderDetailsReachTheAnswer:
+    async def test_the_final_events_provider_details_come_back_on_the_answer(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """What the provider said about the answer travels from ``final`` to ``AgentResult``."""
+        details = {"confidence": {"ok": 0.93}}
+        engine = _OneShotEngine(provider_details=details)
+        provider = CountingEngineProvider(engines={_AGENT_NAME: engine})  # type: ignore[dict-item]
+        runtime = AgentRuntime(
+            plans=[make_plan(_AGENT_NAME)],
+            config=make_ai_config(),
+            engine_provider=provider,  # type: ignore[arg-type]
+            deps=deps,
+            container=container,
+        )
+        handle = _BoundAgentHandle(
+            name=_AGENT_NAME,
+            runtime=runtime,
+            identity=_AUTHENTICATED,
+            observability=None,
+            sql_query_service=NullSqlQueryService(),
+        )
+
+        async with runtime:
+            answer = await handle.run("hola")
+
+        assert answer.provider_details == details
 
 
 class TestTheHandlesSpan:

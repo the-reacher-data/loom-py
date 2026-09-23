@@ -509,6 +509,14 @@ The hook's return value is a client-facing DTO delivered verbatim to the caller
 — public on an `allow_anonymous` mount — so return a purpose-built struct,
 never a domain entity.
 
+In process, `AgentAnswer` and `AgentResult` also carry `provider_details`: what the provider
+reported about the final answer beyond the answer itself, verbatim and opaque
+to loom — a decision model's confidence and probabilities per field (see
+[`typesafe`](providers.md#typesafe-fills-an-output-it-never-writes-text)),
+another provider's finish reason — or `None` when it reported nothing. Like
+`messages`, it never reaches the wire: the `/run` body and the `final` frame
+keep their four keys.
+
 The request body accepts an optional `conversation_id`: a string of 1 to 128
 characters that loom never reads and never keys anything on. It selects the
 conversation the loader receives when the artifact declares
@@ -797,8 +805,8 @@ accepts the parameter and ignores it, so scripted tests stay byte for byte.
 
 Clients keep sending `{"prompt", "conversation_id"}`. The `/run` body has
 exactly `output`, `usage`, `interaction_id` and `hook_result`; the `final`
-frame has the same four keys; `messages` appears in neither, nor in any A2A
-frame. Over A2A the thread travels as the message's `contextId`, which the
+frame has the same four keys; `messages` and `provider_details` appear in
+neither, nor in any A2A frame. Over A2A the thread travels as the message's `contextId`, which the
 runtime treats as the `conversation_id` (see [the A2A surface](a2a.md#conversations)).
 
 ### Two turns
