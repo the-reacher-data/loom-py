@@ -893,7 +893,7 @@ that matches nothing is a `ConfigError`.
 
 A declaration file has one of two shapes. The first is a **per-ETL document**:
 the YAML `etl_flow` already reads (`schedule`, `params`, `tags`, `environments`,
-`retry`, `notifications`, `correlation_field`) plus the keys that replace the
+`retry`, `notifications`, `correlation_field`, `trigger`) plus the keys that replace the
 Python module:
 
 ```yaml
@@ -988,6 +988,47 @@ showing the placeholders.
 
 Because every attempt of a run resolves the same values, the correlation id,
 and therefore the manifest a retry resumes from, is stable across attempts.
+
+### Running a deployment after another one
+
+A per-flow YAML may name the deployment whose completed runs start this one,
+and the parameters it copies from them:
+
+```yaml
+trigger:
+  after: respondio_messages_daily
+  inherit_params: [updated_at_from, updated_at_to]
+```
+
+`after` is the upstream deployment as `<flow>/<deployment>`, or a single name
+when the flow and the deployment share it, as every loom ETL's do. The
+deployer registers a Prefect `DeploymentEventTrigger` that fires on
+`prefect.flow-run.Completed` of a run related to both that flow and that
+deployment; a deployment name alone is only unique within its flow.
+
+Each name in `inherit_params` is copied from the completed run's stored
+parameters. Since the run records its placeholders resolved, the downstream
+run receives the same concrete window. The name must therefore be stored on the
+upstream run, which means declared under the upstream YAML's `params` (or
+submitted with the run): a value the upstream flow only took from its
+signature default is not stored, so it renders as empty text, which a `str`
+field accepts as `""` and a `date` or `datetime` field fails to decode. The trigger passes each value as text,
+so only a field declared exactly `str`, `date` or `datetime` can be inherited;
+an optional field is refused because a null would arrive as the text `"None"`.
+
+- Parameters not inherited take this deployment's defaults; a placeholder
+  among them resolves against the downstream run's own creation time.
+- If the upstream run could not record its parameters, the downstream run
+  inherits the placeholder text and resolves it against its own creation
+  time, which may not be the upstream slot.
+- `trigger` and `schedule` may both be set, and the ETL then runs on both: on
+  its schedule and after each completed upstream run.
+- The upstream name is not checked against the deployments that exist: a
+  trigger naming no deployment never fires.
+
+The block is decoded strictly: `after` and `inherit_params` are its only keys,
+`after` must name a deployment, without surrounding spaces in either part, and
+each inherited name must be a field of the flow's params type.
 
 ### Validation before any deployment
 

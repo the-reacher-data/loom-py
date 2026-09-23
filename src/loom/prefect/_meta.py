@@ -23,6 +23,32 @@ DEFAULT_STORAGE_CONFIG_PATH = "/app/config.yaml"
 LOOM_ETL_CONFIG = "LOOM_ETL_CONFIG"
 
 
+class FlowTrigger(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):
+    """Run a deployment each time another deployment completes a run.
+
+    Args:
+        after: The upstream deployment, as ``<flow>/<deployment>`` or, for a
+            loom ETL whose flow and deployment share its name, that name.
+        inherit_params: Parameters copied from the completed run; every
+            other parameter takes this deployment's default.
+    """
+
+    after: str
+    inherit_params: tuple[str, ...] = ()
+
+    @property
+    def upstream_flow(self) -> str:
+        """Name of the flow the upstream deployment belongs to."""
+        flow, _, _ = self.after.partition("/")
+        return flow
+
+    @property
+    def upstream_deployment(self) -> str:
+        """Name of the upstream deployment."""
+        _, _, deployment = self.after.partition("/")
+        return deployment or self.after
+
+
 class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     """Per-flow metadata consumed by :func:`discover_and_deploy_etls`.
 
@@ -39,6 +65,7 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
         pool_config: Per-environment work-pool overrides
             (``environment → {"work_pool", "job_variables"}``).
         tags: Extra deployment tags from the YAML, appended after ``name``.
+        trigger: The ``trigger`` block from the YAML, or ``None``.
     """
 
     name: str
@@ -49,6 +76,13 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     raw_params: dict[str, Any]
     pool_config: dict[str, dict[str, Any]]
     tags: tuple[str, ...] = ()
+    trigger: FlowTrigger | None = None
 
 
-__all__ = ["DEFAULT_STORAGE_CONFIG_PATH", "LOOM_ETL_CONFIG", "LOOM_ETL_META_ATTR", "ETLFlowMeta"]
+__all__ = [
+    "DEFAULT_STORAGE_CONFIG_PATH",
+    "LOOM_ETL_CONFIG",
+    "LOOM_ETL_META_ATTR",
+    "ETLFlowMeta",
+    "FlowTrigger",
+]

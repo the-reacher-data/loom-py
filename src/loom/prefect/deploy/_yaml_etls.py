@@ -24,6 +24,7 @@ from loom.etl import ETLPipeline
 from loom.prefect._flow_yaml import read_yaml, resolve_config_uri
 from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH, LOOM_ETL_CONFIG
 from loom.prefect.flow import FlowSettings, flow_attribute_name, flow_settings_from_mapping
+from loom.prefect.flow._assemble import check_inherited_params
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,8 @@ def read_declarations(config: str) -> tuple[EtlDeclaration, ...]:
         ConfigError: When a file declares no ETL, a dotted path does not import
             or has the wrong type, a name yields no identifier, ``job_variables``
             or ``job_variables.env`` is not a mapping, a declaration sets
-            ``LOOM_ETL_CONFIG`` under ``job_variables.env``, or two declarations
+            ``LOOM_ETL_CONFIG`` under ``job_variables.env``, a trigger inherits
+            a parameter the params type does not declare, or two declarations
             share a name or an attribute.
     """
     declarations: list[EtlDeclaration] = []
@@ -122,14 +124,19 @@ def _declaration(name: str, body: Any, uri: str) -> EtlDeclaration:
     if not isinstance(body, Mapping):
         raise ConfigError(f"{uri}: ETL {name!r} must be a mapping")
     pipeline = _import_pipeline(name, body.get("pipeline"), uri)
-    settings = flow_settings_from_mapping(body)
+    params_type = _resolve_params_type(name, body.get("params_type"), pipeline, uri)
+    try:
+        settings = flow_settings_from_mapping(body)
+        check_inherited_params(name, settings.trigger, params_type)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{uri}: ETL {name!r}: {exc}") from exc
     _reject_reserved_env(name, settings, uri)
     return EtlDeclaration(
         name=name,
         attribute=_attribute_for(name, uri),
         config_uri=uri,
         pipeline=pipeline,
-        params_type=_resolve_params_type(name, body.get("params_type"), pipeline, uri),
+        params_type=params_type,
         settings=settings,
         storage_config_path=str(body.get("storage_config_path", DEFAULT_STORAGE_CONFIG_PATH)),
     )

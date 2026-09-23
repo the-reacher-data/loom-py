@@ -128,6 +128,7 @@ def build_etl_flow(
         name=name,
         body=flow_body,
         signature=synthesise_flow_signature(params_type, extra_parameters=_EXTRA_PARAMETERS),
+        params_type=params_type,
         settings=settings,
         config_path=config_path,
         source_file=source_file,

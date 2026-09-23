@@ -88,6 +88,33 @@
   boundaries already use; `LoomRestAdapter`'s Struct projection goes
   through it too.
 
+### prefect
+
+- **prefect:** a deployment may run each time another one completes, inheriting
+  some of its parameters. The per-flow YAML takes an optional `trigger` block:
+  `after`, the upstream deployment as `<flow>/<deployment>` or, for a loom ETL
+  whose flow and deployment share its name, that name; and `inherit_params`, a
+  list of parameter names. The deployer registers it as a Prefect
+  `DeploymentEventTrigger` on `prefect.flow-run.Completed` whose related
+  resources must include both that flow and that deployment, since a deployment
+  name is only unique within its flow. Each inherited parameter is rendered, as
+  text, from the completed run's stored parameters, which loom records resolved,
+  so `${today-1d}` upstream reaches the downstream run as the concrete date.
+  Only fields declared exactly `str`, `date` or `datetime` can be inherited (a
+  null would render as `"None"`), and each must be stored on the upstream run,
+  that is declared under its YAML `params` or submitted: a value it only took
+  from a signature default renders as empty text, which a `str` field takes as
+  `""` and a `date` field fails to decode. Every other parameter takes the
+  deployment's default, and a placeholder among them resolves against the
+  downstream run's creation time. The block is decoded strictly (an unknown key,
+  a wrong type or an `after` with spaces around either part is refused) when the
+  flow is built and, for YAML declarations, as a `ConfigError` before any
+  deployment is registered. A trigger coexists with `schedule`, in which case
+  the ETL runs on both. If the upstream run failed to record its parameters, the
+  downstream run inherits the placeholder text and resolves it against its own
+  creation time. Without `trigger` the deployment is registered exactly as
+  before.
+
 ## ⚠ Behaviour changes
 
 ### core

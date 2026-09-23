@@ -12,18 +12,27 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
+import msgspec
 import prefect
 
 from loom.prefect._config import FlowConfig, flow_config_from_mapping
-from loom.prefect._flow_yaml import extract_pool_config, read_yaml, resolve_config_uri
-from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
+from loom.prefect._flow_yaml import (
+    extract_pool_config,
+    extract_trigger,
+    read_yaml,
+    resolve_config_uri,
+)
+from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta, FlowTrigger
 from loom.prefect.flow._common import coerce_tags
 from loom.prefect.flow._hooks import make_notification_hooks, pause_schedule_on_failure
 from loom.prefect.flow._run_name import make_run_name_callback
 from loom.prefect.notify import Notifier, build_notifiers
+
+_INHERITABLE_TYPES: frozenset[Any] = frozenset({str, date, datetime})
 
 
 @dataclass(frozen=True)
@@ -37,6 +46,7 @@ class FlowSettings:
     tags: tuple[str, ...]
     notifiers: tuple[Notifier, ...]
     retry_policy: FlowConfig
+    trigger: FlowTrigger | None = None
 
 
 def load_flow_settings(config_path: str) -> FlowSettings:
@@ -68,6 +78,7 @@ def flow_settings_from_mapping(raw_cfg: Mapping[str, Any]) -> FlowSettings:
         tags=coerce_tags(raw_cfg.get("tags")),
         notifiers=build_notifiers(raw_cfg.get("notifications")),
         retry_policy=flow_config_from_mapping(raw_cfg.get("retry")),
+        trigger=extract_trigger(raw_cfg),
     )
 
 
@@ -88,6 +99,7 @@ def assemble_flow(
     name: str,
     body: Callable[..., None],
     signature: inspect.Signature,
+    params_type: type[msgspec.Struct],
     settings: FlowSettings,
     config_path: str,
     source_file: str,
@@ -101,6 +113,7 @@ def assemble_flow(
         name: Logical flow name (Prefect flow name AND deployment name).
         body: The ``**kwargs`` flow-body callable produced by a factory.
         signature: Synthesised ``inspect.Signature`` exposed to Prefect.
+        params_type: Struct the flow's parameters decode into.
         settings: Parsed per-flow YAML settings.
         config_path: Path or URI of the per-flow YAML. A local path is
             resolved into the metadata; a cloud URI is recorded verbatim.
@@ -114,7 +127,12 @@ def assemble_flow(
     Returns:
         The ``@prefect.flow``-decorated callable with ``__loom_etl_meta__``
         attached at :data:`~loom.prefect._meta.LOOM_ETL_META_ATTR`.
+
+    Raises:
+        ValueError: When the trigger inherits a parameter *params_type* does
+            not declare.
     """
+    check_inherited_params(name, settings.trigger, params_type)
     safe_name = flow_attribute_name(name)
     flow_body: Any = body
     flow_body.__signature__ = signature
@@ -143,14 +161,50 @@ def assemble_flow(
             raw_params=settings.raw_params,
             pool_config=settings.pool_config,
             tags=settings.tags,
+            trigger=settings.trigger,
         ),
     )
     return decorated
 
 
+def check_inherited_params(
+    name: str, trigger: FlowTrigger | None, params_type: type[msgspec.Struct]
+) -> None:
+    """Refuse a trigger inheriting a parameter it cannot carry.
+
+    The trigger renders each inherited value as text, so only a field
+    declared exactly ``str``, ``date`` or ``datetime`` decodes back to what
+    the upstream run held. An optional field is refused as well: a null
+    upstream value renders as the text ``"None"``, which a date field
+    rejects and a text field takes silently.
+
+    Raises:
+        ValueError: When an entry of ``trigger.inherit_params`` is not a field
+            of *params_type*, or is not declared ``str``, ``date`` or
+            ``datetime``.
+    """
+    if trigger is None:
+        return
+    fields = {field.name for field in msgspec.structs.fields(params_type)}
+    hints = get_type_hints(params_type)
+    for param in trigger.inherit_params:
+        if param not in fields:
+            raise ValueError(
+                f"flow {name!r}: trigger.inherit_params names {param!r}, "
+                f"not a field of {params_type.__name__}"
+            )
+        if hints.get(param) not in _INHERITABLE_TYPES:
+            raise ValueError(
+                f"flow {name!r}: trigger.inherit_params names {param!r}, declared "
+                f"{hints.get(param)!r}; the trigger passes values as text, so only "
+                "str, date and datetime fields can be inherited"
+            )
+
+
 __all__ = [
     "FlowSettings",
     "assemble_flow",
+    "check_inherited_params",
     "flow_attribute_name",
     "flow_settings_from_mapping",
     "load_flow_settings",
