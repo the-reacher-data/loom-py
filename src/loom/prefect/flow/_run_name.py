@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from loom.prefect._placeholders import resolve_placeholder
+from loom.prefect.flow._common import prefect_run_anchor
 
 _UNSAFE_CORR_CHARS = re.compile(r"[^a-zA-Z0-9_\-]")
 _COMPACT_TIMESTAMP_FMT = "%Y%m%dT%H%M%S"
@@ -25,28 +26,13 @@ def _sanitize(value: Any) -> str:
     return _UNSAFE_CORR_CHARS.sub("_", _render_value(value))
 
 
-def _prefect_scheduled_start() -> Any:
+def _prefect_runtime_params() -> dict[str, Any]:
     try:
         from prefect.runtime import flow_run as _fr  # noqa: PLC0415
 
-        return _fr.scheduled_start_time
+        return dict(_fr.parameters or {})
     except Exception:  # noqa: BLE001
-        return None
-
-
-def _prefect_runtime_params() -> tuple[dict[str, Any], Any]:
-    try:
-        from prefect.runtime import flow_run as _fr  # noqa: PLC0415
-
-        return dict(_fr.parameters or {}), _fr.scheduled_start_time
-    except Exception:  # noqa: BLE001
-        return {}, None
-
-
-def _load_runtime_params(params: dict[str, Any]) -> tuple[dict[str, Any], Any]:
-    if not params:
-        return _prefect_runtime_params()
-    return params, _prefect_scheduled_start()
+        return {}
 
 
 def _has_explicit_correlation(params: dict[str, Any], correlation_field: str | None) -> bool:
@@ -108,10 +94,11 @@ def make_run_name_callback(
     """
 
     def _run_name(**params: Any) -> str:
-        params, scheduled_start = _load_runtime_params(params)
+        params = params or _prefect_runtime_params()
+        anchor = prefect_run_anchor()
         has_explicit_correlation = _has_explicit_correlation(params, correlation_field)
-        if scheduled_start is not None and not has_explicit_correlation:
-            return str(scheduled_start.strftime("%Y-%m-%dT%H:%M"))
+        if anchor is not None and not has_explicit_correlation:
+            return anchor.strftime("%Y-%m-%dT%H:%M")
 
         ts = datetime.now(tz=UTC).strftime("%H%M%S")
         cid = params.get("correlation_id")
@@ -121,7 +108,8 @@ def make_run_name_callback(
             # The callable runs BEFORE the flow body that resolves
             # ``${now}`` etc. — resolve here too so the displayed name
             # reflects the real bound value.
-            return f"{_sanitize(resolve_placeholder(params[correlation_field]))}-{ts}"
+            value = resolve_placeholder(params[correlation_field], anchor=anchor)
+            return f"{_sanitize(value)}-{ts}"
         return datetime.now(tz=UTC).strftime(_COMPACT_TIMESTAMP_FMT)
 
     return _run_name

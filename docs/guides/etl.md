@@ -958,6 +958,37 @@ declares neither `etls:` nor `pipeline` is a `ConfigError` naming the file, so
 keep ETL declarations in their own directory (`config/etls/`) or in one `etls:`
 file rather than next to the storage YAML.
 
+### Placeholders count from the run's scheduled start
+
+A parameter may hold a placeholder: `${today}`, `${today±Nd}`, `${yesterday}`,
+`${now}` or `${now±N}` with `d`, `h` or `m`. Inside a flow run it counts from
+the run's scheduled start, read in UTC, not from the moment the run executes:
+
+- a scheduled run resolves against its slot, even when it starts late or
+  after midnight;
+- a retry, by the engine or through "Retry" in the UI, resolves against the
+  same slot;
+- a manual run resolves against the time it was created.
+
+A late run's `${now}` therefore covers up to its scheduled time. The run name
+follows the same rule.
+
+Once resolved, the flow writes the values back to its own run: the
+parameters the API stored for it, with each placeholder replaced by its value
+(dates and datetimes in ISO 8601, a backfill's `start_from` included). Nothing
+else is added or changed. The run then shows the window it processed, and a
+run resubmitted from the UI ("Retry") or copied reproduces it exactly: its
+parameters are concrete, so it makes no call. A retry inside the same process
+(`retries`) still holds the placeholders it started with, resolves them to the
+same values and repeats the call, which is harmless.
+
+The update is a single attempt with a 10-second timeout. If it fails, the flow
+logs it at `ERROR`, in the run's logs, and runs anyway; the run then keeps
+showing the placeholders.
+
+Because every attempt of a run resolves the same values, the correlation id,
+and therefore the manifest a retry resumes from, is stable across attempts.
+
 ### Validation before any deployment
 
 Every declaration is read and checked before the first deployment is

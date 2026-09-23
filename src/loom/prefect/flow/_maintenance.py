@@ -11,11 +11,11 @@ from loom.core.observability import ObservabilityRuntime, Scope
 from loom.etl.maintenance._runner import MaintenanceRunner
 from loom.etl.maintenance._step import MaintenanceStep
 from loom.etl.runner.config_loader import _load_yaml
-from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect._summary import set_run_summary
 from loom.prefect.flow._assemble import assemble_flow, load_flow_settings
-from loom.prefect.flow._common import prefect_flow_run_id
-from loom.prefect.flow._signature import normalize_datetime_fields, synthesise_flow_signature
+from loom.prefect.flow._common import prefect_flow_run_id, prefect_run_anchor
+from loom.prefect.flow._params import record_run_params, resolve_run_params
+from loom.prefect.flow._signature import synthesise_flow_signature
 from loom.prefect.observer._logging_bridge import install_log_bridge, uninstall_log_bridge
 
 
@@ -55,20 +55,20 @@ def maintenance_flow(
     settings = load_flow_settings(config_path)
 
     def _flow_body(**kwargs: Any) -> None:
-        # "env" is exposed in the synthesised signature so Prefect accepts it,
-        # but maintenance flows do not route by environment — drained here.
-        kwargs.pop("env", "prod")
-        resolved = {k: resolve_placeholder(v) for k, v in kwargs.items()}
-        resolved = normalize_datetime_fields(resolved, params_type)
-        params = msgspec.convert(resolved, type=params_type)
-        actual_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
-        storage_config, observability_config = _load_yaml(actual_path)
-        observability = ObservabilityRuntime.from_config(observability_config)
         install_log_bridge(prefect_flow_run_id())
         try:
+            # "env" is exposed in the synthesised signature so Prefect accepts it,
+            # but maintenance flows do not route by environment — drained here.
+            kwargs.pop("env", "prod")
+            params = resolve_run_params(kwargs, params_type, anchor=prefect_run_anchor())
+            decoded = msgspec.structs.asdict(params)
+            record_run_params(decoded)
+            actual_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
+            storage_config, observability_config = _load_yaml(actual_path)
+            observability = ObservabilityRuntime.from_config(observability_config)
             with observability.span(Scope.MAINTENANCE, step.__name__):
                 report = MaintenanceRunner.from_config(storage_config).run(step, params=params)
-                set_run_summary(_maintenance_summary(report, resolved))
+                set_run_summary(_maintenance_summary(report, decoded))
                 report.raise_if_errors()
         finally:
             uninstall_log_bridge()

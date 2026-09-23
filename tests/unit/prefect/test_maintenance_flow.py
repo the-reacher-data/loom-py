@@ -72,7 +72,7 @@ def test_maintenance_flow_bridges_logs_to_current_flow_run(
     flow = _build_flow(tmp_path)
     flow.fn(dry_run=True)  # type: ignore[attr-defined]
 
-    assert events == ["load", "configure", "install", "span", "run", "uninstall"]
+    assert events == ["install", "load", "configure", "span", "run", "uninstall"]
     configure.assert_called_once_with(observability_config)
     install.assert_called_once_with(flow_run_id)
     uninstall.assert_called_once_with()

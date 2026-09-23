@@ -17,13 +17,14 @@ from loom.etl.pipeline import ETLPipeline
 from loom.etl.runner import ETLRunner
 from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect._summary import set_run_summary
-from loom.prefect.flow._common import prefect_flow_run_id
+from loom.prefect.flow._common import prefect_flow_run_id, prefect_run_anchor
+from loom.prefect.flow._params import record_run_params, resolve_run_params
 from loom.prefect.flow._runtime import (
     build_observers,
     load_or_init_manifest,
     maybe_delete_manifest,
 )
-from loom.prefect.flow._signature import coerce_to_utc, normalize_datetime_fields
+from loom.prefect.flow._signature import coerce_to_utc
 from loom.prefect.manifest import ManifestStore
 from loom.prefect.observer._logging_bridge import install_log_bridge, uninstall_log_bridge
 
@@ -118,11 +119,19 @@ def build_backfill_body(
     """
 
     def _flow_body(**kwargs: Any) -> None:
+        flow_run_id = prefect_flow_run_id()
+        install_log_bridge(flow_run_id)
+        try:
+            _run(flow_run_id, kwargs)
+        finally:
+            uninstall_log_bridge()
+
+    def _run(flow_run_id: uuid.UUID | None, kwargs: dict[str, Any]) -> None:
+        anchor = prefect_run_anchor()
         env = kwargs.pop("env", "prod")
-        start_from = _resolve_start_from(kwargs.pop("start_from", None))
-        resolved = {k: resolve_placeholder(v) for k, v in kwargs.items()}
-        resolved = normalize_datetime_fields(resolved, params_type)
-        params = msgspec.convert(resolved, type=params_type)
+        start_from = _resolve_start_from(kwargs.pop("start_from", None), anchor)
+        params = resolve_run_params(kwargs, params_type, anchor=anchor)
+        record_run_params({**msgspec.structs.asdict(params), "start_from": start_from})
 
         window_start = getattr(params, window_start_field)
         window_end = getattr(params, window_end_field)
@@ -130,51 +139,45 @@ def build_backfill_body(
 
         actual_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
         run_id_base = f"{flow_name}-{uuid4().hex[:8]}"
-        flow_run_id = prefect_flow_run_id()
-
-        install_log_bridge(flow_run_id)
-        try:
-            for index, (chunk_start, chunk_end) in enumerate(windows, start=1):
-                chunk_params = msgspec.structs.replace(
-                    params, **{window_start_field: chunk_start, window_end_field: chunk_end}
-                )
-                label = format(chunk_start, _CHUNK_ALGEBRA[chunk].label)
-                _log.info(
-                    "backfill %s env=%s chunk %d/%d window=[%s, %s)",
-                    flow_name,
-                    env,
-                    index,
-                    len(windows),
-                    chunk_start.isoformat(),
-                    chunk_end.isoformat(),
-                )
-                _run_slice(
-                    actual_path,
-                    pipeline,
-                    chunk_params,
-                    per_chunk_processes,
-                    correlation_id=f"{flow_name}-{label}",
-                    run_id=f"{run_id_base}-{label}",
-                    flow_run_id=flow_run_id,
-                    manifest_store=manifest_store,
-                )
-
-            finalize_params = msgspec.structs.replace(
-                params, **{window_end_field: _floor_chunk(_now_utc(), chunk)}
+        for index, (chunk_start, chunk_end) in enumerate(windows, start=1):
+            chunk_params = msgspec.structs.replace(
+                params, **{window_start_field: chunk_start, window_end_field: chunk_end}
             )
-            _log.info("backfill %s env=%s finalize include=%s", flow_name, env, finalize_processes)
+            label = format(chunk_start, _CHUNK_ALGEBRA[chunk].label)
+            _log.info(
+                "backfill %s env=%s chunk %d/%d window=[%s, %s)",
+                flow_name,
+                env,
+                index,
+                len(windows),
+                chunk_start.isoformat(),
+                chunk_end.isoformat(),
+            )
             _run_slice(
                 actual_path,
                 pipeline,
-                finalize_params,
-                finalize_processes,
-                correlation_id=f"{flow_name}-finalize",
-                run_id=f"{run_id_base}-finalize",
+                chunk_params,
+                per_chunk_processes,
+                correlation_id=f"{flow_name}-{label}",
+                run_id=f"{run_id_base}-{label}",
                 flow_run_id=flow_run_id,
                 manifest_store=manifest_store,
             )
-        finally:
-            uninstall_log_bridge()
+
+        finalize_params = msgspec.structs.replace(
+            params, **{window_end_field: _floor_chunk(_now_utc(), chunk)}
+        )
+        _log.info("backfill %s env=%s finalize include=%s", flow_name, env, finalize_processes)
+        _run_slice(
+            actual_path,
+            pipeline,
+            finalize_params,
+            finalize_processes,
+            correlation_id=f"{flow_name}-finalize",
+            run_id=f"{run_id_base}-finalize",
+            flow_run_id=flow_run_id,
+            manifest_store=manifest_store,
+        )
         set_run_summary(_backfill_summary(flow_name, len(windows), chunk, finalize_processes))
 
     return _flow_body
@@ -233,12 +236,13 @@ def _chunk_windows(
     return windows
 
 
-def _resolve_start_from(value: Any) -> datetime | None:
+def _resolve_start_from(value: Any, anchor: datetime | None) -> datetime | None:
     """Coerce a submitted ``start_from`` into a tz-aware datetime.
 
     Args:
         value: ``None``, a ``datetime``, a ``date``, an ISO string, or a
             placeholder.
+        anchor: Instant a placeholder counts from, or ``None`` for now.
 
     Returns:
         The resume instant, or ``None`` when none was given.
@@ -250,7 +254,7 @@ def _resolve_start_from(value: Any) -> datetime | None:
     if value is None:
         return None
     try:
-        resolved = resolve_placeholder(value)
+        resolved = resolve_placeholder(value, anchor=anchor)
     except ValueError as exc:
         raise ValueError(f"start_from: {exc}") from exc
     coerced = coerce_to_utc(resolved)

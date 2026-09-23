@@ -10,6 +10,17 @@ Supported tokens (case-sensitive):
 Any value that looks like ``${...}`` but does not match one of the three
 valid patterns raises :class:`ValueError`. Non-string values and strings
 that do not look like placeholders pass through unchanged.
+
+Tokens count from an *anchor* instant, read in UTC. Inside a Prefect flow
+run the anchor is the run's scheduled start, so the processed window belongs
+to the run and not to the moment it happens to execute:
+
+- a scheduled run resolves against its slot, even when it starts late;
+- a retry (by the engine or "Retry" in the UI) resolves against the same slot;
+- a manual run resolves against the time it was created.
+
+A run that starts late therefore gets ``${now}`` up to its scheduled time,
+not up to the wall clock. Without an anchor the tokens use the wall clock.
 """
 
 from __future__ import annotations
@@ -33,25 +44,56 @@ def _signed_int(sign: str | None, amount: str | None) -> int:
     return magnitude if sign == "+" else -magnitude
 
 
-def _resolve_today(match: re.Match[str]) -> Any:
+def utc_datetime(value: datetime) -> datetime:
+    """Return *value* as a stdlib UTC ``datetime``, a naive value read as UTC.
+
+    A subclass such as pendulum's ``DateTime``, which Prefect returns for a
+    run's scheduled start, is rebuilt as a plain ``datetime``: msgspec decodes
+    only the exact stdlib types, and ``DateTime.date()`` is not a stdlib
+    ``date`` either.
+    """
+    utc = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return datetime(
+        utc.year,
+        utc.month,
+        utc.day,
+        utc.hour,
+        utc.minute,
+        utc.second,
+        utc.microsecond,
+        tzinfo=UTC,
+    )
+
+
+def _base(anchor: datetime | None) -> datetime:
+    return datetime.now(UTC) if anchor is None else utc_datetime(anchor)
+
+
+def _resolve_today(match: re.Match[str], base: datetime) -> Any:
     sign, days = match.groups()
-    return datetime.now(UTC).date() + timedelta(days=_signed_int(sign, days))
+    return base.date() + timedelta(days=_signed_int(sign, days))
 
 
-def _resolve_now(match: re.Match[str]) -> Any:
+def _resolve_now(match: re.Match[str], base: datetime) -> Any:
     sign, amount, unit = match.groups()
-    now = datetime.now(UTC)
     if sign is None:
-        return now
-    return now + timedelta(**{_NOW_UNIT_KW[unit]: _signed_int(sign, amount)})
+        return base
+    return base + timedelta(**{_NOW_UNIT_KW[unit]: _signed_int(sign, amount)})
 
 
-def resolve_placeholder(value: Any) -> Any:
+def is_placeholder(value: Any) -> bool:
+    """Return ``True`` when *value* is a string written as ``${...}``."""
+    return isinstance(value, str) and value.startswith("${")
+
+
+def resolve_placeholder(value: Any, *, anchor: datetime | None = None) -> Any:
     """Resolve a placeholder string to a concrete ``date`` / ``datetime``.
 
     Args:
         value: Arbitrary parameter value. Only strings matching the DSL are
             resolved; every other value is returned unchanged.
+        anchor: Instant the tokens count from, read in UTC (a naive value
+            is taken as UTC). ``None`` uses the current time.
 
     Returns:
         The resolved date/datetime, or the original value if it is not a
@@ -61,23 +103,24 @@ def resolve_placeholder(value: Any) -> Any:
         ValueError: If the value looks like a placeholder (``${...}``) but
             does not match any of the supported patterns.
     """
-    if not isinstance(value, str) or not value.startswith("${"):
+    if not is_placeholder(value):
         return value
 
+    base = _base(anchor)
     today_match = _TODAY_RE.match(value)
     if today_match is not None:
-        return _resolve_today(today_match)
+        return _resolve_today(today_match, base)
 
     if _YESTERDAY_RE.match(value) is not None:
-        return datetime.now(UTC).date() - timedelta(days=1)
+        return base.date() - timedelta(days=1)
 
     now_match = _NOW_RE.match(value)
     if now_match is not None:
-        return _resolve_now(now_match)
+        return _resolve_now(now_match, base)
 
     if _ANY_DOLLAR.match(value) is not None:
         raise ValueError(f"invalid placeholder: {value!r}")
     return value
 
 
-__all__ = ["resolve_placeholder"]
+__all__ = ["is_placeholder", "resolve_placeholder", "utc_datetime"]
