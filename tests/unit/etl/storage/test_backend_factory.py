@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -379,6 +380,50 @@ def test_make_checkpoint_store_with_root_returns_store() -> None:
     result = make_checkpoint_store(config)
 
     assert isinstance(result, CheckpointStore)
+
+
+def test_make_checkpoint_store_passes_encryption_to_polars_backend() -> None:
+    config = StorageConfig(
+        temp=TempConfig(
+            root="s3://bucket/checkpoints",
+            storage_options={
+                "aws_server_side_encryption": "aws:kms",
+                "aws_sse_kms_key_id": "alias/loom-temp",
+            },
+        )
+    )
+
+    result = make_checkpoint_store(config)
+
+    assert result is not None
+    backend = result._backend
+    assert backend._encryption == {
+        "aws_server_side_encryption": "aws:kms",
+        "aws_sse_kms_key_id": "alias/loom-temp",
+    }
+    assert backend._storage_options["s3_additional_kwargs"] == {
+        "ServerSideEncryption": "aws:kms",
+        "SSEKMSKeyId": "alias/loom-temp",
+    }
+
+
+def test_make_checkpoint_store_warns_encryption_is_lost_on_spark(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from unittest.mock import MagicMock
+
+    config = StorageConfig(
+        engine="spark",
+        temp=TempConfig(
+            root="s3://bucket/checkpoints",
+            storage_options={"aws_server_side_encryption": "aws:kms"},
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="loom.etl.runner._wiring"):
+        make_checkpoint_store(config, spark=MagicMock())
+
+    assert any("ignored by the Spark backend" in r.message for r in caplog.records)
 
 
 def test_schema_mode_module_import_exports_expected_values() -> None:

@@ -5,12 +5,17 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from collections.abc import Mapping
 from typing import Any, TypeGuard
 
 import fsspec.core
 import polars as pl
 
-from loom.etl.checkpoint._cleaners import _checkpoint_storage_options, _join_path
+from loom.etl.checkpoint._cleaners import (
+    _checkpoint_storage_options,
+    _encryption_options,
+    _join_path,
+)
 
 _log = logging.getLogger(__name__)
 _WRITING = ".writing"
@@ -27,6 +32,9 @@ class _PolarsCheckpointBackend:
 
     def __init__(self, storage_options: dict[str, str]) -> None:
         self._storage_options = _checkpoint_storage_options(storage_options)
+        # object_store takes the encryption options under their own names; it is
+        # only asked for them on writes, decryption being server-side.
+        self._encryption = _encryption_options(storage_options)
         self._schemas: dict[str, pl.Schema] = {}
         self._lock = threading.Lock()
 
@@ -66,7 +74,7 @@ class _PolarsCheckpointBackend:
         tmp = f"{final}{_WRITING}"
 
         _log.info("checkpoint WRITE     name=%s path=%s", name, final)
-        _write_atomic(frame, tmp, final, self._storage_options)
+        _write_atomic(frame, tmp, final, self._storage_options, self._encryption)
 
     def _find_arrow(self, name: str, base: str) -> str | None:
         """Return scan path for *name* under *base*, or None if absent."""
@@ -108,7 +116,7 @@ _FSSPEC_TO_OBJECT_STORE = {
 }
 
 
-def _to_object_store_opts(opts: dict[str, str] | None) -> dict[str, str]:
+def _to_object_store_opts(opts: Mapping[str, Any] | None) -> dict[str, str]:
     """Translate fsspec-style storage options into Polars/object_store form.
 
     Polars' ``sink_ipc`` is backed by Rust ``object_store`` which expects
@@ -122,15 +130,30 @@ def _to_object_store_opts(opts: dict[str, str] | None) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     for k, v in opts.items():
+        # s3_additional_kwargs is an fsspec-only envelope holding botocore
+        # parameters; object_store takes those under their own names instead.
+        if k == "s3_additional_kwargs":
+            continue
         out[_FSSPEC_TO_OBJECT_STORE.get(k, k)] = v
     return out
 
 
-def _write_atomic(frame: pl.LazyFrame, tmp: str, final: str, opts: dict[str, str] | None) -> None:
-    """Write to tmp, then rename to final atomically."""
+def _write_atomic(
+    frame: pl.LazyFrame,
+    tmp: str,
+    final: str,
+    opts: Mapping[str, Any] | None,
+    encryption: Mapping[str, str] | None = None,
+) -> None:
+    """Write to tmp, then rename to final atomically.
+
+    ``sink_ipc`` writes the temp object through object_store and the rename is
+    a server-side copy through fsspec, so the declared encryption has to reach
+    both: otherwise the surviving object lands with the bucket default key.
+    """
     fs, p = fsspec.core.url_to_fs(tmp, **(opts or {}))
     fs.makedirs(fs._parent(p), exist_ok=True)
-    polars_opts = _to_object_store_opts(opts)
+    polars_opts = _to_object_store_opts(opts) | dict(encryption or {})
     kwargs: dict[str, Any] = {"storage_options": polars_opts} if polars_opts else {}
     frame.sink_ipc(tmp, **kwargs)
     fs.rename(p, p.removesuffix(_WRITING))

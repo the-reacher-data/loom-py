@@ -167,6 +167,21 @@
   The `etl-polars` extra now requires `polars>=1.24`, the release that
   named that join option `nulls_equal`.
 
+- **etl:** `storage.temp.storage_options` reaches the checkpoint write. A
+  pipeline declaring `aws_server_side_encryption` / `aws_sse_kms_key_id` /
+  `aws_sse_bucket_key_enabled` for its temporaries wrote them with the bucket
+  default encryption and said nothing: the filter guarding the fsspec cleanup
+  returned an empty mapping unless an `endpoint_url` was set, and forwarded
+  only endpoint and credentials when it was. The encryption options now
+  survive that filter with or without an endpoint, in either spelling
+  (lowercase or uppercase), and reach both halves of the atomic write — the
+  `sink_ipc` through object_store under their own names, and the rename, a
+  server-side copy, as `s3_additional_kwargs` botocore parameters. The read
+  path is untouched, decryption being server-side. Any other key of the
+  delta-rs mapping is still dropped, now logged at debug; the Spark checkpoint
+  backend cannot take them at all (it reads SSE from Hadoop's S3A conf) and
+  logs a warning when encryption is declared.
+
 ### ai
 
 - **ai:** an MCP session that dies after it opened no longer fails every later
