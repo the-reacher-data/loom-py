@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 _SIMPLE_MEMORY_CACHE = "SimpleMemoryCache"
+_BOUNDED_MEMORY_CACHE = "loom.core.cache.memory.BoundedMemoryCache"
 _DEFAULT_ALIAS = "default"
 _MEMORY_FALLBACK = {"cache": "aiocache.SimpleMemoryCache"}
 
@@ -97,10 +98,11 @@ class CacheGateway:
     def apply_config(cls, config: CacheConfig) -> None:
         """Configure aiocache from a :class:`~loom.core.cache.abc.config.CacheConfig`.
 
-        Equivalent to :meth:`configure` but also injects ``config.max_size``
-        into every ``aiocache.SimpleMemoryCache`` backend entry that does not
-        already declare its own ``max_size``.  Entries for other backend types
-        (Redis, Memcached, …) are forwarded unchanged.
+        Equivalent to :meth:`configure`, except that an ``aiocache.SimpleMemoryCache``
+        entry with a bound — ``config.max_size``, ``config.max_bytes``, or its own
+        ``max_size``/``max_bytes``, which win — becomes a
+        :class:`~loom.core.cache.memory.BoundedMemoryCache`.  Entries for other
+        backend types (Redis, Memcached, …) are forwarded unchanged.
 
         Args:
             config: Resolved cache configuration.
@@ -129,8 +131,18 @@ class CacheGateway:
                 raw[alias] = backend_cfg
                 continue
             entry = dict(backend_cfg)
-            if config.max_size is not None and _SIMPLE_MEMORY_CACHE in str(entry.get("cache", "")):
-                entry.setdefault("max_size", config.max_size)
+            bounded = (
+                config.max_size is not None
+                or config.max_bytes is not None
+                or "max_size" in entry
+                or "max_bytes" in entry
+            )
+            if bounded and _SIMPLE_MEMORY_CACHE in str(entry.get("cache", "")):
+                entry["cache"] = _BOUNDED_MEMORY_CACHE
+                if config.max_size is not None:
+                    entry.setdefault("max_size", config.max_size)
+                if config.max_bytes is not None:
+                    entry.setdefault("max_bytes", config.max_bytes)
             raw[alias] = entry
         if _DEFAULT_ALIAS not in raw:
             raw[_DEFAULT_ALIAS] = dict(raw.get(config.aiocache_alias) or _MEMORY_FALLBACK)
