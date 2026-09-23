@@ -32,6 +32,18 @@
   fills a TypeSafe output by tool alone, so a binding pinning `output_mode:
   native` fails start-up with the new `OUTPUT_MODE_UNSUPPORTED`, instead of
   being refused by the model on every request.
+- **core:** `loom.core.plugins.optional.import_optional` is the one way loom
+  loads a module that needs an optional extra: the island imports its SDK
+  at the top, the selector loads the island by name, and the island's
+  `ImportError` becomes a `MissingExtraError` naming the extra. The rule is
+  written in `docs/architecture/clean-architecture.md`.
+- **ai:** each pydantic-ai provider is an island under
+  `loom.ai.engines.pydantic_ai.providers` (`bedrock`, `openai`, `anthropic`,
+  `gateway`, `typesafe`), the one module importing its SDK; `_models.py`
+  keeps the binding table and loads the island through
+  `require_provider_sdk`, now a reading of `import_optional`. No behaviour
+  change: `PROVIDER_UNKNOWN`, `PROVIDER_NOT_INSTALLED` and
+  `PROVIDER_SETTING_MISSING` fire exactly as before.
 - **ai:** `AgentAnswer`, `AgentResult` and the `final` event carry `provider_details`: what
   the provider reported about the final answer beyond the answer itself,
   verbatim — Jev's confidence and probabilities per field, another
