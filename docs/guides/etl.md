@@ -164,6 +164,12 @@ storage:
 
   tmp_root: /var/lib/loom/lake/_tmp
 
+  temp:
+    root: s3://my-lake/_checkpoints
+    storage_options:
+      aws_server_side_encryption: aws:kms
+      aws_sse_kms_key_id: alias/loom-temp
+
 observability:
   log:
     enabled: true
@@ -178,6 +184,11 @@ observability:
     root: /var/lib/loom/lake/_runs
     # database: ops
 ```
+
+Server-side encryption declared in `storage.temp.storage_options` is honoured by
+the Polars engine only; with `engine: spark` the checkpoint write goes through
+Hadoop's S3A, which takes it from `fs.s3a.server-side-encryption-*` on the
+session instead.
 
 ```python
 from loom.etl import ETLRunner
