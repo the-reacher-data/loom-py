@@ -89,3 +89,31 @@ def test_probe_does_not_pass_encryption_to_scan(monkeypatch: pytest.MonkeyPatch)
     backend.probe("orders", "s3://bucket/tmp")
 
     assert "storage_options" not in scanned
+
+
+@pytest.mark.parametrize(
+    ("declared", "object_store_value", "botocore_value"),
+    [("false", "false", False), ("yes", "true", True)],
+)
+def test_write_passes_the_same_bucket_key_flag_to_both_halves(
+    monkeypatch: pytest.MonkeyPatch,
+    declared: str,
+    object_store_value: str,
+    botocore_value: bool,
+) -> None:
+    """object_store takes the flag as a string, botocore as a bool, same value."""
+    seen_fsspec: dict[str, object] = {}
+
+    def _url_to_fs(_path: str, **kwargs: object) -> tuple[object, str]:
+        seen_fsspec.update(kwargs)
+        return MagicMock(), "/bucket/tmp/orders.arrow.writing"
+
+    monkeypatch.setattr(fsspec_core, "url_to_fs", _url_to_fs)
+
+    frame = MagicMock(spec=pl.LazyFrame)
+    backend = _PolarsCheckpointBackend(storage_options={"aws_sse_bucket_key_enabled": declared})
+    backend.write("orders", "s3://bucket/tmp", frame, append=False)
+
+    sunk = frame.sink_ipc.call_args.kwargs["storage_options"]
+    assert sunk["aws_sse_bucket_key_enabled"] == object_store_value
+    assert seen_fsspec["s3_additional_kwargs"]["BucketKeyEnabled"] is botocore_value
