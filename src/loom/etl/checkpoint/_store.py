@@ -93,14 +93,24 @@ class CheckpointStore:
 
     Args:
         root: Root cloud URI where intermediates are stored.
-        backend:  Physical I/O backend. Defaults to Polars checkpoint backend.
+        backend:  Physical I/O backend. Defaults to a Polars checkpoint backend
+            with no storage options, which writes through the ambient credential
+            chain and under the bucket default encryption key.  Declare
+            ``storage_options`` — as the example does, or through
+            ``storage.temp.storage_options`` in the config — to write with an
+            explicit endpoint, explicit credentials or a chosen CMK.
         cleaner: Cleaner implementation used to delete checkpoint trees.
 
     Example::
 
         store = CheckpointStore(
             root="s3://my-bucket/loom-checkpoints",
-            backend=_PolarsCheckpointBackend(storage_options={}),
+            backend=_PolarsCheckpointBackend(
+                storage_options={
+                    "aws_server_side_encryption": "aws:kms",
+                    "aws_sse_kms_key_id": "alias/loom-temp",
+                }
+            ),
         )
         store.put("orders", run_id="abc", correlation_id=None,
                   scope=CheckpointScope.RUN, data=polars_lazy_frame)

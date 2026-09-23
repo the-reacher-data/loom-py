@@ -5,17 +5,21 @@ Internal module — not part of the public API.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
 
 from loom.etl.checkpoint import CheckpointStore, FsspecTempCleaner, TempCleaner
 from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
 from loom.etl.checkpoint._backends._spark import _SparkCheckpointBackend
 from loom.etl.checkpoint._cleaners import _is_cloud_path
+from loom.etl.checkpoint._options import encryption_options
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import LineageStore, LineageWriter, TableLineageStore
 from loom.etl.runner._providers import load_backend_provider
 from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig
+
+_log = logging.getLogger(__name__)
 
 
 class _CheckpointConfig(Protocol):
@@ -134,6 +138,15 @@ def make_client_executor(
 
 def _make_checkpoint_backend(spark: Any, storage_options: dict[str, str]) -> Any:
     if spark is not None:
+        encryption = encryption_options(storage_options)
+        if encryption:
+            # Spark writes checkpoints through Hadoop's S3A, which reads SSE from
+            # its own conf (fs.s3a.server-side-encryption-*); loom cannot inject it.
+            _log.warning(
+                "checkpoint encryption options ignored by the Spark backend keys=%s; "
+                "set fs.s3a.server-side-encryption-algorithm / -key on the Spark session",
+                sorted(encryption),
+            )
         return _SparkCheckpointBackend(spark)
     return _PolarsCheckpointBackend(storage_options)
 

@@ -10,7 +10,8 @@ from typing import Any, TypeGuard
 import fsspec.core
 import polars as pl
 
-from loom.etl.checkpoint._cleaners import _checkpoint_storage_options, _join_path
+from loom.etl.checkpoint._cleaners import _join_path
+from loom.etl.checkpoint._options import CheckpointOptions, checkpoint_options
 
 _log = logging.getLogger(__name__)
 _WRITING = ".writing"
@@ -26,7 +27,7 @@ class _PolarsCheckpointBackend:
     """Polars Arrow IPC backend with atomic write-then-rename."""
 
     def __init__(self, storage_options: dict[str, str]) -> None:
-        self._storage_options = _checkpoint_storage_options(storage_options)
+        self._options = checkpoint_options(storage_options)
         self._schemas: dict[str, pl.Schema] = {}
         self._lock = threading.Lock()
 
@@ -37,9 +38,10 @@ class _PolarsCheckpointBackend:
             _log.info("checkpoint READ MISS name=%s base=%s", name, base)
             return None
         kwargs: dict[str, Any] = {"memory_map": not base.startswith(_CLOUD_SCHEMES)}
-        polars_opts = _to_object_store_opts(self._storage_options)
-        if polars_opts:
-            kwargs["storage_options"] = polars_opts
+        # The read declares no encryption: decryption is server-side.
+        read_opts = self._options.object_store_read
+        if read_opts:
+            kwargs["storage_options"] = read_opts
         _log.info("checkpoint READ HIT  name=%s path=%s", name, scan_path)
         return pl.scan_ipc(scan_path, **kwargs)
 
@@ -66,12 +68,12 @@ class _PolarsCheckpointBackend:
         tmp = f"{final}{_WRITING}"
 
         _log.info("checkpoint WRITE     name=%s path=%s", name, final)
-        _write_atomic(frame, tmp, final, self._storage_options)
+        _write_atomic(frame, tmp, final, self._options)
 
     def _find_arrow(self, name: str, base: str) -> str | None:
         """Return scan path for *name* under *base*, or None if absent."""
         single = _arrow_path(name, base)
-        fs, bp = fsspec.core.url_to_fs(base, **(self._storage_options or {}))
+        fs, bp = fsspec.core.url_to_fs(base, **self._options.fsspec)
         if fs.exists(_join_path(bp, f"{name}.arrow")):
             return single
         dp = _join_path(bp, name)
@@ -100,37 +102,22 @@ def _align_lazy_to_schema(frame: pl.LazyFrame, schema: pl.Schema) -> pl.LazyFram
     return frame.select(exprs)
 
 
-_FSSPEC_TO_OBJECT_STORE = {
-    "endpoint_url": "aws_endpoint_url",
-    "key": "aws_access_key_id",
-    "secret": "aws_secret_access_key",
-    "token": "aws_session_token",
-}
+def _write_atomic(
+    frame: pl.LazyFrame,
+    tmp: str,
+    final: str,
+    options: CheckpointOptions,
+) -> None:
+    """Write to tmp, then rename to final atomically.
 
-
-def _to_object_store_opts(opts: dict[str, str] | None) -> dict[str, str]:
-    """Translate fsspec-style storage options into Polars/object_store form.
-
-    Polars' ``sink_ipc`` is backed by Rust ``object_store`` which expects
-    ``aws_endpoint_url`` / ``aws_access_key_id`` / ``aws_secret_access_key``
-    keys, NOT the fsspec ``endpoint_url`` / ``key`` / ``secret`` names.
-    Without this translation Polars ignores the options and falls back to
-    EC2 IMDS lookup — which fails inside non-AWS environments (MinIO, GCS
-    via S3 API, on-prem) with a cryptic IMDS HTTP error.
+    ``sink_ipc`` writes the temp object through object_store and the rename is
+    a server-side copy through fsspec, so the declared encryption has to reach
+    both: otherwise the surviving object lands with the bucket default key.
     """
-    if not opts:
-        return {}
-    out: dict[str, str] = {}
-    for k, v in opts.items():
-        out[_FSSPEC_TO_OBJECT_STORE.get(k, k)] = v
-    return out
-
-
-def _write_atomic(frame: pl.LazyFrame, tmp: str, final: str, opts: dict[str, str] | None) -> None:
-    """Write to tmp, then rename to final atomically."""
-    fs, p = fsspec.core.url_to_fs(tmp, **(opts or {}))
+    fs, p = fsspec.core.url_to_fs(tmp, **options.fsspec)
     fs.makedirs(fs._parent(p), exist_ok=True)
-    polars_opts = _to_object_store_opts(opts)
-    kwargs: dict[str, Any] = {"storage_options": polars_opts} if polars_opts else {}
+    kwargs: dict[str, Any] = (
+        {"storage_options": options.object_store} if options.object_store else {}
+    )
     frame.sink_ipc(tmp, **kwargs)
     fs.rename(p, p.removesuffix(_WRITING))
