@@ -180,7 +180,11 @@
   path is untouched, decryption being server-side. Any other key of the
   delta-rs mapping is still dropped, now logged at debug; the Spark checkpoint
   backend cannot take them at all (it reads SSE from Hadoop's S3A conf) and
-  logs a warning when encryption is declared.
+  logs a warning when encryption is declared. The declared mapping is parsed
+  once, so the two halves never disagree: `aws_sse_bucket_key_enabled: "false"`
+  (or `"yes"`, `"on"`, `"1"`) yields the same flag on either side. Note that
+  no test drives a real `copy_object`, so an s3fs release changing how it
+  forwards `s3_additional_kwargs` would not be caught by the suite.
 
 ### ai
 

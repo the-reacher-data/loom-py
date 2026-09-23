@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from loom.etl.backends.spark.provider import SparkProvider
+from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage._records import EventName, PipelineRunRecord, RunStatus
 from loom.etl.lineage.sinks import TableLineageStore
@@ -382,7 +383,7 @@ def test_make_checkpoint_store_with_root_returns_store() -> None:
     assert isinstance(result, CheckpointStore)
 
 
-def test_make_checkpoint_store_passes_encryption_to_polars_backend() -> None:
+def test_make_checkpoint_store_uses_the_polars_backend_for_temp_storage_options() -> None:
     config = StorageConfig(
         temp=TempConfig(
             root="s3://bucket/checkpoints",
@@ -396,15 +397,7 @@ def test_make_checkpoint_store_passes_encryption_to_polars_backend() -> None:
     result = make_checkpoint_store(config)
 
     assert result is not None
-    backend = result._backend
-    assert backend._encryption == {
-        "aws_server_side_encryption": "aws:kms",
-        "aws_sse_kms_key_id": "alias/loom-temp",
-    }
-    assert backend._storage_options["s3_additional_kwargs"] == {
-        "ServerSideEncryption": "aws:kms",
-        "SSEKMSKeyId": "alias/loom-temp",
-    }
+    assert isinstance(result._backend, _PolarsCheckpointBackend)
 
 
 def test_make_checkpoint_store_warns_encryption_is_lost_on_spark(

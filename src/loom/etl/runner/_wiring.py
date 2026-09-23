@@ -11,7 +11,8 @@ from typing import Any, Protocol
 from loom.etl.checkpoint import CheckpointStore, FsspecTempCleaner, TempCleaner
 from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
 from loom.etl.checkpoint._backends._spark import _SparkCheckpointBackend
-from loom.etl.checkpoint._cleaners import _encryption_options, _is_cloud_path
+from loom.etl.checkpoint._cleaners import _is_cloud_path
+from loom.etl.checkpoint._options import encryption_options
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import LineageStore, LineageWriter, TableLineageStore
 from loom.etl.runner._providers import load_backend_provider
@@ -137,7 +138,7 @@ def make_client_executor(
 
 def _make_checkpoint_backend(spark: Any, storage_options: dict[str, str]) -> Any:
     if spark is not None:
-        encryption = _encryption_options(storage_options)
+        encryption = encryption_options(storage_options)
         if encryption:
             # Spark writes checkpoints through Hadoop's S3A, which reads SSE from
             # its own conf (fs.s3a.server-side-encryption-*); loom cannot inject it.
