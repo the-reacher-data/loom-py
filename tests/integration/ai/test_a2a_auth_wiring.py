@@ -29,7 +29,8 @@ from typing import Any
 import pytest
 
 from loom.ai.compiler import CompiledA2ACapability, CompiledRemoteAuth
-from loom.ai.engines.pydantic_ai._a2a import build_a2a_http_client, create_a2a_client
+from loom.ai.engines.pydantic_ai._a2a import create_a2a_client
+from loom.ai.engines.pydantic_ai.extras.a2a import build_a2a_http_client
 from loom.ai.remote_auth import shared_a2a_auth
 
 from ...helpers.remote_auth_plugin import third_party_strategy

@@ -39,11 +39,24 @@
   written in `docs/architecture/clean-architecture.md`.
 - **ai:** each pydantic-ai provider is an island under
   `loom.ai.engines.pydantic_ai.providers` (`bedrock`, `openai`, `anthropic`,
-  `gateway`, `typesafe`), the one module importing its SDK; `_models.py`
-  keeps the binding table and loads the island through
-  `require_provider_sdk`, now a reading of `import_optional`. No behaviour
-  change: `PROVIDER_UNKNOWN`, `PROVIDER_NOT_INSTALLED` and
-  `PROVIDER_SETTING_MISSING` fire exactly as before.
+  `gateway`, `typesafe`), and each optional extra of the engine one under
+  `loom.ai.engines.pydantic_ai.extras` (`mcp`, `a2a`, `skills`,
+  `handlebars`): the one module importing its SDK. `_models.py` keeps the
+  binding table and loads the island through `require_provider_sdk`, now a
+  reading of `import_optional`; the MCP toolset, the A2A client, the skills
+  capability and the templating check load theirs the same way. No
+  behaviour change: `PROVIDER_UNKNOWN`, `PROVIDER_NOT_INSTALLED`,
+  `PROVIDER_SETTING_MISSING` and `TEMPLATE_EXTRA_MISSING` fire exactly as
+  before.
+- **core:** the same islands replace the module-level `None` sentinels and
+  the `import_module("vendor")` calls that remained: boto3 lives in
+  `loom.core.config._boto3` (the SSM and Secrets Manager resolvers load it
+  on first use, `ConfigError` naming `config-ssm` when absent), aiocache in
+  `loom.core.cache._aiocache` (`CacheGateway` loads it, `ConfigError` naming
+  `cache`), and the Prometheus scrape server in `loom.prometheus.scrape`
+  (`ObservabilityRuntime.start_scrape_server` loads it, `ImportError` naming
+  `prometheus`, as documented). Tests that stood in for an absent or stubbed
+  SDK now go through `tests/helpers/extras.py`.
 - **ai:** `AgentAnswer`, `AgentResult` and the `final` event carry `provider_details`: what
   the provider reported about the final answer beyond the answer itself,
   verbatim — Jev's confidence and probabilities per field, another

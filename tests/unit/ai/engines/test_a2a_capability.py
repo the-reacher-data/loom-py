@@ -31,11 +31,13 @@ from loom.ai.config import AiConfig
 from loom.ai.declarative import PolicySpec
 from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider, _a2a, _capabilities
 from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
+from loom.ai.engines.pydantic_ai.extras import a2a as a2a_island
 from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.ai.runtime import AgentRunError, AgentRuntime
 from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
+from tests.helpers.extras import ENGINE_EXTRAS, without_extra
 from tests.helpers.pydantic_ai_engine import (
     OPEN_OBJECT_SCHEMA,
     compiled_instructions,
@@ -216,7 +218,7 @@ class TestOutboundToolset:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A grant without the ``ai-a2a`` extra dies at build, naming it."""
-        monkeypatch.setattr(_a2a, "find_spec", lambda name: None)
+        without_extra(monkeypatch, ["a2a", "a2a.client"], [f"{ENGINE_EXTRAS}.a2a"])
         plan = make_plan((a2a_capability(),))
         container = LoomContainer()
         mcp = SharedMcpToolsets()
@@ -371,7 +373,7 @@ class TestStartupFactory:
         capability = a2a_capability(include=("forecast",))
 
         with pytest.raises(ValueError, match="forecast"):
-            _a2a._reject_ungranted_card(capability, card)
+            a2a_island._reject_ungranted_card(capability, card)
 
     def test_the_error_names_nothing_from_the_card_when_the_filter_does_not_match(self) -> None:
         """The card is untrusted input: only artifact patterns are reported."""
@@ -379,7 +381,7 @@ class TestStartupFactory:
         capability = a2a_capability(include=("forecast",))
 
         with pytest.raises(ValueError) as failure:
-            _a2a._reject_ungranted_card(capability, card)
+            a2a_island._reject_ungranted_card(capability, card)
 
         assert "ignore-previous-instructions" not in str(failure.value)
 
@@ -389,19 +391,19 @@ class TestStartupFactory:
         capability = a2a_capability(exclude=("*",))
 
         with pytest.raises(ValueError, match="no skill matching the granted filter"):
-            _a2a._reject_ungranted_card(capability, card)
+            a2a_island._reject_ungranted_card(capability, card)
 
     def test_the_card_is_accepted_when_a_granted_glob_selects_a_subset(self) -> None:
         """A glob that selects part of the card passes; the rest is simply not granted."""
         card = _card_with_skills("forecast_eu", "forecast_us", "pricing")
 
-        _a2a._reject_ungranted_card(a2a_capability(include=("forecast_*",)), card)
+        a2a_island._reject_ungranted_card(a2a_capability(include=("forecast_*",)), card)
 
     def test_the_card_is_accepted_with_no_filter_when_the_grant_declares_none(self) -> None:
         """An empty filter grants whatever the remote advertises."""
         card = _card_with_skills("pricing")
 
-        _a2a._reject_ungranted_card(a2a_capability(), card)
+        a2a_island._reject_ungranted_card(a2a_capability(), card)
 
 
 def _card_with_skills(*skill_ids: str) -> Any:

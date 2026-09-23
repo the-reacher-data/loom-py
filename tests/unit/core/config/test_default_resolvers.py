@@ -20,6 +20,7 @@ from loom.core.config import (
     merge_resolvers,
     with_default_resolvers,
 )
+from tests.helpers.extras import with_boto3, without_boto3
 
 
 class StubResolver:
@@ -141,8 +142,7 @@ def test_merge_resolvers_keeps_explicit_order() -> None:
 
 
 def test_default_resolvers_construct_without_boto3(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("loom.core.config.secrets._boto3_module", None)
-    monkeypatch.setattr("loom.core.config.ssm._boto3_module", None)
+    without_boto3(monkeypatch)
 
     resolvers = default_resolvers()
 
@@ -156,8 +156,7 @@ def test_no_client_created_without_placeholders(
     plain_yaml: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     boto3 = MagicMock()
-    monkeypatch.setattr("loom.core.config.secrets._boto3_module", boto3)
-    monkeypatch.setattr("loom.core.config.ssm._boto3_module", boto3)
+    with_boto3(monkeypatch, boto3)
 
     cfg = load_config(plain_yaml, resolvers=default_resolvers())
 
@@ -168,7 +167,7 @@ def test_no_client_created_without_placeholders(
 def test_default_secrets_resolver_reports_the_extra_on_access(
     secrets_yaml: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("loom.core.config.secrets._boto3_module", None)
+    without_boto3(monkeypatch)
     cfg = load_config(secrets_yaml, resolvers=default_resolvers())
 
     with pytest.raises(InterpolationResolutionError, match=r"loom-kernel\[config-ssm\]"):

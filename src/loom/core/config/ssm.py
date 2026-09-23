@@ -16,16 +16,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-try:
-    import boto3 as _boto3_module  # type: ignore[import-untyped]
-except ImportError:
-    _boto3_module = None
-
 from loom.core.config._resolver_utils import (
     _aws_error_code,
     _expand_env_vars,
     _navigate_json,
     _split_resolver_key,
+    aws_client,
 )
 from loom.core.config.errors import ConfigError
 
@@ -124,12 +120,7 @@ class SsmResolver:
             ConfigError: When boto3 is not installed.
         """
         if self._client is None:
-            if _boto3_module is None:
-                raise ConfigError(
-                    "boto3 is required for SsmResolver."
-                    " Install it with: pip install loom-kernel[config-ssm]"
-                )
-            self._client = _boto3_module.client("ssm", region_name=self._region)
+            self._client = aws_client("ssm", self._region, resolver="SsmResolver")
         return self._client
 
     def resolve(self, key: str) -> object:

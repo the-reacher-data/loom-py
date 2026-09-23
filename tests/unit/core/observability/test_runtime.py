@@ -17,6 +17,7 @@ from loom.core.observability.config import (
 )
 from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from tests.helpers.extras import SCRAPE_ISLAND, without_extra
 
 
 class _RecordingObserver:
@@ -196,9 +197,7 @@ class TestStartScrapeServer:
     def test_noop_when_port_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         runtime = ObservabilityRuntime([], _scrape_port=None)
         called: list[int] = []
-        monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server", lambda p: called.append(p)
-        )
+        monkeypatch.setattr("loom.prometheus.scrape.start", lambda p, addr: called.append(p))
 
         runtime.start_scrape_server()
 
@@ -210,8 +209,8 @@ class TestStartScrapeServer:
         runtime = ObservabilityRuntime([], _scrape_port=9090, _scrape_addr="127.0.0.1")
         calls: list[tuple[int, str]] = []
         monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server",
-            lambda p, addr="": calls.append((p, addr)),
+            "loom.prometheus.scrape.start",
+            lambda p, addr: calls.append((p, addr)),
         )
 
         runtime.start_scrape_server()
@@ -222,8 +221,8 @@ class TestStartScrapeServer:
         runtime = ObservabilityRuntime([], _scrape_port=9090)
         called: list[int] = []
         monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server",
-            lambda p, addr="": called.append(p),
+            "loom.prometheus.scrape.start",
+            lambda p, addr: called.append(p),
         )
 
         runtime.start_scrape_server()
@@ -235,7 +234,7 @@ class TestStartScrapeServer:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         runtime = ObservabilityRuntime([], _scrape_port=9090)
-        monkeypatch.setattr("loom.core.observability.runtime._start_http_server", None)
+        without_extra(monkeypatch, ["prometheus_client"], [SCRAPE_ISLAND])
 
         with pytest.raises(ImportError, match="prometheus-client"):
             runtime.start_scrape_server()
@@ -253,9 +252,7 @@ class TestStartScrapeServer:
                 config=PrometheusConfig(port=8080, bind_address="0.0.0.0"),
             )
         )
-        monkeypatch.setattr(
-            "loom.core.observability.runtime._start_http_server", lambda p, addr="": None
-        )
+        monkeypatch.setattr("loom.prometheus.scrape.start", lambda p, addr: None)
 
         runtime = ObservabilityRuntime.from_config(config)
 

@@ -13,6 +13,7 @@ from bytewax.dataflow import Dataflow
 from loom.core.config import ConfigContext, ConfigError
 from loom.streaming.bytewax.runner import StreamingRunner
 from loom.streaming.graph._flow import StreamFlow
+from tests.helpers.extras import with_boto3, without_boto3
 from tests.unit._resolver_stubs import MappingResolver
 from tests.unit.streaming.bytewax.cases import Order, Result
 
@@ -40,8 +41,7 @@ def _write_streaming_yaml(tmp_path: Path, workers: str) -> str:
 
 
 def _without_boto3(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("loom.core.config.secrets._boto3_module", None)
-    monkeypatch.setattr("loom.core.config.ssm._boto3_module", None)
+    without_boto3(monkeypatch)
 
 
 def _stub_execution(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,8 +84,7 @@ class TestFromYaml:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         boto3 = MagicMock()
-        monkeypatch.setattr("loom.core.config.secrets._boto3_module", boto3)
-        monkeypatch.setattr("loom.core.config.ssm._boto3_module", boto3)
+        with_boto3(monkeypatch, boto3)
         config_path = _write_streaming_yaml(tmp_path, "2")
 
         runner = StreamingRunner.from_yaml(bytewax_stream_flow, config_path)
@@ -189,8 +188,7 @@ class TestRunWithConfigPath:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         boto3 = MagicMock()
-        monkeypatch.setattr("loom.core.config.secrets._boto3_module", boto3)
-        monkeypatch.setattr("loom.core.config.ssm._boto3_module", boto3)
+        with_boto3(monkeypatch, boto3)
         _stub_execution(monkeypatch)
         config_path = _write_streaming_yaml(tmp_path, "2")
         runner = StreamingRunner()

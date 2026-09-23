@@ -5,8 +5,44 @@ from __future__ import annotations
 import json
 import os
 import re
+from typing import Any, Protocol, cast
 
 from loom.core.config.errors import ConfigError
+from loom.core.plugins.optional import MissingExtraError, import_optional
+
+_AWS_ISLAND = "loom.core.config._boto3"
+_AWS_EXTRA = "config-ssm"
+
+
+class _AwsSdk(Protocol):
+    """The one name the AWS island publishes."""
+
+    def client(self, service: str, *, region: str | None) -> Any: ...
+
+
+def aws_client(service: str, region: str | None, *, resolver: str) -> Any:
+    """Build one boto3 client through the AWS island.
+
+    Args:
+        service: Service name, ``"ssm"`` or ``"secretsmanager"``.
+        region: AWS region, or ``None`` to let boto3 resolve its own.
+        resolver: Resolver class name, for the message when boto3 is missing.
+
+    Returns:
+        The client; typed ``Any`` because boto3 ships no stubs.
+
+    Raises:
+        ConfigError: When boto3 is not installed, naming the extra.
+    """
+    try:
+        sdk = cast(_AwsSdk, import_optional(_AWS_ISLAND, extra=_AWS_EXTRA))
+    except MissingExtraError as exc:
+        raise ConfigError(
+            f"boto3 is required for {resolver}. "
+            "Install it with: pip install loom-kernel[config-ssm]"
+        ) from exc
+    return sdk.client(service, region=region)
+
 
 _ENV_VAR_PATTERN = re.compile(r"%([A-Z][A-Z0-9_]*)%")
 
