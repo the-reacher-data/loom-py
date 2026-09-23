@@ -16,8 +16,6 @@ from collections.abc import Iterable, Mapping
 import pytest
 
 BOTO3_ISLAND = "loom.core.config._boto3"
-AIOCACHE_ISLAND = "loom.core.cache._aiocache"
-SCRAPE_ISLAND = "loom.prometheus.scrape"
 ENGINE_EXTRAS = "loom.ai.engines.pydantic_ai.extras"
 ENGINE_PROVIDERS = "loom.ai.engines.pydantic_ai.providers"
 

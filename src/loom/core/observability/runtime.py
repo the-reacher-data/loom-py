@@ -19,9 +19,10 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from functools import partial
 from time import perf_counter
-from typing import Protocol, Self, cast
+from typing import Self
 
 from opentelemetry.trace import Link, NoOpTracer, Span, Tracer
+from prometheus_client import start_http_server
 
 from loom.core.logger.config import configure_logging_from_values
 from loom.core.observability.config import (
@@ -40,18 +41,8 @@ from loom.core.observability.span import (
     elapsed_ms,
 )
 from loom.core.observability.topology import ROOT_SCOPES
-from loom.core.plugins.optional import MissingExtraError, import_optional
 from loom.core.tracing.context import active_trace_id
 from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
-
-_SCRAPE_ISLAND = "loom.prometheus.scrape"
-"""The one module starting prometheus-client's HTTP server (``prometheus`` extra)."""
-
-
-class _ScrapeServer(Protocol):
-    """The one name the scrape island publishes."""
-
-    def start(self, port: int, addr: str) -> None: ...
 
 
 def _resolve_scrape_port(cfg: PrometheusObservabilityConfig) -> int | None:
@@ -208,19 +199,11 @@ class ObservabilityRuntime:
         HTTP server to mount ``/metrics`` on. Safe to call multiple times.
 
         Raises:
-            ImportError: If ``prometheus-client`` is not installed.
             OSError: If the port is already in use by another process.
         """
         if self._scrape_port is None or self._scrape_server_started:
             return
-        try:
-            scrape = cast(_ScrapeServer, import_optional(_SCRAPE_ISLAND, extra="prometheus"))
-        except MissingExtraError as exc:
-            raise ImportError(
-                "Prometheus scrape server requires 'prometheus-client'. "
-                "Install it with: pip install 'loom-py[prometheus]'"
-            ) from exc
-        scrape.start(self._scrape_port, self._scrape_addr)
+        start_http_server(self._scrape_port, addr=self._scrape_addr)
         self._scrape_server_started = True
 
     def emit(self, event: LifecycleEvent) -> None:

@@ -55,15 +55,14 @@
   behaviour change: `PROVIDER_UNKNOWN`, `PROVIDER_NOT_INSTALLED`,
   `PROVIDER_SETTING_MISSING` and `TEMPLATE_EXTRA_MISSING` fire exactly as
   before.
-- **core:** the same islands replace the module-level `None` sentinels and
-  the `import_module("vendor")` calls that remained: boto3 lives in
-  `loom.core.config._boto3` (the SSM and Secrets Manager resolvers load it
-  on first use, `ConfigError` naming `config-ssm` when absent), aiocache in
-  `loom.core.cache._aiocache` (`CacheGateway` loads it, `ConfigError` naming
-  `cache`), and the Prometheus scrape server in `loom.prometheus.scrape`
-  (`ObservabilityRuntime.start_scrape_server` loads it, `ImportError` naming
-  `prometheus`, as documented). Tests that stood in for an absent or stubbed
-  SDK now go through `tests/helpers/extras.py`.
+- **core:** boto3 is an island too, `loom.core.config._boto3`: the SSM and
+  Secrets Manager resolvers load it on first use and fail with `ConfigError`
+  naming `config-ssm` when it is absent, instead of a module-level `None`
+  sentinel checked later. `aiocache` and `prometheus-client` are required
+  dependencies, so `CacheGateway` and `ObservabilityRuntime` import them at
+  the top like any other, dropping an `importlib.import_module("aiocache")`
+  and a `None` sentinel that guarded nothing. Tests that stood in for an
+  absent or stubbed SDK now go through `tests/helpers/extras.py`.
 - **ai:** `AgentAnswer`, `AgentResult` and the `final` event carry `provider_details`: what
   the provider reported about the final answer beyond the answer itself,
   verbatim — Jev's confidence and probabilities per field, another

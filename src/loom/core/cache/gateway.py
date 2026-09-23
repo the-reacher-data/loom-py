@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 import msgspec
+from aiocache import caches  # type: ignore[import-untyped]
 
 from loom.core.cache.errors import CacheWriteError
 from loom.core.cache.serializer import MsgspecSerializer
 from loom.core.config.errors import ConfigError
 from loom.core.model import loom_type_of
-from loom.core.plugins.optional import MissingExtraError, import_optional
 
 if TYPE_CHECKING:
     from loom.core.cache.abc.config import CacheConfig
@@ -20,28 +20,6 @@ _SIMPLE_MEMORY_CACHE = "SimpleMemoryCache"
 _BOUNDED_MEMORY_CACHE = "loom.core.cache.memory.BoundedMemoryCache"
 _DEFAULT_ALIAS = "default"
 _MEMORY_FALLBACK = {"cache": "aiocache.SimpleMemoryCache"}
-_AIOCACHE_ISLAND = "loom.core.cache._aiocache"
-"""The one module of ``loom.core.cache`` importing aiocache (``cache`` extra)."""
-
-
-class _AiocacheSdk(Protocol):
-    """The one name the aiocache island publishes."""
-
-    caches: Any
-
-
-def _caches() -> Any:
-    """Return aiocache's alias registry through the island.
-
-    Raises:
-        ConfigError: When aiocache is not installed, naming the extra.
-    """
-    try:
-        return cast(_AiocacheSdk, import_optional(_AIOCACHE_ISLAND, extra="cache")).caches
-    except MissingExtraError as exc:
-        raise ConfigError(
-            "aiocache is required for CacheGateway. Install it with: pip install loom-kernel[cache]"
-        ) from exc
 
 
 def _identity(value: Any) -> Any:
@@ -96,8 +74,8 @@ class CacheGateway:
         Args:
             alias: Registered aiocache alias to retrieve the backend from.
         """
-        caches = _caches()
-        self._cache = caches.get(alias)
+        # aiocache ships no stubs: its backend is ``Any`` to both type checkers.
+        self._cache: Any = caches.get(alias)
         # Raw backends store values as they are: no encoding on write, and
         # native atomic increment.
         self._raw_backend: bool = _is_raw_backend(self._cache)
@@ -113,7 +91,6 @@ class CacheGateway:
         Args:
             raw_config: Configuration dict compatible with ``aiocache.caches.set_config``.
         """
-        caches = _caches()
         caches.set_config(dict(raw_config))
 
     @classmethod

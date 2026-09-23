@@ -33,11 +33,10 @@ uses it follows one pattern, whatever the pillar:
 The island needs no `try`/`except` of its own: its `ImportError` is what
 `import_optional` translates. Islands today: the pydantic-ai providers and
 extras (`loom.ai.engines.pydantic_ai.providers`, `.extras`), boto3 for the
-config resolvers (`loom.core.config._boto3`), aiocache for the cache gateway
-(`loom.core.cache._aiocache`), the Prometheus scrape server
-(`loom.prometheus.scrape`), and the whole-package islands that predate the
-rule (`loom.core.sql.clickhouse`, `loom.streaming.bytewax`,
-`loom.etl.testing`). A test that stands in for an absent or stubbed SDK
+config resolvers (`loom.core.config._boto3`), and the whole-package islands
+that predate the rule (`loom.core.sql.clickhouse`, `loom.streaming.bytewax`,
+`loom.etl.testing`). A dependency listed under `dependencies` is not
+optional and gets no island: import it at the top like any other. A test that stands in for an absent or stubbed SDK
 blocks the SDK **and** evicts the island, so the next load re-imports it;
 `tests/helpers/extras.py` does both. A module that reads an SDK the application
 itself may or may not have loaded — pydantic in `loom.core.model` — gates on
