@@ -4,6 +4,13 @@
 
 ### core
 
+- **core:** a memory cache alias can be bounded. `cache: max_size` (entries) and
+  the new `cache: max_bytes` (stored payload bytes) serve every
+  `aiocache.SimpleMemoryCache` alias through `loom.core.cache.memory.BoundedMemoryCache`,
+  which evicts least-recently-used entries past either bound. Before, `max_size`
+  failed at boot (aiocache's class does not accept it) and a memory alias grew
+  without limit. Redis and the other server backends are unaffected.
+
 - **core:** `loom.core.model` (module `_loom_type`) is the one module that decides whether
   a boundary type is a `msgspec.Struct` or a strict `pydantic.BaseModel`.
   `loom_type(symbol)` resolves an authored symbol by `issubclass`,
