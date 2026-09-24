@@ -6,9 +6,11 @@ Anything else that looks like a placeholder must raise ValueError.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 
+import msgspec
 import pytest
+from pydantic_extra_types.pendulum_dt import DateTime as PendulumDateTime
 
 from loom.prefect._placeholders import resolve_placeholder
 
@@ -91,3 +93,94 @@ def test_list_passes_through() -> None:
 
 def test_none_passes_through() -> None:
     assert resolve_placeholder(None) is None
+
+
+_SLOT = datetime(2026, 9, 23, 23, 30, tzinfo=UTC)
+
+
+def test_today_counts_from_the_anchor_day() -> None:
+    assert resolve_placeholder("${today-1d}", anchor=_SLOT) == date(2026, 9, 22)
+
+
+def test_yesterday_counts_from_the_anchor_day() -> None:
+    assert resolve_placeholder("${yesterday}", anchor=_SLOT) == date(2026, 9, 22)
+
+
+def test_now_is_the_anchor() -> None:
+    assert resolve_placeholder("${now}", anchor=_SLOT) == _SLOT
+
+
+def test_now_offset_counts_from_the_anchor() -> None:
+    assert resolve_placeholder("${now-1h}", anchor=_SLOT) == datetime(
+        2026, 9, 23, 22, 30, tzinfo=UTC
+    )
+
+
+def test_anchor_is_read_in_utc() -> None:
+    madrid_next_day = datetime(2026, 9, 24, 1, 30, tzinfo=timezone(timedelta(hours=2)))
+    assert resolve_placeholder("${today}", anchor=madrid_next_day) == date(2026, 9, 23)
+    assert resolve_placeholder("${now}", anchor=madrid_next_day) == _SLOT
+
+
+def test_naive_anchor_is_read_as_utc() -> None:
+    naive = _SLOT.replace(tzinfo=None)
+    result = resolve_placeholder("${now}", anchor=naive)
+    assert result == _SLOT
+    assert result.tzinfo is UTC
+
+
+def test_anchor_does_not_touch_non_placeholders() -> None:
+    assert resolve_placeholder("2026-05-15", anchor=_SLOT) == "2026-05-15"
+
+
+def test_anchor_keeps_rejecting_invalid_placeholders() -> None:
+    with pytest.raises(ValueError):
+        resolve_placeholder("${tomorrow}", anchor=_SLOT)
+
+
+# Prefect hands the scheduled start over as this pendulum subclass.
+_PENDULUM_SLOT = PendulumDateTime(2026, 9, 23, 23, 30, 15, 123456, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("${today}", date(2026, 9, 23)),
+        ("${today-1d}", date(2026, 9, 22)),
+        ("${yesterday}", date(2026, 9, 22)),
+    ],
+)
+def test_a_pendulum_anchor_yields_a_stdlib_date(token: str, expected: date) -> None:
+    result = resolve_placeholder(token, anchor=_PENDULUM_SLOT)
+    assert type(result) is date
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("${now}", datetime(2026, 9, 23, 23, 30, 15, 123456, tzinfo=UTC)),
+        ("${now-1h}", datetime(2026, 9, 23, 22, 30, 15, 123456, tzinfo=UTC)),
+        ("${now+2d}", datetime(2026, 9, 25, 23, 30, 15, 123456, tzinfo=UTC)),
+    ],
+)
+def test_a_pendulum_anchor_yields_a_stdlib_datetime(token: str, expected: datetime) -> None:
+    result = resolve_placeholder(token, anchor=_PENDULUM_SLOT)
+    assert type(result) is datetime
+    assert result == expected
+
+
+def test_values_resolved_from_a_pendulum_anchor_decode_with_msgspec() -> None:
+    class Window(msgspec.Struct):
+        day: date
+        until: datetime
+
+    window = msgspec.convert(
+        {
+            "day": resolve_placeholder("${yesterday}", anchor=_PENDULUM_SLOT),
+            "until": resolve_placeholder("${now}", anchor=_PENDULUM_SLOT),
+        },
+        type=Window,
+    )
+    assert window.day == date(2026, 9, 22)
+    assert window.until == _PENDULUM_SLOT

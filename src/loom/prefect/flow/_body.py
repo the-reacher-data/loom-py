@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import msgspec
 
@@ -13,16 +13,15 @@ from loom.etl.compiler._plan import PipelinePlan, iter_processes, iter_steps_in_
 from loom.etl.pipeline import ETLPipeline
 from loom.etl.runner import ETLRunner
 from loom.prefect._ctx import FlowCtx
-from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect._summary import set_run_summary
-from loom.prefect.flow._common import prefect_flow_run_id
+from loom.prefect.flow._common import prefect_flow_run_id, prefect_run_anchor
+from loom.prefect.flow._params import record_run_params, resolve_run_params
 from loom.prefect.flow._run_name import compute_correlation_id
 from loom.prefect.flow._runtime import (
     build_observers,
     load_or_init_manifest,
     maybe_delete_manifest,
 )
-from loom.prefect.flow._signature import normalize_datetime_fields
 from loom.prefect.flow._stages import known_process_names, validate_stage_names
 from loom.prefect.manifest import ManifestStore, RunManifest, completed_steps
 from loom.prefect.observer._logging_bridge import (
@@ -65,16 +64,24 @@ def build_flow_body(
     known_processes = known_process_names(plan)
 
     def _flow_body(**kwargs: Any) -> None:
+        flow_run_id = prefect_flow_run_id()
+        install_log_bridge(flow_run_id)
+        try:
+            _run(flow_run_id, kwargs)
+        finally:
+            uninstall_log_bridge()
+
+    def _run(flow_run_id: UUID | None, kwargs: dict[str, Any]) -> None:
         env = kwargs.pop("env", "prod")
         explicit_correlation = kwargs.pop("correlation_id", None)
         processes = validate_stage_names(kwargs.pop("processes", None), known_processes)
-        resolved = {key: resolve_placeholder(value) for key, value in kwargs.items()}
-        resolved = normalize_datetime_fields(resolved, params_type)
-        params_obj = msgspec.convert(resolved, type=params_type)
+        params_obj = resolve_run_params(kwargs, params_type, anchor=prefect_run_anchor())
+        decoded = msgspec.structs.asdict(params_obj)
+        record_run_params(decoded)
         ctx = FlowCtx(
             correlation_id=(
                 explicit_correlation
-                or compute_correlation_id(flow_name, correlation_field, resolved)
+                or compute_correlation_id(flow_name, correlation_field, decoded)
             ),
             run_id=f"{flow_name}-{uuid4().hex[:8]}",
             environment=env,
@@ -90,21 +97,16 @@ def build_flow_body(
             maybe_delete_manifest(manifest_store, ctx.correlation_id)
             return
 
-        flow_run_id = prefect_flow_run_id()
-        install_log_bridge(flow_run_id)
-        try:
-            observers = build_observers(flow_run_id, manifest_store, manifest)
-            _invoke_runner(
-                actual_config_path,
-                pipeline,
-                params_obj,
-                pending,
-                ctx,
-                observers,
-                plan,
-            )
-        finally:
-            uninstall_log_bridge()
+        observers = build_observers(flow_run_id, manifest_store, manifest)
+        _invoke_runner(
+            actual_config_path,
+            pipeline,
+            params_obj,
+            pending,
+            ctx,
+            observers,
+            plan,
+        )
         set_run_summary(_etl_summary(plan, pending))
         maybe_delete_manifest(manifest_store, ctx.correlation_id)
 

@@ -133,6 +133,44 @@
   OpenAPI schemas for request bodies and responses alike, matching the
   untitled document a Struct always produced.
 
+### prefect
+
+- **prefect:** a placeholder counts from the run's scheduled start instead of
+  the wall clock. `${today-1d}`, `${yesterday}` and `${now±N}` counted from
+  `datetime.now()` inside the flow, so a queued run that started after
+  midnight, or a retry the next day, processed another day than its slot's.
+  `etl_flow`, `maintenance_flow` and `backfill_flow` (`start_from` included)
+  and the run name now resolve against the run's scheduled start
+  (`prefect.runtime.flow_run.scheduled_start_time`, read in UTC): the slot of
+  a scheduled run, the same slot on every retry, the creation time of a manual
+  run. A late run's `${now}` therefore covers up to its scheduled time, not up
+  to the moment it started. Outside a flow run the wall clock still applies.
+  The backfill finalize pass still pins `window_end` to the current chunk.
+- **prefect:** resuming from the manifest now works for placeholder
+  parameters. The correlation id was computed from the resolved value, so
+  with `${now}` it carried the seconds of the clock and a retry never found
+  the manifest of the attempt before it; anchored, every attempt of a run
+  computes the same id. The id is now also computed from the decoded
+  parameters rather than the submitted ones, so a value and its recorded ISO
+  string key the same manifest. Two ids change: a `date` field submitted as
+  an ISO string (`"2026-09-21"` now keys `20260921T000000`, as the `date`
+  itself always did), and a `correlation_field` typed as a plain `Enum`,
+  which now keys the member's sanitised name (`Color_RED`) instead of its
+  submitted value (`red`); a `StrEnum` renders as its value and keeps its id.
+  Do not upgrade across a run you intend to resume from its manifest.
+- **prefect:** the run records the parameters it resolved. Prefect stored and
+  showed the placeholder text, so nothing told which days a run processed.
+  After decoding, the flow updates its own run: the parameters the API stored
+  for it, with each placeholder replaced by its value (dates and datetimes in
+  ISO 8601, a backfill's `start_from` included); nothing is added. The UI
+  shows the concrete window, a run resubmitted from the UI ("Retry") or
+  copied reproduces it, and an automation reading `flow_run.parameters` gets
+  dates. A run that stores no placeholder makes no call, so a resubmitted run
+  makes none. A retry inside the same process (`retries`) still holds the
+  placeholders it started with and repeats the call with the same values,
+  which is harmless. The update is one attempt with a 10-second timeout; if
+  it fails, the flow logs it at `ERROR` in the run's logs and goes on.
+
 ## 🐛 Fixes
 
 ### core
