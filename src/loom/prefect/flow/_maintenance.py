@@ -77,6 +77,7 @@ def maintenance_flow(
         name=name,
         body=_flow_body,
         signature=synthesise_flow_signature(params_type),
+        params_type=params_type,
         settings=settings,
         config_path=config_path,
         source_file=source_file,

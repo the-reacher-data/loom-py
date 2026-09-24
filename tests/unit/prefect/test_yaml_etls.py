@@ -290,3 +290,22 @@ def test_read_yaml_rejects_duplicate_etl_key_across_includes(tmp_path: Path) -> 
         read_yaml(str(root))
     assert str(first) in str(excinfo.value)
     assert str(second) in str(excinfo.value)
+
+
+def test_trigger_inheriting_an_undeclared_parameter_is_a_config_error(tmp_path: Path) -> None:
+    path = _single(tmp_path, "orders", trigger="{after: upstream, inherit_params: [run_day]}")
+    with pytest.raises(ConfigError, match=rf"{path}.*'run_day'.*OrdersParams"):
+        read_declarations(str(path))
+
+
+def test_trigger_inheriting_a_declared_parameter_is_accepted(tmp_path: Path) -> None:
+    path = _single(tmp_path, "orders", trigger="{after: upstream, inherit_params: [run_date]}")
+    (declaration,) = read_declarations(str(path))
+    assert declaration.settings.trigger is not None
+    assert declaration.settings.trigger.inherit_params == ("run_date",)
+
+
+def test_an_invalid_trigger_block_is_a_config_error(tmp_path: Path) -> None:
+    path = _single(tmp_path, "orders", trigger="{after: upstream, on: Failed}")
+    with pytest.raises(ConfigError, match=rf"{path}: ETL 'orders': trigger:.*unknown field"):
+        read_declarations(str(path))

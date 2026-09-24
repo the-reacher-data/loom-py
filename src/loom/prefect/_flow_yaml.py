@@ -11,7 +11,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import msgspec
+
 from loom.core.config import is_cloud_uri, load_config
+from loom.prefect._meta import FlowTrigger
 
 _ENV_INTERPOLATION = re.compile(r"\$\{oc\.[^}]*\}")
 
@@ -78,6 +81,30 @@ def extract_pool_config(raw_cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]
     return out
 
 
+def extract_trigger(raw_cfg: Mapping[str, Any]) -> FlowTrigger | None:
+    """Return the ``trigger`` block of the per-flow YAML, or ``None``.
+
+    Raises:
+        ValueError: When the block does not decode into a
+            :class:`~loom.prefect._meta.FlowTrigger` (unknown key, wrong
+            type) or ``after`` does not name a deployment.
+    """
+    raw = raw_cfg.get("trigger")
+    if raw is None:
+        return None
+    try:
+        trigger = msgspec.convert(raw, type=FlowTrigger)
+    except msgspec.ValidationError as exc:
+        raise ValueError(f"trigger: {exc}") from exc
+    parts = trigger.after.split("/")
+    if len(parts) > 2 or not all(part and part == part.strip() for part in parts):
+        raise ValueError(
+            f"trigger.after: expected '<flow>/<deployment>' or a deployment name, "
+            f"got {trigger.after!r}"
+        )
+    return trigger
+
+
 def _ensure_mapping_top_level(config_path: str) -> None:
     """Reject a non-mapping document; unreadable or malformed files are left to ``load_config``."""
     import yaml  # noqa: PLC0415
@@ -115,4 +142,4 @@ def _resolve_string(value: str) -> Any:
     return value
 
 
-__all__ = ["extract_pool_config", "read_yaml", "resolve_config_uri"]
+__all__ = ["extract_pool_config", "extract_trigger", "read_yaml", "resolve_config_uri"]

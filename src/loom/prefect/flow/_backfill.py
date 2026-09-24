@@ -122,6 +122,7 @@ def backfill_flow(
         name=name,
         body=flow_body,
         signature=signature,
+        params_type=params_type,
         settings=settings,
         config_path=config_path,
         source_file=source_file,

@@ -11,7 +11,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from loom.prefect._meta import LOOM_ETL_CONFIG, LOOM_ETL_META_ATTR, ETLFlowMeta
+from prefect.events import DeploymentEventTrigger
+
+from loom.prefect._meta import LOOM_ETL_CONFIG, LOOM_ETL_META_ATTR, ETLFlowMeta, FlowTrigger
 from loom.prefect.deploy import entrypoint
 from loom.prefect.deploy._schedule import build_cron_schedule
 from loom.prefect.deploy._yaml_etls import EtlDeclaration, read_declarations
@@ -167,7 +169,34 @@ def _register(sourced: Any, meta: ETLFlowMeta, plan: _DeploymentPlan) -> str:
     schedule = build_cron_schedule(meta.schedule)
     if schedule is not None:
         kwargs["schedules"] = [schedule]
+    if meta.trigger is not None:
+        kwargs["triggers"] = [_completion_trigger(meta.trigger)]
     return str(sourced.deploy(**kwargs))
+
+
+def _completion_trigger(trigger: FlowTrigger) -> DeploymentEventTrigger:
+    """Start the deployment when a run of the upstream deployment completes.
+
+    Each inherited parameter is rendered from the completed run's stored
+    parameters, which loom records resolved, so placeholders arrive as dates.
+    """
+    inherited = {
+        name: {"__prefect_kind": "jinja", "template": f"{{{{ flow_run.parameters['{name}'] }}}}"}
+        for name in trigger.inherit_params
+    }
+    # Prefect requires every entry of the list to match a related resource; a
+    # deployment name alone is only unique within its flow.
+    return DeploymentEventTrigger(
+        expect={"prefect.flow-run.Completed"},
+        match_related=[
+            {"prefect.resource.role": "flow", "prefect.resource.name": trigger.upstream_flow},
+            {
+                "prefect.resource.role": "deployment",
+                "prefect.resource.name": trigger.upstream_deployment,
+            },
+        ],
+        parameters=inherited or None,
+    )
 
 
 def _file_entrypoint(flow_obj: Any, meta: ETLFlowMeta, working_dir: str) -> str:
