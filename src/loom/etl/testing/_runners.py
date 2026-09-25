@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import polars as pl
 
+from loom.core.config import ConfigContext
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.compiler import ETLCompiler
 from loom.etl.declarative.source import SourceSpec
@@ -94,6 +96,7 @@ class PolarsStepRunner:
     def __init__(self) -> None:
         self._seeds: dict[str, tuple[list[tuple[Any, ...]], list[str]]] = {}
         self._writer = _PolarsCapturingWriter()
+        self._config_context: ConfigContext | None = None
 
     def seed(
         self,
@@ -114,6 +117,21 @@ class PolarsStepRunner:
         self._seeds[ref] = (list(data), list(columns))
         return self
 
+    def with_config(self, values: Mapping[str, Any]) -> PolarsStepRunner:
+        """Set the config the step's ``FromConfig`` values resolve from.
+
+        Keys are validated when :meth:`run` compiles the step, exactly as the
+        runner does, so a fake token exercises the production path.
+
+        Args:
+            values: Config mapping, e.g. ``{"respondio": {"api_token": "fake"}}``.
+
+        Returns:
+            ``self`` for fluent chaining.
+        """
+        self._config_context = ConfigContext.from_dict(values)
+        return self
+
     def run(self, step_cls: type[Any], params: Any) -> StepResult:
         """Compile and execute *step_cls* against the seeded tables.
 
@@ -126,12 +144,16 @@ class PolarsStepRunner:
 
         Raises:
             KeyError:     When a source table was not seeded.
+            ETLCompilationError: When a ``FromConfig`` key is not in
+                :meth:`with_config`.
             RuntimeError: When the step produced no output.
         """
         frames = {ref: _build_lazy_frame(data, cols) for ref, (data, cols) in self._seeds.items()}
-        plan = ETLCompiler().compile_step(step_cls)
+        plan = ETLCompiler(config_context=self._config_context).compile_step(step_cls)
         self._writer = _PolarsCapturingWriter()
-        ETLExecutor(_PolarsStubReader(frames), self._writer).run_step(plan, params)
+        ETLExecutor(
+            _PolarsStubReader(frames), self._writer, config_context=self._config_context
+        ).run_step(plan, params)
         raw = self._writer.frame
         if raw is None:
             raise RuntimeError("Step produced no output — check that target is declared.")

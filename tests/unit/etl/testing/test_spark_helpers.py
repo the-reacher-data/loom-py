@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from loom.etl import ETLParams, ETLStep, FromConfig, IntoTable
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.target._table import ReplaceSpec
 from loom.etl.testing import spark as spark_testing
@@ -167,3 +168,29 @@ class TestSparkStepRunner:
         params = object()
         with pytest.raises(RuntimeError, match="Step produced no output"):
             runner.run(step_type, params)
+
+    def test_with_config_injects_fake_values(self) -> None:
+        class _Params(ETLParams):  # type: ignore[misc]
+            pass
+
+        class _Frame:
+            def __init__(self, token: str) -> None:
+                self.columns = ["token"]
+                self._token = token
+
+            def collect(self) -> list[dict[str, str]]:
+                return [{"token": self._token}]
+
+        class _Step(ETLStep[_Params]):
+            api_token = FromConfig("respondio.api_token")
+            target = IntoTable("staging.out").replace()
+
+            def execute(self, params: _Params, *, api_token: str) -> Any:  # type: ignore[override]
+                return _Frame(api_token)
+
+        runner = spark_testing.SparkStepRunner(cast(Any, object()))
+        runner.with_config({"respondio": {"api_token": "fake"}})
+
+        result = runner.run(_Step, _Params())
+
+        assert result.to_polars()["token"].to_list() == ["fake"]

@@ -31,7 +31,7 @@ fetching them from Maven.
 from __future__ import annotations
 
 import os
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import TracebackType
@@ -44,6 +44,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - packaging guard
         "loom.etl.testing.spark defines pytest fixtures: install loom-kernel[testing]"
     ) from exc
 
+from loom.core.config import ConfigContext
 from loom.etl.compiler import ETLCompiler
 from loom.etl.declarative.source import SourceSpec
 from loom.etl.declarative.target import TargetSpec
@@ -216,6 +217,7 @@ class SparkStepRunner:
         self._spark = spark
         self._seeds: dict[str, tuple[list[tuple[Any, ...]], list[str]]] = {}
         self._writer = _SparkCapturingWriter()
+        self._config_context: ConfigContext | None = None
 
     def seed(
         self,
@@ -236,6 +238,21 @@ class SparkStepRunner:
         self._seeds[ref] = (list(data), list(columns))
         return self
 
+    def with_config(self, values: Mapping[str, Any]) -> SparkStepRunner:
+        """Set the config the step's ``FromConfig`` values resolve from.
+
+        Keys are validated when :meth:`run` compiles the step, exactly as the
+        runner does, so a fake token exercises the production path.
+
+        Args:
+            values: Config mapping, e.g. ``{"respondio": {"api_token": "fake"}}``.
+
+        Returns:
+            ``self`` for fluent chaining.
+        """
+        self._config_context = ConfigContext.from_dict(values)
+        return self
+
     def run(self, step_cls: type[Any], params: Any) -> StepResult:
         """Compile and execute *step_cls* against the seeded tables.
 
@@ -248,15 +265,19 @@ class SparkStepRunner:
 
         Raises:
             KeyError:     When a source table was not seeded.
+            ETLCompilationError: When a ``FromConfig`` key is not in
+                :meth:`with_config`.
             RuntimeError: When the step produced no output.
         """
         frames = {
             ref: self._spark.createDataFrame(data, columns)
             for ref, (data, columns) in self._seeds.items()
         }
-        plan = ETLCompiler().compile_step(step_cls)
+        plan = ETLCompiler(config_context=self._config_context).compile_step(step_cls)
         self._writer = _SparkCapturingWriter()
-        ETLExecutor(_SparkStubReader(frames), self._writer).run_step(plan, params)
+        ETLExecutor(
+            _SparkStubReader(frames), self._writer, config_context=self._config_context
+        ).run_step(plan, params)
         raw = self._writer.frame
         if raw is None:
             raise RuntimeError("Step produced no output — check that target is declared.")

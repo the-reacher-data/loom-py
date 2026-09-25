@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from loom.etl.compiler._errors import ETLCompilationError
-from loom.etl.compiler._plan import SourceBinding, TargetBinding
+from loom.etl.compiler._plan import ConfigValueBinding, SourceBinding, TargetBinding
 from loom.etl.pipeline._step import ETLStep
 
 
@@ -72,6 +72,22 @@ def resolve_target_binding(step_type: type[ETLStep[Any]]) -> TargetBinding:
     if not isinstance(target, _TargetLike):
         raise ETLCompilationError.invalid_target_type(step_type)
     return TargetBinding(spec=target._to_spec())
+
+
+def resolve_config_bindings(step_type: type[ETLStep[Any]]) -> tuple[ConfigValueBinding, ...]:
+    """Build config value bindings from the step's ``FromConfig`` attributes.
+
+    Args:
+        step_type: Concrete ``ETLStep`` subclass.
+
+    Returns:
+        Tuple of :class:`~loom.etl.compiler._plan.ConfigValueBinding`, in
+        declaration order.
+    """
+    return tuple(
+        ConfigValueBinding(alias=alias, key=value.key, value_type=value.value_type)
+        for alias, value in step_type._config_values.items()
+    )
 
 
 # ---------------------------------------------------------------------------
