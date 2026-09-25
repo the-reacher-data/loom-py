@@ -31,12 +31,18 @@ def validate_step_config(plan: StepPlan, context: ConfigContext) -> None:
             value does not validate as the declared type.
     """
     for binding in plan.config_bindings:
-        try:
-            resolve_config_value(context, binding.key, binding.value_type)
-        except ConfigValueError as exc:
-            raise ETLCompilationError.unresolved_config_value(
-                plan.step_type, binding.alias, str(exc)
-            ) from None
+        reason = _failure_reason(context, binding.key, binding.value_type)
+        if reason is not None:
+            raise ETLCompilationError.unresolved_config_value(plan.step_type, binding.alias, reason)
+
+
+def _failure_reason(context: ConfigContext, key: str, value_type: object) -> str | None:
+    """Return the sanitised failure message for *key*, or ``None`` when it resolves."""
+    try:
+        resolve_config_value(context, key, value_type)
+    except ConfigValueError as exc:
+        return str(exc)
+    return None
 
 
 def validate_process_config(plan: ProcessPlan, context: ConfigContext) -> None:

@@ -16,15 +16,18 @@ class FromConfig:
     The key is a dot-separated path into the runner's config (the YAML given
     to :meth:`~loom.etl.ETLRunner.from_yaml`), so ``${oc.env:...}``
     interpolations and resolvers such as ``${secrets:...}`` apply.  The value
-    is resolved each time the step runs, never at import or declaration, and
-    never appears in a plan, a log, an event or an error.
+    is resolved when the step runs, never at import or declaration:
+    ``${oc.env:...}`` is read on every resolution, while a resolver's result
+    is cached by the config for the lifetime of the runner.  Loom stores the
+    value on no plan and writes it to no log or event; a failure names the
+    key and the expected type only.
 
     Args:
         key: Dot-separated config path, e.g. ``"respondio.api_token"``.
         value_type: Type the value is converted to with ``msgspec``: a scalar
-            such as ``str`` or ``int``, a type expression such as
-            ``str | None`` or ``Literal["a", "b"]``, or a ``msgspec.Struct``
-            for a whole section.  Defaults to ``str``.
+            such as ``str`` or ``int``, a ``Literal["a", "b"]``, or a
+            ``msgspec.Struct`` for a whole section.  Defaults to ``str``.
+            A null or absent key is always reported as not set.
 
     Raises:
         ValueError: When *key* is empty or has an empty segment.

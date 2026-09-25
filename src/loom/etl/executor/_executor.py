@@ -96,7 +96,7 @@ class ETLExecutor:
         dispatcher: Parallel task dispatcher.  Defaults to
                     :class:`~loom.etl.executor.ThreadDispatcher`.
         config_context: Config the ``FromConfig`` values are resolved from,
-                    each time a step runs.  Required only by steps that
+                    when a step runs.  Required only by steps that
                     declare one.
     """
 

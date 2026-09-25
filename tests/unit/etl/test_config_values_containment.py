@@ -61,6 +61,37 @@ def _rendered(exc: BaseException) -> str:
     return "".join(traceback.format_exception(exc))
 
 
+def _chain(exc: BaseException) -> list[BaseException]:
+    """Every exception reachable through ``__cause__`` and ``__context__``."""
+    found: list[BaseException] = []
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or any(current is seen for seen in found):
+            continue
+        found.append(current)
+        pending.extend([current.__cause__, current.__context__])
+    return found
+
+
+def _frame_locals(exc: BaseException) -> list[str]:
+    """Repr of every local in every frame of *exc*'s traceback."""
+    rendered: list[str] = []
+    tb = exc.__traceback__
+    while tb is not None:
+        rendered.extend(repr(value) for value in tb.tb_frame.f_locals.values())
+        tb = tb.tb_next
+    return rendered
+
+
+def _assert_contained(exc: BaseException) -> None:
+    assert SECRET not in _rendered(exc)
+    for linked in _chain(exc):
+        assert SECRET not in str(linked)
+        assert SECRET not in repr(linked.args)
+    assert all(SECRET not in value for value in _frame_locals(exc))
+
+
 def test_successful_run_leaks_nothing(caplog: pytest.LogCaptureFixture) -> None:
     observer = StubRunObserver()
     writer = StubTargetWriter()
@@ -88,7 +119,8 @@ def test_compile_error_does_not_carry_the_value() -> None:
         ETLCompiler(config_context=_context()).compile_step(ModeStep)
 
     assert "does not validate" in str(exc_info.value)
-    assert SECRET not in _rendered(exc_info.value)
+    assert exc_info.value.__context__ is None
+    _assert_contained(exc_info.value)
 
 
 def test_runtime_error_and_error_event_do_not_carry_the_value(
@@ -105,6 +137,8 @@ def test_runtime_error_and_error_event_do_not_carry_the_value(
     with caplog.at_level(logging.DEBUG), pytest.raises(ConfigValueError) as exc_info:
         executor.run_step(ETLCompiler().compile_step(ModeStep), _PARAMS)
 
-    assert SECRET not in _rendered(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    _assert_contained(exc_info.value)
     assert SECRET not in caplog.text
     assert all(SECRET not in repr(data) for _, data in observer.events)

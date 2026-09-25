@@ -3,7 +3,8 @@
 Shared by the compiler, which checks every declared key before a run, and the
 executor, which resolves the values a step receives.  Every failure reports
 the key and the expected type, never the value: a ``msgspec`` message may
-quote the rejected value, so it is dropped together with the exception chain.
+quote the rejected value, so the error is raised outside the handler that
+caught it and carries neither a cause nor a context.
 """
 
 from __future__ import annotations
@@ -28,8 +29,9 @@ class ConfigValueFailure(StrEnum):
 class ConfigValueError(ConfigError):
     """A declared config value is missing, unresolvable or of the wrong type.
 
-    The message names the key and the expected type only; the value and the
-    underlying exception are never attached.
+    The message names the key and the expected type only; neither the value
+    nor the underlying exception is attached (``__cause__`` and
+    ``__context__`` are ``None``).
 
     Attributes:
         key: Dot-separated config path.
@@ -60,17 +62,31 @@ def resolve_config_value(context: ConfigContext, key: str, value_type: object) -
         ConfigValueError: When the key is absent or null, its interpolation
             cannot be resolved, or the value does not validate.
     """
+    value: Any = None
     failure = _presence_failure(context, key)
+    if failure is None:
+        value, failure = _read_and_convert(context, key, value_type)
     if failure is not None:
         raise ConfigValueError(key, value_type, failure)
+    return value
+
+
+def _read_and_convert(
+    context: ConfigContext, key: str, value_type: object
+) -> tuple[Any, ConfigValueFailure | None]:
+    """Return ``(value, None)``, or ``(None, failure)`` without the exception.
+
+    The caller raises outside any ``except`` block, so the exception that
+    may quote the value is released here instead of becoming ``__context__``.
+    """
     try:
         raw = context.section(key, object)
     except ConfigError:
-        raise ConfigValueError(key, value_type, ConfigValueFailure.UNRESOLVED) from None
+        return None, ConfigValueFailure.UNRESOLVED
     try:
-        return msgspec.convert(raw, value_type, strict=False)
+        return msgspec.convert(raw, value_type, strict=False), None
     except msgspec.ValidationError:
-        raise ConfigValueError(key, value_type, ConfigValueFailure.INVALID) from None
+        return None, ConfigValueFailure.INVALID
 
 
 def _presence_failure(context: ConfigContext, key: str) -> ConfigValueFailure | None:

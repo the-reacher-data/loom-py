@@ -251,16 +251,22 @@ respondio:
   cannot resolve or a value that does not validate as the declared type fails
   with `ETLCompilationError` (`UNRESOLVED_CONFIG_VALUE`). Each step then
   resolves its values again when it executes, never at import.
+  `${oc.env:...}` is read on every resolution; a resolver's result
+  (`${secrets:...}`, `${ssm:...}`) is cached by the config for the lifetime of
+  the runner, so a rotated secret takes effect with the next runner.
 - **What is checked without a config.** `ETLCompiler()` alone checks the shape:
   every `FromConfig` attribute needs a keyword-only parameter of the same name
   in `execute()`, and may not share its name with a source alias (or with
   `client` on a `ClientStep`). A `StepSQL` cannot declare one.
-- **Containment.** A plan carries the key and the type, never the value. The
-  value appears in no log, repr, lifecycle event, checkpoint or error: a
-  failure names the key and the expected type only (`ConfigValueError` at run
-  time), and drops the underlying exception, whose message may quote the value.
-- **Types.** Anything `msgspec.convert` accepts: `str`, `int`, `str | None`,
-  `Literal[...]`, a `msgspec.Struct` or a dataclass.
+- **Containment.** A plan carries the key and the type, never the value, and
+  loom writes the value to no log, lifecycle event or checkpoint. A resolution
+  failure names the key and the expected type only: `ConfigValueError` (run
+  time) and `ETLCompilationError` (compile time) carry no chained exception,
+  since a `msgspec` message may quote the value. What the step does with the
+  value it receives is up to the step.
+- **Types.** What `msgspec.convert` accepts: `str`, `int`, `Literal[...]`, a
+  `msgspec.Struct` or a dataclass. A null or absent key is reported as not
+  set, so a `FromConfig` value is always required.
 - **Without `from_yaml`.** Pass `config_context=ConfigContext(...)` to
   `ETLRunner`, `ETLRunner.from_config` or `ETLExecutor`.
 
