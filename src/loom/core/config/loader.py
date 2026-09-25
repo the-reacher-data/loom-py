@@ -568,12 +568,13 @@ def section(cfg: DictConfig, key: str, target_type: type[T]) -> T:
     the result to ``target_type`` via ``msgspec.convert``.
 
     Works with any type supported by ``msgspec.convert``: ``msgspec.Struct``
-    subclasses, ``dataclasses``, ``TypedDict``, plain dicts, etc.
+    subclasses, ``dataclasses``, ``TypedDict``, plain dicts, etc.  A key that
+    names a scalar leaf (``"api.token"``) converts that value, e.g. to ``str``.
 
     Args:
         cfg: Root :class:`omegaconf.DictConfig` returned by :func:`load_config`.
-        key: Dot-separated path to the desired section (e.g. ``"database"``
-            or ``"services.cache"``).
+        key: Dot-separated path to the desired section or scalar leaf (e.g.
+            ``"database"`` or ``"services.cache"``).
         target_type: Type to convert the section into.
 
     Returns:
@@ -602,6 +603,8 @@ def section(cfg: DictConfig, key: str, target_type: type[T]) -> T:
                 f"Config section not found: {key!r}  (failed at segment {part!r})"
             ) from exc
 
+    if not omega_conf.is_config(node):
+        return _convert_section(node, key, target_type)
     try:
         data = omega_conf.to_container(node, resolve=True)
     except Exception as exc:
@@ -610,6 +613,15 @@ def section(cfg: DictConfig, key: str, target_type: type[T]) -> T:
             f"(check ${{oc.env:VAR}} interpolations): {exc}"
         ) from exc
 
+    return _convert_section(data, key, target_type)
+
+
+def _convert_section(data: Any, key: str, target_type: type[T]) -> T:
+    """Convert resolved section data to ``target_type`` leniently.
+
+    Raises:
+        ConfigError: When ``msgspec`` validation fails.
+    """
     try:
         return msgspec.convert(data, target_type, strict=False)
     except msgspec.ValidationError as exc:
