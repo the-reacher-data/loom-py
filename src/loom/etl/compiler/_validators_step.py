@@ -13,7 +13,7 @@ import msgspec
 from loom.core.model import LoomFrozenStruct
 from loom.etl.backends._path_template import extract_template_fields
 from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode
-from loom.etl.compiler._plan import SourceBinding, TargetBinding
+from loom.etl.compiler._plan import ConfigValueBinding, SourceBinding, TargetBinding
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.source import FileSourceSpec
@@ -95,11 +95,14 @@ class StepCompilationContext:
     params_type: type[Any]
     source_bindings: tuple[SourceBinding, ...]
     target_binding: TargetBinding
+    config_bindings: tuple[ConfigValueBinding, ...] = ()
 
 
 def validate_step(ctx: StepCompilationContext) -> None:
     """Run all per-step compile-time validators against *ctx*."""
-    validate_execute_signature(ctx.step_type, ctx.params_type, ctx.source_bindings)
+    validate_execute_signature(
+        ctx.step_type, ctx.params_type, ctx.source_bindings, ctx.config_bindings
+    )
     validate_upsert_spec(ctx.step_type, ctx.target_binding.spec)
     validate_param_exprs(ctx.step_type, ctx.params_type, ctx.source_bindings, ctx.target_binding)
     validate_file_path_templates(
@@ -111,17 +114,25 @@ def validate_execute_signature(
     step_type: type[Any],
     params_type: type[Any],
     source_bindings: tuple[SourceBinding, ...],
+    config_bindings: tuple[ConfigValueBinding, ...] = (),
 ) -> None:
-    """Validate execute() params and keyword-only source frame bindings."""
+    """Validate execute() params and keyword-only source and config bindings."""
     sig = inspect.signature(step_type.execute)
     params = list(sig.parameters.values())
     _validate_params_arg(step_type, params, params_type)
-    if _is_sql_step_type(step_type) or _is_client_step_type(step_type):
+    config_aliases = {b.alias for b in config_bindings}
+    if _is_sql_step_type(step_type):
+        if config_aliases:
+            raise ETLCompilationError.unsupported_config_value(step_type)
         return
     kw_only = _collect_kw_only_frames(params)
+    if _is_client_step_type(step_type):
+        _check_config_params(step_type, config_aliases, kw_only, taken={"client"})
+        return
     source_aliases = {b.alias for b in source_bindings}
+    _check_config_params(step_type, config_aliases, kw_only, taken=source_aliases)
     _check_missing_frames(step_type, source_aliases, kw_only)
-    _check_extra_frames(step_type, source_aliases, kw_only)
+    _check_extra_frames(step_type, source_aliases | config_aliases, kw_only)
 
 
 def validate_params_compat(
@@ -170,6 +181,21 @@ def _is_sql_step_type(step_type: type[Any]) -> bool:
 
 def _is_client_step_type(step_type: type[Any]) -> bool:
     return issubclass(step_type, ClientStep)
+
+
+def _check_config_params(
+    step_type: type[Any],
+    config_aliases: set[str],
+    kw_only: dict[str, inspect.Parameter],
+    *,
+    taken: set[str],
+) -> None:
+    conflict = config_aliases & taken
+    if conflict:
+        raise ETLCompilationError.config_alias_conflict(step_type, frozenset(conflict))
+    missing = config_aliases - set(kw_only)
+    if missing:
+        raise ETLCompilationError.missing_config_params(step_type, frozenset(missing))
 
 
 def _check_missing_frames(

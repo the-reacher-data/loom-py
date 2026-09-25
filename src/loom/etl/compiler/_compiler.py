@@ -12,10 +12,12 @@ Static validation
 * ``execute()`` first positional param is typed as ``ParamsT``
 * every source alias has a matching ``*``-only DataFrame param in ``execute()``
 * every ``*``-only param in ``execute()`` has a matching source alias
+* every ``FromConfig`` attribute has a matching ``*``-only param in ``execute()``
 * ``target`` is declared
 * source forms are not mixed (caught earlier in ``__init_subclass__``)
 * ``ETLProcess.steps`` entries are valid step types
 * ``ETLPipeline.processes`` entries are valid process types
+* with a config context, every ``FromConfig`` key resolves and validates
 """
 
 from __future__ import annotations
@@ -23,7 +25,12 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from loom.etl.compiler._binding import resolve_source_bindings, resolve_target_binding
+from loom.core.config import ConfigContext
+from loom.etl.compiler._binding import (
+    resolve_config_bindings,
+    resolve_source_bindings,
+    resolve_target_binding,
+)
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
@@ -42,6 +49,11 @@ from loom.etl.compiler._validators import (
     validate_process_catalog,
     validate_step,
     validate_step_catalog,
+)
+from loom.etl.compiler._validators_config import (
+    validate_plan_config,
+    validate_process_config,
+    validate_step_config,
 )
 from loom.etl.declarative.target import AppendSpec
 from loom.etl.pipeline._pipeline import ETLPipeline
@@ -63,6 +75,9 @@ class ETLCompiler:
         catalog: Optional :class:`~loom.etl._io.TableDiscovery` instance.
                  When provided, all ``TABLE`` sources and ``IntoTable`` targets
                  are validated against the catalog at compile time.
+        config_context: Optional config the runner was built from.  When
+                 provided, every ``FromConfig`` key is resolved and validated
+                 at compile time; values are discarded, never stored on a plan.
 
     Example::
 
@@ -70,8 +85,13 @@ class ETLCompiler:
         plan = ETLCompiler(catalog=HiveCatalog()).compile(DailyOrdersPipeline)
     """
 
-    def __init__(self, catalog: TableDiscovery | None = None) -> None:
+    def __init__(
+        self,
+        catalog: TableDiscovery | None = None,
+        config_context: ConfigContext | None = None,
+    ) -> None:
         self._catalog = catalog
+        self._config_context = config_context
         self._step_cache: dict[type[Any], StepPlan] = {}
         self._process_cache: dict[type[Any], ProcessPlan] = {}
 
@@ -85,7 +105,8 @@ class ETLCompiler:
             Fully validated :class:`~loom.etl.compiler._plan.PipelinePlan`.
 
         Raises:
-            ETLCompilationError: If any structural constraint is violated.
+            ETLCompilationError: If any structural constraint is violated, or
+                a ``FromConfig`` key does not resolve against the config context.
         """
         params_type = _require_params_type(pipeline_type, "ETLPipeline")
         _log.debug(
@@ -99,6 +120,8 @@ class ETLCompiler:
         validate_plan_temps(plan)
         if self._catalog is not None:
             validate_plan_catalog(plan, self._catalog)
+        if self._config_context is not None:
+            validate_plan_config(plan, self._config_context)
         return plan
 
     def compile_process(self, process_type: type[ETLProcess[Any]]) -> ProcessPlan:
@@ -111,11 +134,14 @@ class ETLCompiler:
             Validated :class:`~loom.etl.compiler._plan.ProcessPlan`.
 
         Raises:
-            ETLCompilationError: If any structural constraint is violated.
+            ETLCompilationError: If any structural constraint is violated, or
+                a ``FromConfig`` key does not resolve against the config context.
         """
         plan = self._get_or_build_process(process_type)
         if self._catalog is not None:
             validate_process_catalog(plan, self._catalog)
+        if self._config_context is not None:
+            validate_process_config(plan, self._config_context)
         return plan
 
     def compile_step(self, step_type: type[ETLStep[Any]]) -> StepPlan:
@@ -128,11 +154,14 @@ class ETLCompiler:
             Validated :class:`~loom.etl.compiler._plan.StepPlan`.
 
         Raises:
-            ETLCompilationError: If any structural constraint is violated.
+            ETLCompilationError: If any structural constraint is violated, or
+                a ``FromConfig`` key does not resolve against the config context.
         """
         plan = self._get_or_build_step(step_type)
         if self._catalog is not None:
             validate_step_catalog(plan, self._catalog)
+        if self._config_context is not None:
+            validate_step_config(plan, self._config_context)
         return plan
 
     # ------------------------------------------------------------------
@@ -203,6 +232,7 @@ class ETLCompiler:
         params_type = _require_params_type(step_type, "ETLStep")
         source_bindings = resolve_source_bindings(step_type)
         target_binding = resolve_target_binding(step_type)
+        config_bindings = resolve_config_bindings(step_type)
         _log.debug(
             "compile step=%s sources=%d",
             step_type.__name__,
@@ -214,6 +244,7 @@ class ETLCompiler:
                 params_type=params_type,
                 source_bindings=source_bindings,
                 target_binding=target_binding,
+                config_bindings=config_bindings,
             )
         )
         _warn_append_target(step_type, target_binding.spec)
@@ -223,6 +254,7 @@ class ETLCompiler:
             source_bindings=source_bindings,
             target_binding=target_binding,
             streaming=step_type.streaming,
+            config_bindings=config_bindings,
         )
 
     # ------------------------------------------------------------------

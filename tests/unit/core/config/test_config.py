@@ -188,6 +188,16 @@ def test_section_env_interpolation(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert cache.host == "my-redis"
 
 
+def test_section_scalar_leaf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("API_TOKEN", "tok-123")
+    f = tmp_path / "cfg.yaml"
+    f.write_text("api:\n  token: ${oc.env:API_TOKEN}\n  retries: '3'\n")
+    cfg = load_config(str(f))
+
+    assert section(cfg, "api.token", str) == "tok-123"
+    assert section(cfg, "api.retries", int) == 3
+
+
 # ---------------------------------------------------------------------------
 # section — error cases
 # ---------------------------------------------------------------------------

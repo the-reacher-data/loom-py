@@ -55,11 +55,43 @@ def _load_yaml(
             its key, a ``path.profile`` is not declared in ``storage.profiles``,
             or a profile carries ``uri``.
     """
-    ctx = ConfigContext.from_yaml(
+    return _parse_sections(_load_context(path, resolvers=resolvers))
+
+
+def _load_context(path: str, *, resolvers: Sequence[ConfigResolver] = ()) -> ConfigContext:
+    """Load an ETL config YAML into a :class:`ConfigContext`.
+
+    Interpolations stay lazy: a section is resolved when it is read, so the
+    ``FromConfig`` keys outside ``storage:`` resolve when a step runs.
+
+    Args:
+        path: Local path or cloud URI of the YAML file.
+        resolvers: Resolvers for ``${name:key}`` placeholders, registered
+            before the built-in ``secrets`` and ``ssm`` defaults.
+
+    Returns:
+        The loaded config context.
+
+    Raises:
+        loom.core.config.ConfigError: When the file cannot be read or parsed,
+            or a keyed collection holds a duplicate key or mixes list and
+            mapping forms.
+    """
+    return ConfigContext.from_yaml(
         path,
         resolvers=with_default_resolvers(resolvers),
         keyed=STORAGE_KEYED_COLLECTIONS,
     )
+
+
+def _parse_sections(ctx: ConfigContext) -> tuple[StorageConfig, ETLObservabilityConfig]:
+    """Bind the ``storage:`` and ``observability:`` sections of *ctx*.
+
+    Raises:
+        loom.core.config.ConfigError: When the ``storage:`` key is absent or
+            a section shape is invalid.
+        ValueError: When a keyed entry or a ``path.profile`` is invalid.
+    """
     raw = ctx.section(ConfigKey.STORAGE, dict)
     storage_config = _convert_storage(normalise_storage_section(raw))
     obs_config = ctx.section_or_default(

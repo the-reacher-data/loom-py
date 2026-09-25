@@ -36,11 +36,13 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from loom.core.config import ConfigContext
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import SupportsFlush
 from loom.etl.checkpoint import CheckpointCleanupError, CheckpointStore
 from loom.etl.compiler._plan import (
+    ConfigValueBinding,
     ParallelProcessGroup,
     ParallelStepGroup,
     PipelinePlan,
@@ -55,6 +57,7 @@ from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.lineage._records import RunContext, RunStatus, WriteContext
 from loom.etl.pipeline._step_sql import StepSQL
+from loom.etl.runtime._config_values import resolve_config_value
 from loom.etl.runtime.contracts import (
     ClientCommandExecutor,
     SourceReader,
@@ -72,7 +75,8 @@ class ETLExecutor:
     Responsibilities:
 
     * Read each source via the injected :class:`~loom.etl._io.SourceReader`.
-    * Invoke the step's ``execute()`` with the resulting frames.
+    * Resolve the step's ``FromConfig`` values from the injected config context.
+    * Invoke the step's ``execute()`` with the resulting frames and values.
     * Write the result via the injected :class:`~loom.etl._io.TargetWriter`.
     * Emit lifecycle events to the shared observability runtime.
     * Dispatch parallel groups through the :class:`~loom.etl.executor.ParallelDispatcher`.
@@ -91,6 +95,9 @@ class ETLExecutor:
         observability: Shared observability runtime.  Defaults to a no-op runtime.
         dispatcher: Parallel task dispatcher.  Defaults to
                     :class:`~loom.etl.executor.ThreadDispatcher`.
+        config_context: Config the ``FromConfig`` values are resolved from,
+                    when a step runs.  Required only by steps that
+                    declare one.
     """
 
     def __init__(
@@ -101,6 +108,7 @@ class ETLExecutor:
         dispatcher: ParallelDispatcher | None = None,
         checkpoint_store: CheckpointStore | None = None,
         client_executor: ClientCommandExecutor | None = None,
+        config_context: ConfigContext | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -108,6 +116,7 @@ class ETLExecutor:
         self._dispatcher: ParallelDispatcher = dispatcher or ThreadDispatcher()
         self._checkpoint_store: CheckpointStore | None = checkpoint_store
         self._client_executor: ClientCommandExecutor | None = client_executor
+        self._config_context: ConfigContext | None = config_context
 
     @property
     def observability(self) -> ObservabilityRuntime:
@@ -220,7 +229,9 @@ class ETLExecutor:
     ) -> None:
         """Execute a single step plan.
 
-        Reads all sources, calls ``execute()``, writes the target.
+        Resolves the step's ``FromConfig`` values, reads all sources, calls
+        ``execute()``, writes the target.  Config values are passed to
+        ``execute()`` only; they are never logged nor attached to an event.
 
         Args:
             plan:   Compiled :class:`~loom.etl.compiler.StepPlan`.
@@ -228,6 +239,8 @@ class ETLExecutor:
             ctx:    Run context from the parent pipeline, or a fresh one.
 
         Raises:
+            ConfigValueError: When a ``FromConfig`` value is missing,
+                       unresolvable, or of the wrong type.
             Exception: Any unhandled exception from read, execute, or write —
                        after all observers have received ``on_step_error`` and
                        ``on_step_end(FAILED)``.
@@ -253,10 +266,11 @@ class ETLExecutor:
             target=_span_target_label(plan.target_binding.spec),
             streaming=plan.streaming,
         ):
+            values = self._resolve_config_values(plan)
             if isinstance(plan.target_binding.spec, ClientSpec):
                 step = plan.step_type()
                 client_exec = self._require_client_executor(step)
-                client_exec.command(lambda client: step.execute(params, client=client))
+                client_exec.command(lambda client: step.execute(params, client=client, **values))
                 return
 
             frames = {
@@ -269,7 +283,7 @@ class ETLExecutor:
                 sql_reader = self._require_sql_executor(step)
                 result = sql_reader.execute_sql(frames, query)
             else:
-                result = step.execute(params, **frames)
+                result = step.execute(params, **frames, **values)
             write_ctx = WriteContext(
                 run_id=ctx.run_id,
                 step=plan.step_type.__name__,
@@ -284,6 +298,29 @@ class ETLExecutor:
                 streaming=plan.streaming,
                 write_ctx=write_ctx,
             )
+
+    def _resolve_config_values(self, plan: StepPlan) -> dict[str, Any]:
+        """Resolve the plan's ``FromConfig`` values, keyed by ``execute()`` keyword."""
+        if not plan.config_bindings:
+            return {}
+        context = self._require_config_context(plan.step_type, plan.config_bindings)
+        return {
+            b.alias: resolve_config_value(context, b.key, b.value_type)
+            for b in plan.config_bindings
+        }
+
+    def _require_config_context(
+        self, step_type: type[Any], bindings: tuple[ConfigValueBinding, ...]
+    ) -> ConfigContext:
+        """Return the config context, or raise if unconfigured."""
+        if self._config_context is not None:
+            return self._config_context
+        raise RuntimeError(
+            f"Step {step_type.__qualname__!r} declares FromConfig values "
+            f"{[b.alias for b in bindings]} but no config_context was configured. "
+            "Build the runner with ETLRunner.from_yaml(), or pass config_context= "
+            "to ETLRunner / ETLExecutor."
+        )
 
     def _require_checkpoint_store(self, name: str) -> CheckpointStore:
         """Return the checkpoint store, or raise if unconfigured."""

@@ -29,6 +29,10 @@
   and `McpHandle.call(expect=...)` accept a strict `pydantic.BaseModel` next
   to a `msgspec.Struct`; an annotation mixing both libraries is rejected.
 
+- **core:** `section(cfg, key, T)` and `ConfigContext.section` accept a key
+  naming a scalar leaf (`"api.token"`) and convert that value; before, they
+  failed on anything but a mapping.
+
 ### ai
 
 - **ai:** `provider: typesafe` binds TypeSafe's Jev, a decision model that
@@ -114,6 +118,31 @@
   downstream run inherits the placeholder text and resolves it against its own
   creation time. Without `trigger` the deployment is registered exactly as
   before.
+
+### etl
+
+- **etl:** a step may receive values from the runner's config without reading
+  the environment or taking them as params. `FromConfig("respondio.api_token")`
+  (a `str`) or `FromConfig("respondio", RespondioSettings)` (a type
+  `msgspec.convert` accepts; a null or absent key is reported as not set)
+  declared as a class attribute is passed to
+  `execute()` as the keyword argument of the same name, next to the frames, on
+  `ETLStep` and `ClientStep`. The key is a path into the YAML
+  `ETLRunner.from_yaml` loads, so `${oc.env:...}` and resolvers such as
+  `${secrets:...}` apply. The value is resolved when the step runs:
+  `${oc.env:...}` on every resolution, a resolver's result once per runner,
+  since the config caches it. `ETLCompiler()` checks the shape, with new error
+  codes: `MISSING_CONFIG_PARAMS` (no keyword-only parameter for an attribute),
+  `CONFIG_ALIAS_CONFLICT` (a name shared with a source or with `client`) and
+  `UNSUPPORTED_CONFIG_VALUE` (declared on a `StepSQL`).
+  `ETLCompiler(config_context=...)`, which `ETLRunner.run` uses, checks every
+  key before any step runs (`UNRESOLVED_CONFIG_VALUE`). A plan carries the key
+  and the type only, and loom writes the value to no log, event or checkpoint.
+  A resolution failure names the key and the type, and `ConfigValueError` and
+  `ETLCompilationError` carry no chained exception, since a `msgspec` message
+  may quote the value. `ETLRunner`, `ETLRunner.from_config` and `ETLExecutor` take
+  `config_context=`; `PolarsStepRunner` and `SparkStepRunner` take
+  `with_config(mapping)` for fake values in tests.
 
 ## ⚠ Behaviour changes
 

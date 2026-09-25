@@ -12,7 +12,7 @@ import msgspec
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
-from loom.core.config import ConfigResolver
+from loom.core.config import ConfigContext, ConfigResolver
 from loom.core.observability.protocol import LifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import flush_runner
@@ -29,7 +29,7 @@ from loom.etl.runner._wiring import (
     make_client_executor,
     make_lineage_store,
 )
-from loom.etl.runner.config_loader import _load_yaml
+from loom.etl.runner.config_loader import _load_context, _parse_sections
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
 from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
@@ -50,6 +50,9 @@ class ETLRunner:
         writer: Target writer implementation.
         observers: Lifecycle observers wrapped in a composite observer.
         dispatcher: Parallel task dispatcher.
+        config_context: Config the steps' ``FromConfig`` values come from.
+            :meth:`run` checks every declared key against it before any step
+            runs, and each step resolves its values when it executes.
     """
 
     def __init__(
@@ -60,6 +63,7 @@ class ETLRunner:
         dispatcher: ParallelDispatcher | None = None,
         checkpoint_store: CheckpointStore | None = None,
         client_executor: ClientCommandExecutor | None = None,
+        config_context: ConfigContext | None = None,
     ) -> None:
         self._executor = ETLExecutor(
             reader,
@@ -68,8 +72,9 @@ class ETLRunner:
             dispatcher,
             checkpoint_store,
             client_executor,
+            config_context,
         )
-        self._compiler = ETLCompiler()
+        self._compiler = ETLCompiler(config_context=config_context)
         self._checkpoint_store = checkpoint_store
 
     @classmethod
@@ -82,6 +87,7 @@ class ETLRunner:
         dispatcher: ParallelDispatcher | None = None,
         cleaner: TempCleaner | None = None,
         extra_observers: Sequence[LifecycleObserver] | None = None,
+        config_context: ConfigContext | None = None,
     ) -> ETLRunner:
         """Build an :class:`ETLRunner` from resolved config objects.
 
@@ -90,6 +96,7 @@ class ETLRunner:
                 instances appended after the config-derived ones. Use this
                 to inject orchestrator-specific observers (e.g. the Prefect
                 TaskRun observer) without subclassing the runner.
+            config_context: Config the steps' ``FromConfig`` values come from.
         """
         resolved_obs_config = obs_config or ETLObservabilityConfig()
         reader, writer = make_backends(config, spark)
@@ -104,7 +111,15 @@ class ETLRunner:
             observability = ObservabilityRuntime([*observability.observers, *extra_observers])
         checkpoint_store = make_checkpoint_store(config, spark, cleaner)
         client_executor = make_client_executor(config, spark)
-        return cls(reader, writer, observability, dispatcher, checkpoint_store, client_executor)
+        return cls(
+            reader,
+            writer,
+            observability,
+            dispatcher,
+            checkpoint_store,
+            client_executor,
+            config_context,
+        )
 
     @classmethod
     def from_yaml(
@@ -123,6 +138,10 @@ class ETLRunner:
         and ``storage.profiles`` are merged by key across ``includes``, with
         duplicate keys reported as an error.
 
+        The whole file backs the steps' ``FromConfig`` values, so a step may
+        read a key outside ``storage:`` (``respondio.api_token``); it is
+        resolved, with its interpolations and resolvers, when the step runs.
+
         Args:
             resolvers: Resolvers for ``${name:key}`` placeholders, registered
                 before the built-in ``secrets`` and ``ssm`` defaults.  A
@@ -131,7 +150,8 @@ class ETLRunner:
                 instances forwarded to :meth:`from_config`.
         """
         _log.debug("load yaml path=%s", path)
-        storage_config, obs_config = _load_yaml(path, resolvers=resolvers)
+        context = _load_context(path, resolvers=resolvers)
+        storage_config, obs_config = _parse_sections(context)
         storage_config.validate()
         return cls.from_config(
             storage_config,
@@ -139,6 +159,7 @@ class ETLRunner:
             spark=spark,
             dispatcher=dispatcher,
             extra_observers=extra_observers,
+            config_context=context,
         )
 
     @classmethod
@@ -203,6 +224,9 @@ class ETLRunner:
         last_attempt: bool = True,
     ) -> None:
         """Compile, optionally filter, and execute *pipeline*.
+
+        With a config context, compilation checks every ``FromConfig`` key of
+        the pipeline before any step runs.
 
         Args:
             pipeline: ETLPipeline class to compile and execute.

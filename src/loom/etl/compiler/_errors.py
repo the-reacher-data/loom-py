@@ -39,6 +39,10 @@ class ETLErrorCode(StrEnum):
     INVALID_TEMP_APPEND_MIX = "INVALID_TEMP_APPEND_MIX"
     UNKNOWN_PARAM_FIELD = "UNKNOWN_PARAM_FIELD"
     UNKNOWN_TEMPLATE_FIELD = "UNKNOWN_TEMPLATE_FIELD"
+    MISSING_CONFIG_PARAMS = "MISSING_CONFIG_PARAMS"
+    CONFIG_ALIAS_CONFLICT = "CONFIG_ALIAS_CONFLICT"
+    UNSUPPORTED_CONFIG_VALUE = "UNSUPPORTED_CONFIG_VALUE"
+    UNRESOLVED_CONFIG_VALUE = "UNRESOLVED_CONFIG_VALUE"
 
 
 class ETLCompilationError(Exception):
@@ -112,13 +116,13 @@ class ETLCompilationError(Exception):
 
     @classmethod
     def extra_source_params(cls, step: type, extra: frozenset[str]) -> ETLCompilationError:
-        """Kw-only execute() parameters not declared in sources."""
+        """Kw-only execute() parameters not declared in sources nor as FromConfig."""
         return cls(
             code=ETLErrorCode.EXTRA_SOURCE_PARAMS,
             component=step.__qualname__,
             message=(
                 f"{step.__qualname__}.execute: parameter(s) {sorted(extra)} "
-                "declared after '*' but not found in sources"
+                "declared after '*' but not found in sources or FromConfig values"
             ),
         )
 
@@ -348,4 +352,54 @@ class ETLCompilationError(Exception):
                 f"'{field_name}' on {params_type.__name__}"
             ),
             field=field_name,
+        )
+
+    @classmethod
+    def missing_config_params(cls, step: type, missing: frozenset[str]) -> ETLCompilationError:
+        """FromConfig attributes absent as kw-only execute() parameters."""
+        return cls(
+            code=ETLErrorCode.MISSING_CONFIG_PARAMS,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}.execute: FromConfig value(s) {sorted(missing)} "
+                "declared on the step but missing as keyword-only parameter(s) after '*'"
+            ),
+        )
+
+    @classmethod
+    def config_alias_conflict(cls, step: type, aliases: frozenset[str]) -> ETLCompilationError:
+        """A FromConfig attribute shares its name with a source or the injected client."""
+        return cls(
+            code=ETLErrorCode.CONFIG_ALIAS_CONFLICT,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}: FromConfig value(s) {sorted(aliases)} share their "
+                "name with a source alias or the injected 'client'; rename the attribute"
+            ),
+        )
+
+    @classmethod
+    def unsupported_config_value(cls, step: type) -> ETLCompilationError:
+        """A StepSQL declares FromConfig values it has no execute() to receive."""
+        return cls(
+            code=ETLErrorCode.UNSUPPORTED_CONFIG_VALUE,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}: a StepSQL renders SQL and never calls execute(), "
+                "so it cannot receive FromConfig values"
+            ),
+        )
+
+    @classmethod
+    def unresolved_config_value(cls, step: type, alias: str, reason: str) -> ETLCompilationError:
+        """A FromConfig key cannot be supplied from the runner's config.
+
+        *reason* must never carry the value: callers pass the message of a
+        :class:`~loom.etl.runtime.ConfigValueError`.
+        """
+        return cls(
+            code=ETLErrorCode.UNRESOLVED_CONFIG_VALUE,
+            component=step.__qualname__,
+            message=f"{step.__qualname__}.{alias}: {reason}",
+            field=alias,
         )

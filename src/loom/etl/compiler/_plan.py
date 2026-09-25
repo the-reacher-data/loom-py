@@ -28,6 +28,24 @@ class SourceBinding:
 
 
 @dataclass(frozen=True)
+class ConfigValueBinding:
+    """Compiled binding between an ``execute()`` keyword and a config key.
+
+    Carries the declaration only; the value is resolved by the executor when
+    the step runs and is never stored on a plan.
+
+    Args:
+        alias:      Name matching the ``execute()`` keyword parameter.
+        key:        Dot-separated config path.
+        value_type: Type the resolved value is converted to.
+    """
+
+    alias: str
+    key: str
+    value_type: object
+
+
+@dataclass(frozen=True)
 class TargetBinding:
     """Compiled binding for the step target.
 
@@ -49,6 +67,7 @@ class StepPlan:
         target_binding:  Compiled target.
         streaming:       Whether the step opts into Polars streaming execution.
                          Defaults to ``False``.
+        config_bindings: Ordered ``FromConfig`` alias → key bindings.
     """
 
     step_type: type[Any]
@@ -56,6 +75,7 @@ class StepPlan:
     source_bindings: tuple[SourceBinding, ...]
     target_binding: TargetBinding
     streaming: bool = False
+    config_bindings: tuple[ConfigValueBinding, ...] = ()
 
 
 @dataclass(frozen=True)

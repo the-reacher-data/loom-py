@@ -19,7 +19,14 @@ from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar
 
 from loom.core.logger import get_logger
-from loom.etl.declarative.source import FromFile, FromTable, FromTemp, Sources, SourceSet
+from loom.etl.declarative.source import (
+    FromConfig,
+    FromFile,
+    FromTable,
+    FromTemp,
+    Sources,
+    SourceSet,
+)
 from loom.etl.declarative.target import IntoFile, IntoHistory, IntoTable, IntoTemp
 from loom.etl.declarative.target._client import IntoClient
 from loom.etl.pipeline._generics import _extract_generic_arg
@@ -35,6 +42,7 @@ _RESERVED_NAMES: frozenset[str] = frozenset(
         "_params_type",
         "_source_form",
         "_inline_sources",
+        "_config_values",
     }
 )
 
@@ -51,6 +59,12 @@ class ETLStep(Generic[ParamsT]):
     Subclass, declare :attr:`sources` and :attr:`target`, then implement
     :meth:`execute`.  The ``*`` separator in ``execute`` makes all injected
     DataFrame parameters keyword-only — the executor always injects by name.
+
+    Config values
+    -------------
+    A :class:`~loom.etl.FromConfig` class attribute is resolved from the
+    runner's config when the step runs and passed to ``execute()`` as a
+    keyword argument of the same name.  It combines with any source form.
 
     Source forms
     ------------
@@ -89,6 +103,7 @@ class ETLStep(Generic[ParamsT]):
     _params_type: ClassVar[type[Any] | None] = None
     _source_form: ClassVar[_SourceForm] = _SourceForm.NONE
     _inline_sources: ClassVar[dict[str, FromTable | FromFile | FromTemp]]
+    _config_values: ClassVar[dict[str, FromConfig]]
     _log: ClassVar[Any]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -98,6 +113,7 @@ class ETLStep(Generic[ParamsT]):
         cls._log = get_logger(f"{cls.__module__}.{cls.__qualname__}")
         _validate_streaming_flag(cls)
         _validate_and_classify_sources(cls)
+        cls._config_values = _collect_config_values(cls)
 
     def execute(self, params: ParamsT, **frames: Any) -> Any:
         """Transform source frames into the output frame.
@@ -109,7 +125,8 @@ class ETLStep(Generic[ParamsT]):
         Args:
             params: Typed params instance for this run.
             **frames: Source DataFrames injected by the executor, keyed by
-                the source alias declared in :attr:`sources`.
+                the source alias declared in :attr:`sources`, and the values
+                of the step's :class:`~loom.etl.FromConfig` attributes.
 
         Returns:
             Transformed DataFrame (type must match the active backend).
@@ -144,6 +161,15 @@ def _validate_and_classify_sources(cls: type[Any]) -> None:
         cls._source_form = _SourceForm.GROUPED
     else:
         cls._source_form = _SourceForm.NONE
+
+
+def _collect_config_values(cls: type[Any]) -> dict[str, FromConfig]:
+    """Return the :class:`FromConfig` attributes declared on *cls* itself."""
+    return {
+        name: val
+        for name, val in cls.__dict__.items()
+        if isinstance(val, FromConfig) and name not in _RESERVED_NAMES
+    }
 
 
 def _validate_streaming_flag(cls: type[Any]) -> None:

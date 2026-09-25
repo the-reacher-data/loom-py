@@ -5,6 +5,7 @@ Builders (user-facing):
 * :class:`FromTable`  — Delta table source
 * :class:`FromFile`   — file source (CSV, JSON, XLSX, Parquet)
 * :class:`FromTemp`   — intermediate store source
+* :class:`FromConfig` — config value injected into ``execute()`` (not a frame)
 * :class:`FromMongo`  — MongoDB collection source
 * :class:`FromDynamoDb` — DynamoDB table source
 * :class:`FromClickHouse` — ClickHouse table/view source
@@ -27,6 +28,7 @@ Spec types (internal — compiler and executor only):
 
 from loom.etl.declarative.source._from import FromFile, FromTable, FromTemp, Sources, SourceSet
 from loom.etl.declarative.source._from_clickhouse import FromClickHouse
+from loom.etl.declarative.source._from_config import FromConfig
 from loom.etl.declarative.source._from_dynamodb import FromDynamoDb
 from loom.etl.declarative.source._from_mongo import FromMongo, SourceRef
 from loom.etl.declarative.source._specs import (
@@ -45,6 +47,7 @@ __all__ = [
     "FromTable",
     "FromFile",
     "FromTemp",
+    "FromConfig",
     "FromMongo",
     "FromDynamoDb",
     "FromClickHouse",

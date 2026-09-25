@@ -196,6 +196,80 @@ from loom.etl import ETLRunner
 runner = ETLRunner.from_yaml("config/etl.yaml")
 ```
 
+## Config values and secrets (`FromConfig`)
+
+A step that needs a value from the config (an API token, a page size, a whole
+settings block) declares it with `FromConfig`, next to its sources. The
+executor passes the value to `execute()` as a keyword argument named like the
+attribute. The step never reads an environment variable, and the value never
+travels as a pipeline param, so an orchestrator such as Prefect neither shows
+nor stores it.
+
+```python
+import msgspec
+import polars as pl
+
+from loom.etl import ETLParams, ETLStep, FromConfig, IntoTemp
+
+
+class RespondioSettings(msgspec.Struct, kw_only=True):
+    api_token: str
+    page_size: int = 100
+
+
+class FetchMessages(ETLStep[DailyParams]):
+    api_token = FromConfig("respondio.api_token")          # str by default
+    respondio = FromConfig("respondio", RespondioSettings)  # a typed section
+    target = IntoTemp("messages")
+
+    def execute(
+        self,
+        params: DailyParams,
+        *,
+        api_token: str,
+        respondio: RespondioSettings,
+    ) -> pl.LazyFrame: ...
+```
+
+The key is a dot-separated path into the same YAML `ETLRunner.from_yaml` loads,
+outside `storage:`. Interpolations and resolvers apply, so the file decides
+where the value comes from:
+
+```yaml
+storage:
+  engine: polars
+  # ...
+
+respondio:
+  api_token: ${oc.env:RESPONDIO_API_TOKEN}     # injected by the task definition
+  # api_token: ${secrets:/prod/respondio/token} # or AWS Secrets Manager
+  page_size: 200
+```
+
+- **When it resolves.** `ETLRunner.run` compiles the pipeline and checks every
+  `FromConfig` key before any step runs: a missing key, an interpolation that
+  cannot resolve or a value that does not validate as the declared type fails
+  with `ETLCompilationError` (`UNRESOLVED_CONFIG_VALUE`). Each step then
+  resolves its values again when it executes, never at import.
+  `${oc.env:...}` is read on every resolution; a resolver's result
+  (`${secrets:...}`, `${ssm:...}`) is cached by the config for the lifetime of
+  the runner, so a rotated secret takes effect with the next runner.
+- **What is checked without a config.** `ETLCompiler()` alone checks the shape:
+  every `FromConfig` attribute needs a keyword-only parameter of the same name
+  in `execute()`, and may not share its name with a source alias (or with
+  `client` on a `ClientStep`). A `StepSQL` cannot declare one.
+- **Containment.** A plan carries the key and the type, never the value, and
+  loom writes the value to no log, lifecycle event or checkpoint. A resolution
+  failure names the key and the expected type only: `ConfigValueError` (run
+  time) and `ETLCompilationError` (compile time) carry no chained exception,
+  since a `msgspec` message may quote the value. What the step does with the
+  value it receives is up to the step.
+- **Types.** What `msgspec.convert` accepts: `str`, `int`, `Literal[...]`, a
+  `msgspec.Struct` or a dataclass. A null or absent key is reported as not
+  set, so a `FromConfig` value is always required.
+- **Without `from_yaml`.** Pass `config_context=ConfigContext(...)` to
+  `ETLRunner`, `ETLRunner.from_config` or `ETLExecutor`.
+
 ## Write modes
 
 Every `IntoTable` target declares exactly one write mode by chaining a method.

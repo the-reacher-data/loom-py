@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from loom.etl.compiler import _validators as step_validator
-from loom.etl.compiler._plan import SourceBinding, TargetBinding
+from loom.etl.compiler._plan import ConfigValueBinding, SourceBinding, TargetBinding
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import TableSourceSpec
 from loom.etl.declarative.target._table import ReplaceSpec
@@ -29,6 +29,7 @@ def _build_context() -> StepCompilationContext:
         params_type=type("DummyParams", (), {}),
         source_bindings=(SourceBinding(alias="orders", spec=source_spec),),
         target_binding=TargetBinding(spec=ReplaceSpec(table_ref=TableRef("staging.orders"))),
+        config_bindings=(ConfigValueBinding(alias="token", key="api.token", value_type=str),),
     )
 
 
@@ -42,10 +43,12 @@ def test_validate_step_calls_all_validators_in_order(
         step_type: type[Any],
         params_type: type[Any],
         source_bindings: tuple[SourceBinding, ...],
+        config_bindings: tuple[ConfigValueBinding, ...],
     ) -> None:
         assert step_type is ctx.step_type
         assert params_type is ctx.params_type
         assert source_bindings == ctx.source_bindings
+        assert config_bindings == ctx.config_bindings
         calls.append("signature")
 
     def _validate_upsert(step_type: type[Any], spec: Any) -> None:

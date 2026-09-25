@@ -169,8 +169,11 @@ class ConfigContext:
     def section(self, key: str | ConfigKey, target: type[T]) -> T:
         """Extract and validate a typed config section by dot-path.
 
+        A key naming a scalar leaf (``"api.token"``) converts that value.
+
         Args:
-            key: Dot-separated path (e.g. ``"database"`` or ``"services.cache"``).
+            key: Dot-separated path (e.g. ``"database"``, ``"services.cache"``
+                or ``"api.token"``).
             target: Type to convert the section into.
 
         Returns:
