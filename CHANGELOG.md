@@ -29,6 +29,10 @@
   and `McpHandle.call(expect=...)` accept a strict `pydantic.BaseModel` next
   to a `msgspec.Struct`; an annotation mixing both libraries is rejected.
 
+- **core:** `section(cfg, key, T)` and `ConfigContext.section` accept a key
+  naming a scalar leaf (`"api.token"`) and convert that value; before, they
+  failed on anything but a mapping.
+
 ### ai
 
 - **ai:** `provider: typesafe` binds TypeSafe's Jev, a decision model that
@@ -114,6 +118,26 @@
   downstream run inherits the placeholder text and resolves it against its own
   creation time. Without `trigger` the deployment is registered exactly as
   before.
+
+### etl
+
+- **etl:** a step may receive values from the runner's config without reading
+  the environment or taking them as params. `FromConfig("respondio.api_token")`
+  (a `str`) or `FromConfig("respondio", RespondioSettings)` (any type
+  `msgspec.convert` accepts) declared as a class attribute is passed to
+  `execute()` as the keyword argument of the same name, next to the frames, on
+  `ETLStep` and `ClientStep`. The key is a path into the YAML
+  `ETLRunner.from_yaml` loads, so `${oc.env:...}` and resolvers such as
+  `${secrets:...}` apply, and the value is resolved each time the step runs.
+  `ETLCompiler()` checks the shape (a keyword-only parameter per attribute, no
+  name shared with a source or `client`, none on a `StepSQL`), and
+  `ETLCompiler(config_context=...)`, which `ETLRunner.run` uses, checks every
+  key before any step runs (`UNRESOLVED_CONFIG_VALUE`). The value reaches no
+  log, repr, plan, event, checkpoint or error: a failure names the key and the
+  type, and `ConfigValueError` drops the `msgspec` message, which may quote the
+  value. `ETLRunner`, `ETLRunner.from_config` and `ETLExecutor` take
+  `config_context=`; `PolarsStepRunner` and `SparkStepRunner` take
+  `with_config(mapping)` for fake values in tests.
 
 ## ⚠ Behaviour changes
 

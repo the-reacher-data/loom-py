@@ -23,6 +23,23 @@ def test_clean_orders():
 `StepResult` methods: `assert_schema`, `assert_count`, `assert_not_empty`,
 `show`, `to_polars`.
 
+### Steps that declare `FromConfig` values
+
+`with_config` gives the runner the config a step's `FromConfig` values resolve
+from, so a test passes a fake token instead of setting an environment variable.
+The keys are checked when the step compiles, as `ETLRunner` does.
+`SparkStepRunner` has the same method.
+
+```python
+def test_fetch_uses_the_token():
+    runner = PolarsStepRunner().with_config({"respondio": {"api_token": "fake"}})
+    result = runner.run(FetchMessages, DailyParams(run_date=date(2026, 9, 25)))
+    result.assert_not_empty()
+```
+
+A step whose target the harness cannot capture (an `IntoTemp`, say) can be
+called directly: `FetchMessages().execute(params, api_token="fake", ...)`.
+
 ## Reusable seed datasets with `ETLScenario`
 
 `ETLScenario` stores seed data as plain tuples so the same dataset can be used
