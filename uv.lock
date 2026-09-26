@@ -1082,8 +1082,8 @@ name = "delta-spark"
 version = "3.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "importlib-metadata" },
-    { name = "pyspark" },
+    { name = "importlib-metadata", marker = "python_full_version < '3.13'" },
+    { name = "pyspark", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8e/c9/a4d34fee1dafcad33d4e810ff2ce14a9f6e8e7af9797a9de79ebc3334987/delta_spark-3.3.2.tar.gz", hash = "sha256:f3e89ec4a15a541988f9d6496016a67cf619475e8eeca71da5e073f6ba0da845", size = 23066, upload-time = "2025-05-29T22:25:49.412Z" }
 wheels = [
@@ -2196,14 +2196,14 @@ etl-polars = [
     { name = "pyarrow" },
 ]
 etl-spark = [
-    { name = "delta-spark" },
+    { name = "delta-spark", marker = "python_full_version < '3.13'" },
     { name = "findspark" },
     { name = "fsspec" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
-    { name = "pyspark" },
+    { name = "pyspark", marker = "python_full_version < '3.13'" },
 ]
 jwt = [
     { name = "pyjwt", extra = ["crypto"] },
@@ -2228,7 +2228,7 @@ prometheus = [
     { name = "prometheus-client" },
 ]
 pyspark = [
-    { name = "pyspark" },
+    { name = "pyspark", marker = "python_full_version < '3.13'" },
 ]
 rest = [
     { name = "fastapi" },
@@ -2269,7 +2269,7 @@ dev = [
     { name = "clickhouse-connect" },
     { name = "commitizen" },
     { name = "confluent-kafka" },
-    { name = "delta-spark" },
+    { name = "delta-spark", marker = "python_full_version < '3.13'" },
     { name = "deltalake" },
     { name = "fakeredis" },
     { name = "fasta2a" },
@@ -2324,7 +2324,7 @@ requires-dist = [
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.9.2,<1.0" },
     { name = "confluent-kafka", marker = "extra == 'streaming'", specifier = ">=2.6,<3.0" },
-    { name = "delta-spark", marker = "extra == 'etl-spark'", specifier = ">=3.2,<4.0" },
+    { name = "delta-spark", marker = "python_full_version < '3.13' and extra == 'etl-spark'", specifier = ">=3.2,<4.0" },
     { name = "deltalake", marker = "extra == 'etl-polars'", specifier = ">=1.6.2,<2.0" },
     { name = "docker", marker = "extra == 'prefect'", specifier = ">=7.0" },
     { name = "fasta2a", marker = "extra == 'ai-a2a'", specifier = ">=0.6,<1" },
@@ -2380,8 +2380,8 @@ requires-dist = [
     { name = "pydantic-ai-slim", extras = ["typesafe"], marker = "extra == 'ai-typesafe'", specifier = ">=2.45,<3" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'jwt'", specifier = ">=2.8,<3" },
     { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.9,<5.0" },
-    { name = "pyspark", marker = "extra == 'etl-spark'", specifier = ">=3.5,<4.0" },
-    { name = "pyspark", marker = "extra == 'pyspark'", specifier = ">=3.5,<4.0" },
+    { name = "pyspark", marker = "python_full_version < '3.13' and extra == 'etl-spark'", specifier = ">=3.5,<4.0" },
+    { name = "pyspark", marker = "python_full_version < '3.13' and extra == 'pyspark'", specifier = ">=3.5,<4.0" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3.0" },
     { name = "pyyaml", marker = "extra == 'prefect'", specifier = ">=6.0" },
     { name = "redis", marker = "extra == 'celery'", specifier = ">=5.0,<6.0" },
@@ -2407,7 +2407,7 @@ dev = [
     { name = "clickhouse-connect", specifier = ">=0.9.2,<1.0" },
     { name = "commitizen", specifier = ">=3.30.0" },
     { name = "confluent-kafka", specifier = ">=2.6,<3.0" },
-    { name = "delta-spark", specifier = ">=3.2,<4.0" },
+    { name = "delta-spark", marker = "python_full_version < '3.13'", specifier = ">=3.2,<4.0" },
     { name = "deltalake", specifier = ">=1.6.2,<2.0" },
     { name = "fakeredis", specifier = ">=2.23.0" },
     { name = "fasta2a", specifier = ">=0.6,<1" },
@@ -3754,7 +3754,7 @@ name = "pyspark"
 version = "3.5.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "py4j" },
+    { name = "py4j", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/80/5a/3806f44eb47387e8af803508cdd6bbc0df784febf4dc010700be04a1ff89/pyspark-3.5.8.tar.gz", hash = "sha256:54cca0767b21b40e3953ad1d30f8601c53abf9cbda763653289cdcfcac52313c", size = 317817299, upload-time = "2026-01-15T11:46:14.487Z" }
 

@@ -15,9 +15,11 @@ pip install "loom-kernel[streaming,kafka]"
 ```
 
 The `streaming` extra installs Bytewax only on Python < 3.13, because Bytewax
-publishes no `cp313` wheel yet. A project that runs streaming flows must pin
-`requires-python = ">=3.11,<3.13"` in its own `pyproject.toml`; on Python 3.13
-the extra resolves without Bytewax and the runner cannot start.
+publishes no wheel for Python 3.13 or later yet. A project that runs streaming
+flows must pin `requires-python = ">=3.11,<3.13"` in its own `pyproject.toml`; on
+Python 3.13 or later the extra resolves without Bytewax, and importing
+`loom.streaming.bytewax` raises an `ImportError` that names the extra and the
+versions it needs.
 
 The Mongo change-stream source (`FromMongoCDC`) needs `pymongo`, which ships
 with the `mongo` extra:
