@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import msgspec
 import pytest
-from pydantic_extra_types.pendulum_dt import DateTime as PendulumDateTime
+from prefect.types import DateTime as PrefectDateTime
 
 from loom.prefect._placeholders import resolve_placeholder
 
@@ -138,8 +138,9 @@ def test_anchor_keeps_rejecting_invalid_placeholders() -> None:
         resolve_placeholder("${tomorrow}", anchor=_SLOT)
 
 
-# Prefect hands the scheduled start over as this pendulum subclass.
-_PENDULUM_SLOT = PendulumDateTime(2026, 9, 23, 23, 30, 15, 123456, tzinfo=UTC)
+# Prefect hands the scheduled start over as this datetime subclass: pendulum's
+# below Python 3.13, Prefect's own from 3.13 on.
+_PREFECT_SLOT = PrefectDateTime(2026, 9, 23, 23, 30, 15, 123456, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
@@ -151,7 +152,7 @@ _PENDULUM_SLOT = PendulumDateTime(2026, 9, 23, 23, 30, 15, 123456, tzinfo=UTC)
     ],
 )
 def test_a_pendulum_anchor_yields_a_stdlib_date(token: str, expected: date) -> None:
-    result = resolve_placeholder(token, anchor=_PENDULUM_SLOT)
+    result = resolve_placeholder(token, anchor=_PREFECT_SLOT)
     assert type(result) is date
     assert result == expected
 
@@ -165,7 +166,7 @@ def test_a_pendulum_anchor_yields_a_stdlib_date(token: str, expected: date) -> N
     ],
 )
 def test_a_pendulum_anchor_yields_a_stdlib_datetime(token: str, expected: datetime) -> None:
-    result = resolve_placeholder(token, anchor=_PENDULUM_SLOT)
+    result = resolve_placeholder(token, anchor=_PREFECT_SLOT)
     assert type(result) is datetime
     assert result == expected
 
@@ -177,10 +178,10 @@ def test_values_resolved_from_a_pendulum_anchor_decode_with_msgspec() -> None:
 
     window = msgspec.convert(
         {
-            "day": resolve_placeholder("${yesterday}", anchor=_PENDULUM_SLOT),
-            "until": resolve_placeholder("${now}", anchor=_PENDULUM_SLOT),
+            "day": resolve_placeholder("${yesterday}", anchor=_PREFECT_SLOT),
+            "until": resolve_placeholder("${now}", anchor=_PREFECT_SLOT),
         },
         type=Window,
     )
     assert window.day == date(2026, 9, 22)
-    assert window.until == _PENDULUM_SLOT
+    assert window.until == _PREFECT_SLOT

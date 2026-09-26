@@ -14,26 +14,34 @@ from typing import Any, cast
 import pytest
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
-from loom.core.observability.event import Scope, TerminalReason
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.observability.span import LoomSpan
-from loom.streaming.bytewax import _batch_spans as _batch_spans_mod
-from loom.streaming.bytewax import _error_boundary as _boundary_mod
-from loom.streaming.bytewax._batch_spans import BatchSpan, BatchWindow, emit_batch_spans
-from loom.streaming.bytewax.handlers import _shared as _shared_mod
-from loom.streaming.bytewax.handlers import scopes as _scopes
-from loom.streaming.bytewax.handlers import storage as _storage
-from loom.streaming.core._errors import ErrorKind
-from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.core._tracing import open_terminal_span
-from tests.helpers.spans import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.observability.event import Scope, TerminalReason  # noqa: E402
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.core.observability.span import LoomSpan  # noqa: E402
+from loom.streaming.bytewax import _batch_spans as _batch_spans_mod  # noqa: E402
+from loom.streaming.bytewax import _error_boundary as _boundary_mod  # noqa: E402
+from loom.streaming.bytewax._batch_spans import (  # noqa: E402
+    BatchSpan,
+    BatchWindow,
+    emit_batch_spans,
+)
+from loom.streaming.bytewax.handlers import _shared as _shared_mod  # noqa: E402
+from loom.streaming.bytewax.handlers import scopes as _scopes  # noqa: E402
+from loom.streaming.bytewax.handlers import storage as _storage  # noqa: E402
+from loom.streaming.core._errors import ErrorKind  # noqa: E402
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from loom.streaming.core._tracing import open_terminal_span  # noqa: E402
+from tests.helpers.spans import (  # noqa: E402
     SpanRecorder,
     build_recorder,
     hex_trace,
     linked_span_ids,
     span_ids,
 )
-from tests.unit.streaming.compiler.cases import Order, Result
+from tests.unit.streaming.compiler.cases import Order, Result  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

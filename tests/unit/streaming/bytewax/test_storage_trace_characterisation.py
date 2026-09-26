@@ -16,11 +16,15 @@ from typing import Any
 
 import pytest
 
-from loom.core.observability.event import EventKind, LifecycleEvent, Scope
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax.handlers import storage as _storage
-from loom.streaming.core._message import Message, MessageMeta
-from tests.unit.streaming.compiler.cases import Result
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.observability.event import EventKind, LifecycleEvent, Scope  # noqa: E402
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming.bytewax.handlers import storage as _storage  # noqa: E402
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from tests.unit.streaming.compiler.cases import Result  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

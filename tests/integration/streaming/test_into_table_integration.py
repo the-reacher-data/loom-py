@@ -17,15 +17,19 @@ import polars as pl
 import pytest
 from sqlalchemy import create_engine, event, text
 
-from loom.core.async_bridge import AsyncBridge
-from loom.core.config import ConfigContext
-from loom.core.model import LoomStruct
-from loom.core.repository.sqlalchemy.session_manager import SessionManager
-from loom.streaming import Backend, FromTopic, IntoTable, Process, StreamFlow
-from loom.streaming.nodes._table import DeltaSinkConfig, SqlAlchemySinkConfig
-from loom.streaming.nodes._table import common as _table_common
-from loom.streaming.nodes._table.common import ClickHouseSinkConfig
-from loom.streaming.testing import StreamingTestRunner
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.async_bridge import AsyncBridge  # noqa: E402
+from loom.core.config import ConfigContext  # noqa: E402
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.core.repository.sqlalchemy.session_manager import SessionManager  # noqa: E402
+from loom.streaming import Backend, FromTopic, IntoTable, Process, StreamFlow  # noqa: E402
+from loom.streaming.nodes._table import DeltaSinkConfig, SqlAlchemySinkConfig  # noqa: E402
+from loom.streaming.nodes._table import common as _table_common  # noqa: E402
+from loom.streaming.nodes._table.common import ClickHouseSinkConfig  # noqa: E402
+from loom.streaming.testing import StreamingTestRunner  # noqa: E402
 
 
 class _OrderRow(LoomStruct):

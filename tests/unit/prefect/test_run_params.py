@@ -17,7 +17,7 @@ import msgspec
 import pytest
 from prefect.runtime import flow_run as prefect_flow_run
 from prefect.settings import PREFECT_CLIENT_MAX_RETRIES
-from pydantic_extra_types.pendulum_dt import DateTime as PendulumDateTime
+from prefect.types import DateTime as PrefectDateTime
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
 from loom.etl.maintenance._runner import MaintenanceReport
@@ -30,7 +30,7 @@ from loom.prefect.flow._run_name import make_run_name_callback
 # A slot late in the evening: a run that starts after midnight still owns this day.
 _SLOT = datetime(2026, 9, 22, 23, 30, tzinfo=UTC)
 # What Prefect's runtime returns for that slot.
-_PREFECT_SLOT = PendulumDateTime(2026, 9, 22, 23, 30, tzinfo=UTC)
+_PREFECT_SLOT = PrefectDateTime(2026, 9, 22, 23, 30, tzinfo=UTC)
 _RUN_ID = uuid.UUID("11111111-2222-3333-4444-555555555555")
 
 

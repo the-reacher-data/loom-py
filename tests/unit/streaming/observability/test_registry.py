@@ -6,8 +6,12 @@ from types import MappingProxyType
 
 import pytest
 
-from loom.streaming.bytewax._adapter import _NODE_HANDLERS
-from loom.streaming.nodes._step import RecordStep
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.streaming.bytewax._adapter import _NODE_HANDLERS  # noqa: E402
+from loom.streaming.nodes._step import RecordStep  # noqa: E402
 
 
 def test_node_handlers_is_immutable() -> None:

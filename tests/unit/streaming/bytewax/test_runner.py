@@ -8,24 +8,36 @@ from typing import Any, ClassVar
 import msgspec
 import pytest
 import uvloop
-from bytewax.dataflow import Dataflow
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from loom.core.async_bridge import build_backend_options as _build_backend_options
-from loom.core.config import ConfigContext
-from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming import Drain, FromMongoCDC, Process, StreamFlow
-from loom.streaming.bytewax.runner import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from bytewax.dataflow import Dataflow  # noqa: E402
+from opentelemetry import trace  # noqa: E402
+from opentelemetry.sdk.trace import TracerProvider  # noqa: E402
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E402
+    InMemorySpanExporter,
+)
+
+from loom.core.async_bridge import build_backend_options as _build_backend_options  # noqa: E402
+from loom.core.config import ConfigContext  # noqa: E402
+from loom.core.observability.event import (  # noqa: E402
+    EventKind,
+    LifecycleEvent,
+    LifecycleStatus,
+    Scope,
+)
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming import Drain, FromMongoCDC, Process, StreamFlow  # noqa: E402
+from loom.streaming.bytewax.runner import (  # noqa: E402
     BytewaxRuntimeConfig,
     StreamingRunner,
 )
-from loom.streaming.core._errors import ErrorKind
-from loom.streaming.mongo import MongoCDCEvent
-from tests.unit.streaming.bytewax.cases import Order, Result
+from loom.streaming.core._errors import ErrorKind  # noqa: E402
+from loom.streaming.mongo import MongoCDCEvent  # noqa: E402
+from tests.unit.streaming.bytewax.cases import Order, Result  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

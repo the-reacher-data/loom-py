@@ -23,6 +23,13 @@ Framework-agnostic Python toolkit to build backend applications with:
 - **declarative ETL** — compile-time-validated pipelines for Polars and Spark
 - testing utilities for business workflows and ETL steps
 
+## Python versions
+
+`loom-kernel` supports Python 3.11, 3.12, 3.13 and 3.14. Two extras are limited
+to Python < 3.13 until their upstream packages publish wheels for later versions:
+`streaming` (Bytewax) and `etl-spark`/`pyspark` (PySpark 3.5). On Python 3.13 or
+later those extras install without that dependency.
+
 ## Purpose
 
 `loom-kernel` helps you ship production APIs faster without sacrificing clean
@@ -417,6 +424,11 @@ pip install "loom-kernel[etl-polars]"
 # or
 pip install "loom-kernel[etl-spark]"
 ```
+
+The `etl-spark` and `pyspark` extras install PySpark and delta-spark only on
+Python < 3.13, because PySpark 3.5 supports Python up to 3.12. The Spark runtime
+that runs the job (EMR, Glue, Databricks) fixes the PySpark version, and with it
+the Python version; on Python 3.13 or later these extras resolve without Spark.
 
 Declare a pipeline — sources, targets, and transformation logic are explicit and compile-time validated:
 

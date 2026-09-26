@@ -1183,6 +1183,9 @@ class TestExtendedJsonLiterals:
 # ---------------------------------------------------------------------------
 
 
+_DEEPER_THAN_ANY_RECURSION_LIMIT = 200_000
+
+
 class TestSafeDumpsDegradation:
     def test_circular_reference_returns_null_and_counts(self) -> None:
         from loom.etl.io.sources._mongo_batch import _safe_dumps
@@ -1218,13 +1221,19 @@ class TestSafeDumpsDegradation:
 
     def test_recursion_error_returns_null(self) -> None:
         from loom.etl.io.sources._mongo_batch import _safe_dumps
+        from loom.etl.io.sources._serialization import _serialization_stats
 
+        # sys.setrecursionlimit cannot force this: from Python 3.12 the C json
+        # encoder is guarded by a C-level limit that ignores it, and 3.14 measures
+        # the machine stack instead. 20 000 levels raised up to 3.13 but not on
+        # 3.14; this depth is past the effective limit on every supported version.
         deep: list = []
         cursor = deep
-        for _ in range(20_000):
+        for _ in range(_DEEPER_THAN_ANY_RECURSION_LIMIT):
             cursor.append([])
             cursor = cursor[0]
         assert _safe_dumps(deep) is None
+        assert "RecursionError" in _serialization_stats.last_error
 
     def test_serialize_conflicted_degrades_per_doc(self) -> None:
         from loom.etl.io.sources._mongo_batch import _serialize_conflicted

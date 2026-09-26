@@ -8,13 +8,22 @@ from typing import Any
 
 import pytest
 
-from loom.core.observability.event import LifecycleEvent
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax.handlers import steps as _steps
-from loom.streaming.core._exceptions import UnsupportedNodeError
-from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
-from tests.unit.streaming.bytewax.cases import Order, Result, build_message
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.observability.event import LifecycleEvent  # noqa: E402
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming.bytewax.handlers import steps as _steps  # noqa: E402
+from loom.streaming.core._exceptions import UnsupportedNodeError  # noqa: E402
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from loom.streaming.nodes._step import (  # noqa: E402
+    BatchExpandStep,
+    BatchStep,
+    ExpandStep,
+    RecordStep,
+)
+from tests.unit.streaming.bytewax.cases import Order, Result, build_message  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

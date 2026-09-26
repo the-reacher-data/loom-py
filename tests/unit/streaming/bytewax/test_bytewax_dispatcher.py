@@ -12,26 +12,35 @@ import anyio
 import pytest
 from structlog.contextvars import get_contextvars
 
-from loom.core.errors.errors import RuleViolation
-from loom.core.model import LoomStruct
-from loom.core.observability.event import EventKind, LifecycleEvent, Scope
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax._error_boundary import ErrorBoundary
-from loom.streaming.bytewax.handlers import _shared as _shared
-from loom.streaming.bytewax.handlers import dispatcher as _dispatcher
-from loom.streaming.bytewax.handlers import routing as _routing
-from loom.streaming.bytewax.handlers import scopes as _scopes
-from loom.streaming.bytewax.handlers import shapes as _shapes
-from loom.streaming.bytewax.handlers import steps as _steps
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
-from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.core._typing import StreamPayload
-from loom.streaming.graph._flow import Process
-from loom.streaming.nodes._boundary import IntoTopic
-from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
-from loom.streaming.nodes._shape import CollectBatch, Drain
-from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
-from loom.streaming.nodes._with import WithAsync
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.errors.errors import RuleViolation  # noqa: E402
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.core.observability.event import EventKind, LifecycleEvent, Scope  # noqa: E402
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming.bytewax._error_boundary import ErrorBoundary  # noqa: E402
+from loom.streaming.bytewax.handlers import _shared as _shared  # noqa: E402
+from loom.streaming.bytewax.handlers import dispatcher as _dispatcher  # noqa: E402
+from loom.streaming.bytewax.handlers import routing as _routing  # noqa: E402
+from loom.streaming.bytewax.handlers import scopes as _scopes  # noqa: E402
+from loom.streaming.bytewax.handlers import shapes as _shapes  # noqa: E402
+from loom.streaming.bytewax.handlers import steps as _steps  # noqa: E402
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind  # noqa: E402
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from loom.streaming.core._typing import StreamPayload  # noqa: E402
+from loom.streaming.graph._flow import Process  # noqa: E402
+from loom.streaming.nodes._boundary import IntoTopic  # noqa: E402
+from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute  # noqa: E402
+from loom.streaming.nodes._shape import CollectBatch, Drain  # noqa: E402
+from loom.streaming.nodes._step import (  # noqa: E402
+    BatchExpandStep,
+    BatchStep,
+    ExpandStep,
+    RecordStep,
+)
+from loom.streaming.nodes._with import WithAsync  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

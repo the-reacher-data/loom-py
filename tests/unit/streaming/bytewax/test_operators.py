@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import pytest
 
-from loom.core.async_bridge import AsyncBridge
-from loom.core.model import LoomStruct
-from loom.streaming import IntoTopic, Process, ResourceScope, With, WithAsync
-from loom.streaming.bytewax._operators import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.async_bridge import AsyncBridge  # noqa: E402
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.streaming import IntoTopic, Process, ResourceScope, With, WithAsync  # noqa: E402
+from loom.streaming.bytewax._operators import (  # noqa: E402
     AsyncResourceLifecycle,
     SyncResourceLifecycle,
     lifecycle_for,
 )
-from loom.streaming.nodes._with import ContextFactory
+from loom.streaming.nodes._with import ContextFactory  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

@@ -8,14 +8,19 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from bytewax.dataflow import Dataflow
 
-from loom.core.config import ConfigContext, ConfigError
-from loom.streaming.bytewax.runner import StreamingRunner
-from loom.streaming.graph._flow import StreamFlow
-from tests.helpers.extras import with_boto3, without_boto3
-from tests.unit._resolver_stubs import MappingResolver
-from tests.unit.streaming.bytewax.cases import Order, Result
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from bytewax.dataflow import Dataflow  # noqa: E402
+
+from loom.core.config import ConfigContext, ConfigError  # noqa: E402
+from loom.streaming.bytewax.runner import StreamingRunner  # noqa: E402
+from loom.streaming.graph._flow import StreamFlow  # noqa: E402
+from tests.helpers.extras import with_boto3, without_boto3  # noqa: E402
+from tests.unit._resolver_stubs import MappingResolver  # noqa: E402
+from tests.unit.streaming.bytewax.cases import Order, Result  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("clear_builtin_resolvers")
 

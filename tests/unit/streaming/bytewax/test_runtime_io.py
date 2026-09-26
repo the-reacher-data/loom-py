@@ -7,26 +7,30 @@ from typing import cast
 import pytest
 from confluent_kafka import TopicPartition
 
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax import _adapter, _runtime_io
-from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
-from loom.streaming.compiler import CompiledMongoCDCSource
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
-from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.kafka import MsgspecCodec
-from loom.streaming.kafka._errors import KafkaDeliveryError
-from loom.streaming.kafka._record import KafkaRecord
-from loom.streaming.kafka._wire import DecodeError
-from loom.streaming.mongo import MongoSourceConfig
-from loom.streaming.mongo._bytewax_source import MongoCDCSource
-from tests.unit.streaming.bytewax.cases import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming.bytewax import _adapter, _runtime_io  # noqa: E402
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker  # noqa: E402
+from loom.streaming.compiler import CompiledMongoCDCSource  # noqa: E402
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message  # noqa: E402
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from loom.streaming.kafka import MsgspecCodec  # noqa: E402
+from loom.streaming.kafka._errors import KafkaDeliveryError  # noqa: E402
+from loom.streaming.kafka._record import KafkaRecord  # noqa: E402
+from loom.streaming.kafka._wire import DecodeError  # noqa: E402
+from loom.streaming.mongo import MongoSourceConfig  # noqa: E402
+from loom.streaming.mongo._bytewax_source import MongoCDCSource  # noqa: E402
+from tests.unit.streaming.bytewax.cases import (  # noqa: E402
     Order,
     build_compiled_plan,
     build_compiled_sink,
     build_compiled_source,
     build_order_message,
 )
-from tests.unit.streaming.kafka.fakes import (
+from tests.unit.streaming.kafka.fakes import (  # noqa: E402
     ConsumerBackendStub,
     PartitionClientInstaller,
     PartitionClientStub,

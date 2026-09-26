@@ -9,8 +9,9 @@ from loom.etl.backends._format_registry import UnsupportedFormatError, resolve_f
 from loom.etl.backends.polars._file_writer import PolarsFileWriter
 from loom.etl.declarative._format import Format
 from loom.etl.declarative.target._file import FileSpec
+from tests.helpers.version_limited_extras import require_pyspark
 
-pytest.importorskip("pyspark")
+require_pyspark()
 
 from loom.etl.backends.spark import _writer as spark_writer  # noqa: E402
 

@@ -9,17 +9,26 @@ from __future__ import annotations
 
 from importlib import metadata
 
+import pytest
 from packaging.requirements import Requirement
 
 
-def _extra_requirements(extra: str) -> dict[str, Requirement]:
-    """Return the requirements published under ``extra``, keyed by project name."""
+def _extra_requirements(extra: str, python: str | None = None) -> dict[str, Requirement]:
+    """Return the requirements published under ``extra``, keyed by project name.
+
+    Markers are evaluated for the running interpreter unless ``python`` names
+    another version, so a version-bounded requirement is checked from the
+    metadata on every Python instead of from what happens to be installed.
+    """
+    environment = {"extra": extra}
+    if python is not None:
+        environment |= {"python_version": python, "python_full_version": f"{python}.0"}
     declared = metadata.requires("loom-kernel") or []
     found: dict[str, Requirement] = {}
     for line in declared:
         requirement = Requirement(line)
         marker = requirement.marker
-        if marker is None or not marker.evaluate({"extra": extra}):
+        if marker is None or not marker.evaluate(environment):
             continue
         found[requirement.name.lower()] = requirement
     return found
@@ -42,8 +51,21 @@ def test_sqlalchemy_extra_pins_greenlet_explicitly() -> None:
 
 
 def test_streaming_extra_skips_bytewax_on_python_313() -> None:
-    marker = _extra_requirements("streaming")["bytewax"].marker
+    assert "bytewax" in _extra_requirements("streaming", python="3.12")
+    assert "bytewax" not in _extra_requirements("streaming", python="3.13")
+    assert "bytewax" not in _extra_requirements("streaming", python="3.14")
+    assert "confluent-kafka" in _extra_requirements("streaming", python="3.13")
 
-    assert marker is not None
-    assert marker.evaluate({"extra": "streaming", "python_version": "3.12"})
-    assert not marker.evaluate({"extra": "streaming", "python_version": "3.13"})
+
+@pytest.mark.parametrize(
+    ("extra", "packages"),
+    [
+        ("etl-spark", ("pyspark", "delta-spark")),
+        ("pyspark", ("pyspark",)),
+    ],
+)
+def test_spark_extras_skip_pyspark_on_python_313(extra: str, packages: tuple[str, ...]) -> None:
+    for package in packages:
+        assert package in _extra_requirements(extra, python="3.12")
+        assert package not in _extra_requirements(extra, python="3.13")
+        assert package not in _extra_requirements(extra, python="3.14")

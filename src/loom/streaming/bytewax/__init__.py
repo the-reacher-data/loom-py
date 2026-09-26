@@ -11,13 +11,18 @@ Usage::
 
 from __future__ import annotations
 
+import sys
+
 try:  # pragma: no cover - exercised in a clean interpreter
     import bytewax as _bytewax
 except ImportError as exc:  # pragma: no cover - exercised in a clean interpreter
     raise ImportError(
-        "The bytewax runtime is missing. Bytewax publishes no wheel for Python 3.13, "
-        "so loom-kernel[streaming] omits it there: pin requires-python to "
-        '">=3.11,<3.13" or install bytewax yourself.'
+        "The bytewax runtime is missing. The 'streaming' extra "
+        "(loom-kernel[streaming]) installs bytewax only on Python < 3.13, because "
+        "bytewax publishes no wheel for Python 3.13 or later; this interpreter is "
+        f"Python {sys.version_info.major}.{sys.version_info.minor}. Install the "
+        'extra on Python < 3.13 (pin requires-python to ">=3.11,<3.13") or '
+        "install bytewax yourself."
     ) from exc
 else:
     del _bytewax

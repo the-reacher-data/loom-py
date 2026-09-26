@@ -13,6 +13,11 @@ pip install "loom-kernel[etl-polars]"
 pip install "loom-kernel[etl-spark]"
 ```
 
+The `etl-spark` and `pyspark` extras install PySpark and delta-spark only on
+Python < 3.13, because PySpark 3.5 supports Python up to 3.12. The Spark runtime
+that runs the job (EMR, Glue, Databricks) fixes the PySpark version, and with it
+the Python version; on Python 3.13 or later these extras resolve without Spark.
+
 ## Minimal pipeline
 
 ```python

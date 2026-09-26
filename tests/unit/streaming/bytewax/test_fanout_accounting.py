@@ -22,15 +22,19 @@ from typing import Any, cast
 import pytest
 from confluent_kafka import TopicPartition
 
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax import RuntimeConfigurationError, _adapter
-from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
-from loom.streaming.bytewax.handlers import _shared
-from loom.streaming.bytewax.handlers import routing as _routing
-from loom.streaming.bytewax.handlers import steps as _steps
-from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.kafka._record import KafkaRecord
-from tests.unit.streaming.bytewax.cases import Order, Result
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming.bytewax import RuntimeConfigurationError, _adapter  # noqa: E402
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker  # noqa: E402
+from loom.streaming.bytewax.handlers import _shared  # noqa: E402
+from loom.streaming.bytewax.handlers import routing as _routing  # noqa: E402
+from loom.streaming.bytewax.handlers import steps as _steps  # noqa: E402
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from loom.streaming.kafka._record import KafkaRecord  # noqa: E402
+from tests.unit.streaming.bytewax.cases import Order, Result  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

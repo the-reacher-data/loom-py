@@ -7,10 +7,21 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig
 
-from loom.core.model import LoomStruct
-from loom.streaming import Broadcast, BroadcastRoute, Drain, FromTopic, Process, StreamFlow
-from loom.streaming.compiler import CompilationError, compile_flow
-from loom.streaming.testing import StreamingTestRunner
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.streaming import (  # noqa: E402
+    Broadcast,
+    BroadcastRoute,
+    Drain,
+    FromTopic,
+    Process,
+    StreamFlow,
+)
+from loom.streaming.compiler import CompilationError, compile_flow  # noqa: E402
+from loom.streaming.testing import StreamingTestRunner  # noqa: E402
 
 
 class _DiscardOrder(LoomStruct):

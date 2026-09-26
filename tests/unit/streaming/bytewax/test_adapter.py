@@ -4,23 +4,27 @@ from __future__ import annotations
 
 import pytest
 
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax import _adapter
-from loom.streaming.compiler import CompiledSink
-from loom.streaming.core._errors import ErrorKind
-from loom.streaming.core._message import Message
-from loom.streaming.kafka import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming.bytewax import _adapter  # noqa: E402
+from loom.streaming.compiler import CompiledSink  # noqa: E402
+from loom.streaming.core._errors import ErrorKind  # noqa: E402
+from loom.streaming.core._message import Message  # noqa: E402
+from loom.streaming.kafka import (  # noqa: E402
     DecodeError,
     KafkaRecord,
     MessageDescriptor,
     MsgspecCodec,
     build_message,
 )
-from loom.streaming.kafka._config import ProducerSettings
-from loom.streaming.nodes._boundary import IntoTopic
-from loom.streaming.nodes._shape import Drain
-from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.bytewax.cases import (
+from loom.streaming.kafka._config import ProducerSettings  # noqa: E402
+from loom.streaming.nodes._boundary import IntoTopic  # noqa: E402
+from loom.streaming.nodes._shape import Drain  # noqa: E402
+from loom.streaming.testing import StreamingTestRunner  # noqa: E402
+from tests.unit.streaming.bytewax.cases import (  # noqa: E402
     DoubleStep,
     Order,
     Result,

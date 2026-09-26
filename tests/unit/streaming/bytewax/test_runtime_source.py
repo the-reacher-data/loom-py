@@ -9,13 +9,20 @@ from types import SimpleNamespace
 import pytest
 from confluent_kafka import OFFSET_BEGINNING, OFFSET_END, KafkaError, TopicPartition
 
-from loom.streaming.bytewax import _runtime_io
-from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
-from loom.streaming.kafka._config import ConsumerSettings
-from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
-from loom.streaming.kafka._record import KafkaRecord
-from tests.unit.streaming.bytewax.cases import build_compiled_source
-from tests.unit.streaming.kafka.fakes import PartitionClientInstaller, PartitionClientStub
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.streaming.bytewax import _runtime_io  # noqa: E402
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker  # noqa: E402
+from loom.streaming.kafka._config import ConsumerSettings  # noqa: E402
+from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError  # noqa: E402
+from loom.streaming.kafka._record import KafkaRecord  # noqa: E402
+from tests.unit.streaming.bytewax.cases import build_compiled_source  # noqa: E402
+from tests.unit.streaming.kafka.fakes import (  # noqa: E402
+    PartitionClientInstaller,
+    PartitionClientStub,
+)
 
 
 class _MetadataError:
