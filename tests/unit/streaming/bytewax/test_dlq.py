@@ -6,18 +6,27 @@ from typing import Any, cast
 
 import pytest
 
-from loom.streaming.bytewax import _dlq
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, ErrorMessage, ErrorMessageMeta
-from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.kafka._errors import KafkaDeliveryError
-from loom.streaming.kafka._message import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.streaming.bytewax import _dlq  # noqa: E402
+from loom.streaming.core._errors import (  # noqa: E402
+    ErrorEnvelope,
+    ErrorKind,
+    ErrorMessage,
+    ErrorMessageMeta,
+)
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from loom.streaming.kafka._errors import KafkaDeliveryError  # noqa: E402
+from loom.streaming.kafka._message import (  # noqa: E402
     HEADER_CAUSATION_ID,
     HEADER_CORRELATION_ID,
     HEADER_PARENT_TRACE_ID,
     HEADER_TRACE_ID,
 )
-from loom.streaming.kafka._wire import DecodeError
-from tests.unit.streaming.bytewax.cases import Order, build_message
+from loom.streaming.kafka._wire import DecodeError  # noqa: E402
+from tests.unit.streaming.bytewax.cases import Order, build_message  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

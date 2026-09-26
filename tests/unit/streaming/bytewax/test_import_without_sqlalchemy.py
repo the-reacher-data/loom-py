@@ -14,8 +14,12 @@ from typing import cast
 
 import pytest
 
-from loom.core.async_bridge import AsyncBridge
-from loom.streaming.bytewax._resource_manager import ResourceManager
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.async_bridge import AsyncBridge  # noqa: E402
+from loom.streaming.bytewax._resource_manager import ResourceManager  # noqa: E402
 
 _SRC = Path(__file__).resolve().parents[4] / "src"
 

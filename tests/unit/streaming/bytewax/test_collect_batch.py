@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 from omegaconf import DictConfig
 
-from loom.streaming import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.streaming import (  # noqa: E402
     CollectBatch,
     FromTopic,
     IntoTopic,
@@ -16,8 +20,8 @@ from loom.streaming import (
     StreamFlow,
     With,
 )
-from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.bytewax.cases import Order, Result, build_message
+from loom.streaming.testing import StreamingTestRunner  # noqa: E402
+from tests.unit.streaming.bytewax.cases import Order, Result, build_message  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

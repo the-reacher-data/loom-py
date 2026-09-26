@@ -18,18 +18,23 @@ from time import sleep, time_ns
 from typing import Any
 
 import pytest
-from bytewax.run import cli_main
-from bytewax.testing import TestingSource
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.sampling import Decision, Sampler, SamplingResult
-from opentelemetry.trace import SpanKind, StatusCode
-from opentelemetry.trace.span import TraceState
-from opentelemetry.util.types import Attributes
 
-from loom.core.config import ConfigContext
-from loom.core.model import LoomStruct
-from loom.core.observability.event import EventKind, Scope
-from loom.streaming import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from bytewax.run import cli_main  # noqa: E402
+from bytewax.testing import TestingSource  # noqa: E402
+from opentelemetry.sdk.trace import ReadableSpan  # noqa: E402
+from opentelemetry.sdk.trace.sampling import Decision, Sampler, SamplingResult  # noqa: E402
+from opentelemetry.trace import SpanKind, StatusCode  # noqa: E402
+from opentelemetry.trace.span import TraceState  # noqa: E402
+from opentelemetry.util.types import Attributes  # noqa: E402
+
+from loom.core.config import ConfigContext  # noqa: E402
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.core.observability.event import EventKind, Scope  # noqa: E402
+from loom.streaming import (  # noqa: E402
     FromTopic,
     IntoTopic,
     Message,
@@ -39,10 +44,10 @@ from loom.streaming import (
     StreamFlow,
     WithAsync,
 )
-from loom.streaming.bytewax import _adapter
-from loom.streaming.bytewax import _batch_spans as _batch_spans_mod
-from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
-from loom.streaming.bytewax._runtime_io import (
+from loom.streaming.bytewax import _adapter  # noqa: E402
+from loom.streaming.bytewax import _batch_spans as _batch_spans_mod  # noqa: E402
+from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown  # noqa: E402
+from loom.streaming.bytewax._runtime_io import (  # noqa: E402
     _KafkaMessageSink,
     _KafkaMessageSinkPartition,
     _TracedMessageSinkPartition,
@@ -50,11 +55,11 @@ from loom.streaming.bytewax._runtime_io import (
     build_runtime_sink,
     build_runtime_terminal_sinks,
 )
-from loom.streaming.compiler import compile_flow
-from loom.streaming.compiler._plan import CompiledSink
-from loom.streaming.kafka._config import ProducerSettings
-from loom.streaming.kafka._errors import KafkaDeliveryError
-from tests.helpers.spans import SpanRecorder, build_recorder, hex_trace
+from loom.streaming.compiler import compile_flow  # noqa: E402
+from loom.streaming.compiler._plan import CompiledSink  # noqa: E402
+from loom.streaming.kafka._config import ProducerSettings  # noqa: E402
+from loom.streaming.kafka._errors import KafkaDeliveryError  # noqa: E402
+from tests.helpers.spans import SpanRecorder, build_recorder, hex_trace  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

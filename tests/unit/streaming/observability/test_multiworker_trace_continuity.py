@@ -13,12 +13,17 @@ import threading
 from typing import ClassVar
 
 import pytest
-from bytewax.run import cli_main
-from bytewax.testing import TestingSink, TestingSource
 
-from loom.core.config import ConfigContext
-from loom.core.model import LoomStruct
-from loom.streaming import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from bytewax.run import cli_main  # noqa: E402
+from bytewax.testing import TestingSink, TestingSource  # noqa: E402
+
+from loom.core.config import ConfigContext  # noqa: E402
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.streaming import (  # noqa: E402
     FromTopic,
     IntoTopic,
     Message,
@@ -27,9 +32,9 @@ from loom.streaming import (
     RecordStep,
     StreamFlow,
 )
-from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
-from loom.streaming.compiler import compile_flow
-from tests.helpers.spans import SpanRecorder, build_recorder, hex_trace
+from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown  # noqa: E402
+from loom.streaming.compiler import compile_flow  # noqa: E402
+from tests.helpers.spans import SpanRecorder, build_recorder, hex_trace  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

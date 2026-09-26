@@ -25,10 +25,17 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
-from loom.streaming.bytewax._runtime_io import KafkaPartitionedSource, build_runtime_source
-from loom.streaming.compiler._plan import CompiledMultiSource, CompiledSingleSource
-from loom.streaming.kafka._record import KafkaRecord
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker  # noqa: E402
+from loom.streaming.bytewax._runtime_io import (  # noqa: E402
+    KafkaPartitionedSource,
+    build_runtime_source,
+)
+from loom.streaming.compiler._plan import CompiledMultiSource, CompiledSingleSource  # noqa: E402
+from loom.streaming.kafka._record import KafkaRecord  # noqa: E402
 
 pytestmark = [pytest.mark.integration, pytest.mark.kafka]
 

@@ -25,6 +25,7 @@ from loom.etl.runner import ETLRunner, InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
 from loom.etl.storage._config import StorageConfig, StorageDefaults, TablePathConfig, TempConfig
 from loom.etl.testing import StubSourceReader, StubTargetWriter
+from tests.helpers.version_limited_extras import require_pyspark
 
 RunnerFactory = Callable[..., ETLRunner]
 
@@ -286,7 +287,7 @@ class TestRunnerFromConfig:
             ETLRunner.from_config(config)
 
     def test_from_config_spark_engine_with_spark_builds_spark_backends(self) -> None:
-        pytest.importorskip("pyspark")
+        require_pyspark()
 
         from unittest.mock import MagicMock
 

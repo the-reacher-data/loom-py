@@ -9,8 +9,12 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig
 
-from loom.core.model import LoomStruct
-from loom.streaming import (
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.streaming import (  # noqa: E402
     BatchStep,
     ErrorEnvelope,
     ErrorKind,
@@ -26,8 +30,8 @@ from loom.streaming import (
     WithAsync,
     msg,
 )
-from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.flows.cases import StreamFlowCase
+from loom.streaming.testing import StreamingTestRunner  # noqa: E402
+from tests.unit.streaming.flows.cases import StreamFlowCase  # noqa: E402
 
 pytestmark = pytest.mark.integration
 

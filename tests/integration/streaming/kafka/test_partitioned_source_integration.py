@@ -22,12 +22,16 @@ from collections.abc import Callable, Sequence
 
 import pytest
 
-from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
-from loom.streaming.bytewax._runtime_io import KafkaPartitionedSource
-from loom.streaming.compiler._plan import CompiledSingleSource
-from loom.streaming.kafka._errors import KafkaPollError
-from loom.streaming.kafka._record import KafkaRecord
-from loom.streaming.kafka.client._consumer import KafkaConsumerClient
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker  # noqa: E402
+from loom.streaming.bytewax._runtime_io import KafkaPartitionedSource  # noqa: E402
+from loom.streaming.compiler._plan import CompiledSingleSource  # noqa: E402
+from loom.streaming.kafka._errors import KafkaPollError  # noqa: E402
+from loom.streaming.kafka._record import KafkaRecord  # noqa: E402
+from loom.streaming.kafka.client._consumer import KafkaConsumerClient  # noqa: E402
 
 pytestmark = [pytest.mark.integration, pytest.mark.kafka]
 

@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from loom.core.model import LoomStruct
-from loom.streaming.bytewax.handlers import shapes as _shapes
-from loom.streaming.core._message import Message, MessageMeta
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.model import LoomStruct  # noqa: E402
+from loom.streaming.bytewax.handlers import shapes as _shapes  # noqa: E402
+from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

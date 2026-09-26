@@ -7,13 +7,20 @@ from typing import Any, cast
 
 import pytest
 
-from loom.core.async_bridge import AsyncBridge
-from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax.handlers import storage as _storage
-from loom.streaming.compiler import CompiledStorageSink
-from loom.streaming.nodes._table import Backend, IntoTable
-from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig, SqlAlchemySinkConfig
-from tests.unit.streaming.compiler.cases import Result
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.core.async_bridge import AsyncBridge  # noqa: E402
+from loom.core.observability.runtime import ObservabilityRuntime  # noqa: E402
+from loom.streaming.bytewax.handlers import storage as _storage  # noqa: E402
+from loom.streaming.compiler import CompiledStorageSink  # noqa: E402
+from loom.streaming.nodes._table import Backend, IntoTable  # noqa: E402
+from loom.streaming.nodes._table.common import (  # noqa: E402
+    SqlAlchemyDatabaseConfig,
+    SqlAlchemySinkConfig,
+)
+from tests.unit.streaming.compiler.cases import Result  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

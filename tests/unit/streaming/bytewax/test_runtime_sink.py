@@ -6,13 +6,20 @@ from typing import Any
 
 import pytest
 
-from loom.streaming.bytewax import _runtime_io
-from loom.streaming.core._message import Message
-from loom.streaming.kafka._errors import KafkaDeliveryError
-from loom.streaming.kafka._record import KafkaRecord
-from loom.streaming.nodes._boundary import PartitionGuarantee, PartitionPolicy
-from tests.unit.streaming.bytewax.cases import build_compiled_sink, build_order_message
-from tests.unit.streaming.kafka.fakes import RawProducerStub
+from tests.helpers.version_limited_extras import require_bytewax
+
+require_bytewax()
+
+from loom.streaming.bytewax import _runtime_io  # noqa: E402
+from loom.streaming.core._message import Message  # noqa: E402
+from loom.streaming.kafka._errors import KafkaDeliveryError  # noqa: E402
+from loom.streaming.kafka._record import KafkaRecord  # noqa: E402
+from loom.streaming.nodes._boundary import PartitionGuarantee, PartitionPolicy  # noqa: E402
+from tests.unit.streaming.bytewax.cases import (  # noqa: E402
+    build_compiled_sink,
+    build_order_message,
+)
+from tests.unit.streaming.kafka.fakes import RawProducerStub  # noqa: E402
 
 pytestmark = pytest.mark.bytewax
 

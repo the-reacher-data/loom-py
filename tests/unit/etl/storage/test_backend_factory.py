@@ -10,20 +10,24 @@ from typing import Any
 
 import pytest
 
-from loom.etl.backends.spark.provider import SparkProvider
-from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
-from loom.etl.lineage._config import LineageConfig
-from loom.etl.lineage._records import EventName, PipelineRunRecord, RunStatus
-from loom.etl.lineage.sinks import TableLineageStore
-from loom.etl.runner._providers import load_backend_provider
-from loom.etl.runner._wiring import (
+from tests.helpers.version_limited_extras import require_pyspark
+
+require_pyspark()
+
+from loom.etl.backends.spark.provider import SparkProvider  # noqa: E402
+from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend  # noqa: E402
+from loom.etl.lineage._config import LineageConfig  # noqa: E402
+from loom.etl.lineage._records import EventName, PipelineRunRecord, RunStatus  # noqa: E402
+from loom.etl.lineage.sinks import TableLineageStore  # noqa: E402
+from loom.etl.runner._providers import load_backend_provider  # noqa: E402
+from loom.etl.runner._wiring import (  # noqa: E402
     make_backends,
     make_checkpoint_store,
     make_client_executor,
     make_lineage_store,
     make_lineage_writer,
 )
-from loom.etl.storage._config import (
+from loom.etl.storage._config import (  # noqa: E402
     CatalogConnection,
     ClickHouseConfig,
     MissingTablePolicy,
