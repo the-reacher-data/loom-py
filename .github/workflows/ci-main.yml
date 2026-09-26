@@ -10,10 +10,72 @@ on:
   # release asks for this workflow by hand right after it merges.
   workflow_dispatch:
 
+# The Python whose run feeds coverage, the report and Sonar. Every supported
+# version is tested; see the matrix of `tests-fast`.
+env:
+  PRIMARY_PYTHON: "3.12"
+
 permissions:
   contents: read
 
 jobs:
+  # Every supported Python runs the whole of `-m "not integration"` outside the
+  # Spark lane, without coverage: `validate` measures it on the primary version.
+  # The list lives only here, and matches the one in ci-pr.
+  tests-fast:
+    name: tests-fast (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Wheels only, so no sdist setup script runs while installing uv.
+      - name: Install uv
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
+
+      # Deselected rather than skipped: a skipped test reads as approved.
+      - name: Run the fast lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --frozen --group mcp-tests --with "pytest-xdist==3.6.1" \
+            pytest -m "not integration and not slow" \
+            --ignore=tests/unit/etl/backends/test_spark \
+            -n 4 --junitxml=junit-fast.xml -o junit_family=legacy
+
+      # A wall-clock budget measured under four workers measures the contention.
+      - name: Run the slow lane serially
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --frozen --group mcp-tests \
+            pytest -m "slow and not integration" \
+            --ignore=tests/unit/etl/backends/test_spark \
+            --junitxml=junit-slow.xml -o junit_family=legacy
+
+      - name: Store fast lane results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-results-fast-${{ matrix.python }}
+          path: |
+            junit-fast.xml
+            junit-slow.xml
+          if-no-files-found: error
+          retention-days: 7
+
   validate:
     runs-on: ubuntu-latest
     env:
@@ -28,7 +90,7 @@ jobs:
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PRIMARY_PYTHON }}
 
       # Wheels only, so no sdist setup script runs while installing uv.
       - name: Install uv
